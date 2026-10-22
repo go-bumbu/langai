@@ -1,0 +1,1185 @@
+# The golden set for internal/semsearch/eval: twenty-eight documents each in
+# English, Spanish and German, an English two-level tag taxonomy, and some
+# seventy retrieval queries, most of them same-language and phrased away from
+# their document's title words, fourteen cross-lingual. Every text is
+# original, synthetic prose written for this file. golden_test.go pins the
+# composition.
+# A document is relevant when it answers the query's main question, in any language or jurisdiction.
+tags:
+  - dev
+  - dev / go
+  - dev / web
+  - cooking
+  - cooking / recipes
+  - cooking / baking
+  - travel
+  - travel / hiking
+  - travel / city guides
+  - finance
+  - finance / investing
+  - finance / taxes
+  - health
+  - health / fitness
+  - health / nutrition
+documents:
+  # English
+  - id: en-go-modules
+    lang: en
+    title: Managing dependencies with Go modules
+    excerpt: How go.mod and go.sum pin every dependency to an exact version.
+    site: go.dev
+    text: |
+      A Go module is a tree of packages with a go.mod file at its root. The file names the module, states the Go version it was written for, and lists every dependency with the exact version the build should use. Because the version is written down, two machines building the same commit resolve the same code, and a build does not change because a library published a new release overnight.
+
+      The go.sum file sits next to it and records a cryptographic hash for every module version the build has seen. When the toolchain downloads a dependency it checks the bytes against that hash, so a tampered or republished archive fails loudly instead of slipping into the binary. Both files belong in version control.
+
+      Day to day the commands are few. Adding an import and running go mod tidy pulls the dependency in at its latest tagged version and removes anything no longer imported. Upgrading a single dependency is go get with the module path and the version you want. When a dependency drops a function you relied on, the fix is to pin the older version until you have migrated, not to vendor a copy.
+    tags: [dev / go]
+  - id: en-go-concurrency
+    lang: en
+    title: Bounding goroutines with a worker pool and a context
+    excerpt: Start goroutines freely, but cap how many run at once and stop them all when the caller gives up.
+    site: backendnotes.dev
+    text: |
+      Goroutines are cheap enough that starting one per task is tempting, and for a handful of tasks it is fine. The trouble starts when the task list comes from outside. Ten thousand URLs to fetch or rows to process turn into ten thousand goroutines, each holding a connection or a file handle, and the database or API on the other end starts refusing requests long before the Go runtime runs out of anything.
+
+      The classic answer is a fixed pool of workers reading from a shared channel. You start, say, eight goroutines that each range over a jobs channel, send their results to a second channel and return when the jobs channel is closed. A sync.WaitGroup tracks them, so one extra goroutine can wait for every worker to finish and then close the results channel, which ends the consumer's range loop cleanly.
+
+      When the work does not fit a queue, a semaphore does the same job with less ceremony. A buffered channel with a capacity of eight is one: send an empty struct into it before starting each goroutine and receive from it when the goroutine finishes, and the ninth send blocks until a slot frees up. The errgroup package wraps this pattern in SetLimit and collects the first error as well.
+
+      Whichever shape you pick, pass a context.Context to every worker. When the request that started the batch is cancelled or hits its deadline, ctx.Done() is closed, each worker notices it in a select and returns instead of taking the next job. Without that, an abandoned batch keeps hammering the backend long after anyone stopped waiting for the answer.
+    tags: [dev / go]
+  - id: en-css-grid
+    lang: en
+    title: CSS grid layouts that adapt without media queries
+    excerpt: Named template areas and auto-fit columns let one grid declaration handle phones and wide screens alike.
+    site: layoutlab.dev
+    text: |
+      CSS grid works on two axes at once, which is what sets it apart from flexbox. You describe the columns and rows on the container, and the children flow into the cells in order unless you place them elsewhere. For a page skeleton, grid-template-areas is the most readable way to do that: you draw a small text map of the layout with names such as header, sidebar, main and footer, and each child claims its region with grid-area.
+
+      The declaration that removes most breakpoints fits on one line: grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)). It asks the browser to fit as many columns as it can, each at least 16rem wide, and to share the leftover space equally. On a phone that gives one column, on a tablet two, on a wide monitor four or five, and you never wrote a media query. Wrapping the minimum in min(16rem, 100%) keeps a single column from overflowing a very narrow screen. With auto-fill instead of auto-fit the empty tracks are kept, which stops two lonely cards from stretching across a wide screen.
+
+      Grid is also the shortest way to centre something in both directions. A container with display: grid and place-items: center puts its child in the middle horizontally and vertically, whatever their sizes. Add gap instead of margins between items, and most layouts that once needed a CSS framework fit in a dozen lines.
+    tags: [dev / web]
+  - id: en-http-caching
+    lang: en
+    title: HTTP caching with Cache-Control and ETags
+    excerpt: Which headers let browsers and CDNs reuse a response, and how revalidation saves bandwidth.
+    site: webperfnotes.net
+    text: |
+      Every HTTP response can tell the caches it passes through how long they may reuse it. A file whose name contains a content hash, such as app.3f9a2c.js, can be served with Cache-Control: max-age=31536000, immutable, and the browser keeps it for a year without asking again; when the code changes, the build emits a new file name and the HTML points to it. HTML itself is the opposite case. It usually gets no-cache, which does not forbid storing the page but forces the browser to check with the server before every reuse.
+
+      That check is a conditional request. The first response carries an ETag, an opaque fingerprint of the content, or a Last-Modified date. Next time the browser sends the value back in If-None-Match or If-Modified-Since, and if nothing has changed the server answers 304 Not Modified with an empty body. The round trip still happens, but a few hundred bytes cross the network instead of the whole document.
+
+      A CDN sits in the middle and plays by the same rules. It stores responses at its edge locations according to Cache-Control, and s-maxage gives shared caches a different lifetime from browsers, for example an API response kept for sixty seconds at the edge while browsers revalidate every time. The private directive keeps personalised responses out of shared caches entirely. With the headers right, most manual purges become unnecessary, because stale content simply expires on schedule and revalidation keeps the rest cheap.
+    tags: [dev / web]
+  - id: en-code-review
+    lang: en
+    title: Code reviews that actually help
+    excerpt: Keep changes small, mind the tone and spend reviewer attention where only a person can help.
+    site: teamcraft.dev
+    text: |
+      The most effective thing a team can do for its code reviews happens before anyone opens a diff: keep the changes small. A pull request of two hundred lines gets read carefully; one of two thousand gets skimmed and approved with a sigh. Splitting the work into a refactor that changes no behaviour, followed by the feature on top of it, makes both halves easier to judge and easier to revert.
+
+      Tone matters more than most engineers admit. Written comments sound colder than the same words said across a desk, so phrase them as questions when you are unsure, and say plainly when something blocks the merge. Marking minor points with "nit" tells the author they can take them or leave them without a debate. And when something is well done, say so. A line about what you liked costs nothing and teaches as much as a correction.
+
+      As for what to look for, start with correctness and design. Does the change do what its description claims, are the edge cases and error paths handled, and will the next person understand why it is written this way? Tests deserve as much attention as the code they cover, since a test that cannot fail protects nothing. Formatting and naming conventions belong to linters and formatters, not to people, so that review time goes to the questions only a human can answer.
+    tags: [dev]
+  - id: en-git-branching
+    lang: en
+    title: A branching workflow for a small team
+    excerpt: Short-lived branches off main, unfinished work behind feature flags and one clear rule for rebase versus merge.
+    site: shipsmall.dev
+    text: |
+      For a team of three to eight developers, the workflow that causes the least pain is also the simplest. Everyone branches from main, works for a day or two and merges back. Long-lived feature branches look tidy, but they drift further from main every day, and the merge at the end turns into an afternoon of resolving conflicts in code nobody remembers writing.
+
+      The usual objection is that some features take weeks. That is what feature flags are for. Merge the half-built checkout page behind a flag that is off in production, keep shipping small pieces of it, and switch it on when it is done, first for the team and then for everyone. Delete the flag once it has been on for a release or two, or the codebase fills up with dead code paths that nobody dares to remove.
+
+      On rebase versus merge, pick one rule and write it down. A common one is to rebase your own branch on main as often as you like while nobody else works on it, because rewriting history that only you have seen is harmless, and never to rebase a branch someone else has pulled. When the branch lands, a squash merge keeps main readable with one commit per change, while a merge commit preserves every intermediate step if the team finds them useful in git log.
+    tags: [dev]
+  - id: en-weeknight-pasta
+    lang: en
+    title: Twenty-minute tomato pasta from the pantry
+    excerpt: Canned tomatoes, garlic and a splash of starchy pasta water make a sauce that clings to every strand.
+    site: weeknightkitchen.com
+    text: |
+      Put a large pot of well-salted water on to boil before you do anything else, because it is the slowest step. While it heats, slice four cloves of garlic thinly and warm them in a wide pan with three tablespoons of olive oil over medium-low heat. They should turn pale gold and fragrant, not brown, which takes about three minutes. Add a pinch of chilli flakes at the end if you like some heat.
+
+      Tip in a 400-gram can of whole peeled tomatoes and crush them in the pan with a wooden spoon. Season with salt, raise the heat and let the sauce bubble steadily for ten to twelve minutes, stirring now and then, until it thickens and the oil starts to pool at the edges. Meanwhile, cook 300 grams of spaghetti or penne for two minutes less than the packet says.
+
+      Before draining, scoop out a mug of the cooking water. Move the pasta straight into the sauce, add a good splash of that water and toss everything over high heat for the last two minutes. The starch in the water binds the oil and tomato into a glossy sauce that coats the pasta instead of sliding off it. Finish with torn basil and a little grated parmesan. From cold pot to full plate it takes about twenty minutes, and it feeds two hungry people or three modest ones.
+    tags: [cooking / recipes]
+  - id: en-chicken-curry
+    lang: en
+    title: A simple coconut chicken curry
+    excerpt: A five-minute spice paste, a can of coconut milk and a gentle simmer turn chicken thighs into a weeknight curry.
+    site: spiceandpot.com
+    text: |
+      Most of the flavour in this curry comes from a paste you make in five minutes. Blend one onion, four garlic cloves, a thumb-sized piece of ginger and two fresh green chillies with a teaspoon each of ground cumin, coriander and turmeric and half a teaspoon of garam masala, adding a spoonful of oil to help it come together. Fry the paste in a heavy pan over medium heat for eight to ten minutes, stirring often, until the raw onion smell has gone and the oil begins to separate.
+
+      Cut 600 grams of boneless chicken thighs into bite-sized pieces, add them to the pan and turn them in the paste for a few minutes until no pink shows on the outside. Pour in a 400-millilitre can of coconut milk with half a can of water and a teaspoon of salt, and bring it to a gentle simmer. Thighs stay juicy through a longer cooking time where breast meat would dry out.
+
+      Simmer uncovered for twenty to twenty-five minutes, until the chicken is tender and the sauce is thick enough to coat a spoon. If it reduces too quickly, add a splash of water. Taste before serving: a squeeze of lime brightens it, a pinch of sugar rounds off the heat, and a handful of spinach wilts into it within a minute. Serve with basmati rice or warm flatbread and fresh coriander on top.
+    tags: [cooking / recipes]
+  - id: en-sourdough
+    lang: en
+    title: Starting a sourdough starter from scratch
+    excerpt: Flour, water and about a week of daily feedings, plus the signs that tell you it is ready to bake with.
+    site: crumbandcrust.net
+    text: |
+      A sourdough starter is nothing more than flour and water in which wild yeasts and lactic acid bacteria have settled. To begin, stir 50 grams of wholemeal or rye flour with 50 grams of lukewarm water in a clean jar, cover it loosely and leave it somewhere around 24 to 26°C. Whole grains carry more of the microbes and nutrients that get fermentation going than white flour does.
+
+      For the next week, feed it once a day at roughly the same time. Discard all but 50 grams, add 50 grams of flour and 50 grams of water and stir well. Around day two or three it often bubbles up dramatically and then goes quiet. That first burst comes from bacteria that do not last, and the lull that follows is normal, so keep feeding. Somewhere between day five and day ten the yeast takes over.
+
+      If the starter is not rising, the cause is nearly always temperature or flour. A cold kitchen slows everything down, so move the jar into the oven with only the light on, or onto a warm shelf, and feed it with rye for a few days. Heavily chlorinated tap water can also hold it back; leave the water to stand overnight or use filtered water.
+
+      It is ready when it reliably doubles in volume within four to eight hours of a feeding, smells pleasantly sour rather than of nail polish, and is bubbly all the way through. Bake your first loaf with it at that peak. From then on it can live in the fridge and be fed once a week.
+    tags: [cooking / baking]
+  - id: en-knife-skills
+    lang: en
+    title: Knife skills every home cook should learn
+    excerpt: How to hold a chef's knife, dice an onion, cut a julienne and keep the edge sharp.
+    site: homecookbasics.org
+    text: |
+      Most people hold a kitchen knife by the handle alone, with the index finger stretched along the spine. It feels secure but gives poor control. The pinch grip is better: wrap your lower three fingers around the handle and pinch the blade just in front of the bolster between your thumb and the side of your index finger. The other hand forms a claw, fingertips tucked back, so the flat of the blade rides against the knuckles and the fingertips stay out of the way.
+
+      Dicing an onion shows why technique matters. Halve it through the root, peel it and lay each half flat. Make vertical cuts towards the root without cutting through it, then one or two horizontal cuts, and finally slice across. The root holds everything together until the last cut, and the onion falls away in even cubes. A julienne works on the same principle: square off a carrot, cut it into planks about three millimetres thick, stack them and cut them into matchsticks.
+
+      None of this works with a dull blade, which skids off a tomato skin and is more dangerous than a sharp one. A honing steel realigns the edge and is worth a few strokes before each use, but it removes almost no metal. Every few months the knife needs real sharpening on a whetstone, starting on a medium grit around 1000 and finishing on a finer one while holding a steady angle of about 15 to 20 degrees.
+    tags: [cooking]
+  - id: en-alpine-hut-hike
+    lang: en
+    title: Hut-to-hut hiking in the Alps for beginners
+    excerpt: How to book mountain huts, plan sensible stages and pack for several days on the trail.
+    site: trailandsummit.com
+    text: |
+      Walking from one mountain hut to the next for several days is one of the best ways to see the Alps, and it takes less experience than many people think. Plenty of routes follow well-marked paths between huts that lie four to six hours apart, with no glaciers or climbing involved. The season runs from late June to late September, when the huts are staffed and serve dinner and breakfast.
+
+      Booking is the part that needs planning. Popular huts fill up months ahead for July and August, so reserve as soon as your dates are fixed, usually through the hut's own website or a regional booking system, and cancel if your plans change, because the warden will otherwise worry when you do not turn up. A bunk in the dormitory with half board is the standard, and members of an alpine club pay noticeably less, which can make membership worthwhile for a single trip.
+
+      Plan stages conservatively on a first tour. Allow an hour for every 300 to 400 metres of ascent on top of the time for the horizontal distance, start early and aim to arrive by mid-afternoon, before the thunderstorms that build on many summer days.
+
+      Everything you pack, you carry every day, so keep the rucksack under eight kilos. That still leaves room for a waterproof jacket and trousers, a warm fleece or light down layer, a sleeping bag liner, which most huts require, a head torch, earplugs for the dormitory, sun protection, a small first-aid kit, a map and enough cash, since many huts still do not accept cards.
+    tags: [travel / hiking]
+  - id: en-lisbon-weekend
+    lang: en
+    title: A weekend in Lisbon
+    excerpt: Two days of steep streets, an old yellow tram, custard tarts and viewpoints over the river.
+    site: citybreaknotes.com
+    text: |
+      Lisbon is built on steep hills above the Tagus, and the best way to understand it in a weekend is one neighbourhood at a time. Start in the Baixa, the flat grid of streets rebuilt after the earthquake of 1755, and walk up into Chiado for its bookshops and old cafés. In the evening the Bairro Alto fills with people drinking in the street outside tiny bars, while Alfama, the old quarter below the castle, is where fado drifts out of small restaurants.
+
+      Tram 28 rattles through Graça, Alfama, Baixa and Estrela, and riding it from end to end is a classic. Board at the Martim Moniz terminus early in the morning, before the queues and the pickpockets, or simply use it for a few stops when your legs give out on the hills.
+
+      The other ritual is pastéis de nata, small custard tarts in flaky pastry, best eaten warm with a dusting of cinnamon. Belém, a short tram or train ride west along the river, is famous for them and also has the Jerónimos monastery and the Belém tower. Bakeries all over the city sell good ones for not much more than a euro.
+
+      Save the evenings for the miradouros, the viewpoints scattered across the hills. Senhora do Monte and Graça look over the whole city at sunset, Santa Luzia frames the rooftops of Alfama against the river, and São Pedro de Alcântara is an easy stop on the way to dinner in the Bairro Alto.
+    tags: [travel / city guides]
+  - id: en-packing-light
+    lang: en
+    title: Two weeks with one carry-on
+    excerpt: Packing light comes down to layers, a laundry plan and leaving the just-in-case items at home.
+    site: lighttraveller.net
+    text: |
+      Two weeks fit into a carry-on of about 40 litres once you stop packing for every day of the trip and pack for five days instead. The rest is laundry. Choose clothes that dry overnight, such as merino wool or synthetic fabrics, and wash a few pieces in the sink every second or third evening with a small bottle of travel detergent, or find a launderette once a week.
+
+      Layers do the work that bulky items would otherwise do. A T-shirt, a long-sleeved base layer, a light fleece and a packable rain jacket combine to cover anything from a hot afternoon to a cold, wet mountain pass. Keep everything to two or three colours that go together, so every top works with every pair of trousers, and wear your heaviest shoes and jacket on the plane.
+
+      The hardest part is deciding what to leave behind. Most just-in-case items, like the third pair of shoes, the hair dryer, full-sized toiletries and the thick book you will not open, either go unused or are easy to buy at your destination. Lay out everything you plan to take and then put a third of it back. A bag that is not stuffed to the zip also leaves room for whatever you bring home.
+    tags: [travel]
+  - id: en-index-funds
+    lang: en
+    title: Why index funds beat most stock pickers
+    excerpt: Over decades, low fees and broad diversification win more often than clever stock selection.
+    site: plainmoneyguide.com
+    text: |
+      An index fund does not try to find the winners. It buys every company in a market index, such as a world or total-market index, in proportion to its size, and simply holds them. That sounds unambitious, yet year after year most professionally managed funds that do try to pick winners end up behind the index they are measured against, and over twenty or thirty years the share that falls behind grows to a large majority.
+
+      The main reason is arithmetic. Before costs, all investors together own the market and earn its return, so the average actively managed dollar earns the market return too. After costs it must earn less, because someone pays for the research, the frequent trading and the manager's salary. A typical active fund charges one percent a year or more, while a broad index fund costs a small fraction of that, often below 0.2 percent.
+
+      One percent sounds small until it compounds. On a portfolio growing at six percent a year, a fee one point higher leaves you with roughly a quarter less money after thirty years. Picking in advance the few active managers who will outperform has proven close to impossible, because past winners rarely stay on top. For most people, a cheap, broadly diversified index fund held for decades is the boring choice that works.
+    tags: [finance / investing]
+  - id: en-freelance-taxes
+    lang: en
+    title: Quarterly estimated taxes for freelancers
+    excerpt: Nobody withholds tax from a freelancer's invoices, so the payments and the savings are up to you.
+    site: freelancefinance.io
+    text: |
+      When you work for an employer, tax comes out of every paycheck before you ever see it. As a freelancer nobody does that for you, and the tax office still expects to be paid during the year rather than in one lump sum in spring. In the United States that means estimated tax payments four times a year, due in mid-April, mid-June, mid-September and mid-January, covering both income tax and self-employment tax. Pay too little along the way and a penalty is added on top of what you owe.
+
+      The habit that makes this painless is moving money aside the day a client pays. Many freelancers transfer 25 to 30 percent of every invoice into a separate savings account and treat only the rest as their income. When a quarterly payment falls due, the money is already there, and if the year ends with a surplus it becomes a small bonus rather than a scramble.
+
+      Deductions lower the income that is taxed in the first place, so track them from the first day. Ordinary and necessary business expenses usually qualify: a laptop and software, the business share of your phone and internet bills, professional insurance, coworking fees, and a home office that is used regularly and exclusively for work. Keep every receipt in one folder and note the business purpose, because an expense you cannot document is an expense you cannot claim.
+    tags: [finance / taxes]
+  - id: en-emergency-fund
+    lang: en
+    title: How big should your emergency fund be?
+    excerpt: Count it in months of essential expenses and keep it somewhere safe, boring and easy to reach.
+    site: moneybasics.net
+    text: |
+      An emergency fund is the money that keeps a lost job, a broken boiler or a surprise dental bill from turning into credit card debt. The usual advice is three to six months of expenses, and the key word is expenses, not income. Add up what you must pay every month no matter what, such as rent or mortgage, utilities, groceries, insurance, transport and minimum loan payments, and multiply.
+
+      Where you land in that range depends on how fragile your income is. A couple with two stable salaries and no children can sit near three months. A single earner, a freelancer with irregular clients or someone in a field where finding a new job takes a long time should aim for six months or more. If that number feels out of reach, start with one month. Even a small cushion changes how an unexpected bill feels.
+
+      The money belongs somewhere safe and easy to reach, but not too easy. A separate savings account with a decent interest rate, ideally at a different bank from your current account, works well: it earns something, it is covered by deposit insurance, and it stays out of sight when you are tempted to spend it. Shares and funds are the wrong place, because the moment you need the money is often the moment markets have fallen.
+    tags: [finance]
+  - id: en-couch-to-5k
+    lang: en
+    title: From the couch to 5K in nine weeks
+    excerpt: A beginner plan that alternates walking and running until thirty minutes of running feels normal.
+    site: runstartclub.org
+    text: |
+      If you have never run, or not for years, the quickest way to get hurt is to go out and run until you are exhausted. A nine-week plan that alternates walking and running gets you to thirty minutes of continuous running, roughly five kilometres, while giving muscles, tendons and joints time to adapt. Three sessions a week with a rest day between them are enough.
+
+      Every session starts with a brisk five-minute walk. In the first week you then alternate one minute of easy running with ninety seconds of walking for twenty minutes. Each week the running stretches get longer and the walking breaks shorter, so that by the middle of the plan you run for several minutes at a time, and in the final weeks the breaks disappear altogether. The last sessions are a single thirty-minute run.
+
+      Run slowly enough to hold a conversation; most beginners go too fast and then blame their fitness. If a week feels too hard, repeat it rather than pushing on, because there is no prize for finishing in exactly nine weeks. Decent running shoes matter more than any gadget. Some muscle soreness is normal, but sharp pain in the shins or knees is a reason to rest for a few days before carrying on.
+    tags: [health / fitness]
+  - id: en-protein-basics
+    lang: en
+    title: How much protein do you need a day?
+    excerpt: Per-kilogram guidance for everyday health and for building muscle, and why spreading it over meals helps.
+    site: nutritionplain.com
+    text: |
+      The standard recommendation for healthy adults is 0.8 grams of protein per kilogram of body weight per day, about 56 grams for someone who weighs 70 kilos. That figure is a minimum to avoid deficiency, not an optimum. People who train regularly, older adults trying to hold on to their muscle and anyone losing weight usually do better with more.
+
+      For building muscle, most research points to between 1.6 and 2.2 grams per kilogram a day, which for the same 70-kilo person means roughly 110 to 155 grams. Eating more than that is generally safe for healthy people, but it does not seem to add more muscle. Consistent strength training and enough total calories matter more than squeezing in extra grams.
+
+      How you spread it over the day counts too. Muscle repair responds best to portions of about 20 to 40 grams, so three or four meals that each contain a solid protein source work better than a small breakfast and a huge dinner. Greek yoghurt or eggs in the morning, beans or chicken at lunch, fish or tofu in the evening and a snack of cottage cheese add up to well over 100 grams without a single shake.
+    tags: [health / nutrition]
+  - id: en-sleep-hygiene
+    lang: en
+    title: Sleep habits that actually work
+    excerpt: A fixed wake-up time, morning daylight, an early last coffee and a calmer hour before bed.
+    site: restfulnights.org
+    text: |
+      If you change only one thing about your sleep, make it the time you get up. Rising at the same time every day, weekends included, anchors your body clock more firmly than a fixed bedtime, because you cannot force yourself to fall asleep but you can set an alarm. After a week or two, the evening tiredness starts to arrive at a predictable hour.
+
+      Light is the signal your internal clock listens to most. Twenty minutes outdoors in the morning, even under a grey sky, tells it the day has begun, and it brings the sleepy feeling forward in the evening. At night the opposite applies: dim the lamps in the last hour or two and keep the bedroom dark and quiet.
+
+      Caffeine has a half-life of around five to six hours, so half of a four o'clock coffee is still circulating at ten. A cutoff around noon or early afternoon helps most people. Alcohol deserves a look too, since it makes you drowsy but breaks up the second half of the night.
+
+      Screens matter less for their light than for what they show. An exciting series or an argument in the comments keeps your mind busy long after you put the phone down. Charge it outside the bedroom, use an ordinary alarm clock and spend the last half hour on something calm, like a paper book.
+    tags: [health]
+  - id: en-meal-prep-bowls
+    lang: en
+    title: Meal-prep grain bowls for a week of lunches
+    excerpt: One Sunday session of grains, roasted vegetables and a protein covers five balanced lunches.
+    site: prepandplate.com
+    text: |
+      An hour and a half on Sunday is enough to cover lunch from Monday to Friday. The formula for each bowl is simple: a portion of whole grains, a generous amount of vegetables, a protein and a sauce that ties it together. Cooked in bulk and kept in separate containers, the components can be combined differently each day so the week does not get boring.
+
+      Start the grains first. A pot of brown rice, quinoa or farro, cooked and spread out on a tray to cool quickly, stays loose rather than clumping in the fridge. While it cooks, roast two trays of vegetables at 220°C: broccoli, peppers and red onion on one, cubes of sweet potato and carrot on the other, all tossed in oil and salt. For protein, simmer a big pot of chickpeas or lentils, which keep well for several days and cost very little, and bake a few chicken thighs or a block of tofu for variety.
+
+      Aim for each bowl to bring 25 to 35 grams of protein, a fist-sized portion of grains for slow-release carbohydrates and at least two handfuls of vegetables for fibre. Keep sauces such as tahini with lemon or a yoghurt and herb dressing in small jars and add them just before eating so nothing goes soggy. Most cooked components keep three to four days in the fridge, so freeze Thursday's and Friday's bowls on Sunday and move them to the fridge the night before.
+    tags: [cooking / recipes, health / nutrition]
+  - id: en-go-generics
+    lang: en
+    title: Type parameters in Go without overdoing it
+    excerpt: Where a generic function earns its keep, how constraints work, and when a plain interface is still the better tool.
+    site: go.dev
+    text: |
+      Before type parameters, a function that summed a slice of ints and one that summed a slice of float64s were two copies of the same six lines, or one function taking interface{} and a type switch. Since Go 1.18 you can write func Sum[T Number](xs []T) T once, and the compiler checks every call site against the constraint instead of waiting for a panic at runtime.
+
+      The constraint is an interface that lists the operations the body needs. Number can be an interface holding a union of the numeric types with a tilde, so that named types with an underlying int still qualify, and the constraints package in golang.org/x/exp collects the common ones. comparable is built in and is what a generic map key or a Contains helper needs. If the body only ever calls methods, an ordinary interface with those methods is the right constraint, and often the right non-generic parameter type too.
+
+      A good rule: reach for a type parameter when the function would otherwise be copied per element type, as with Map, Filter, Keys or a typed cache. Do not reach for it to avoid naming a concrete type, and do not make a struct generic just because one field could vary. Generic code is harder to read, the error messages are longer, and in most services the handful of helpers in a small internal package is all the generics the codebase ever needs.
+    tags: [dev / go]
+  - id: en-go-pipelines
+    lang: en
+    title: "Channel pipelines: who closes what"
+    excerpt: Building a chain of goroutine stages where every channel has exactly one owner that closes it.
+    site: backendnotes.dev
+    text: |
+      A pipeline is a series of stages connected by channels: each stage receives values from the previous one, does something to them and sends the results on. The first stage, the generator, usually ranges over a slice or reads a file and sends each item into a channel it then closes. Every later stage ranges over its input, which ends when that channel closes, and closes its own output when the range loop finishes. Closing is how the end of the stream propagates to the end of the chain.
+
+      The rule that keeps this from deadlocking is that a channel is closed by the goroutine that sends on it, never by a receiver, and by exactly one goroutine. When a stage fans out to several goroutines over the same output channel, none of them may close it; instead a small helper waits for all of them with a sync.WaitGroup and closes the channel once. The same helper is the fan-in: several producer channels merged into one consumer channel.
+
+      Buffered channels between stages let a fast stage run ahead of a slow one by a few items, which smooths jitter but does not change the throughput, which is set by the slowest stage. For early exit, every stage selects on a done channel alongside its send, so a consumer that stops reading does not leave producers blocked forever. Written this way each stage is a plain function that takes an input channel and returns an output channel, and the pipeline reads as a list of calls.
+    tags: [dev / go]
+  - id: en-cors
+    lang: en
+    title: Why the browser blocks your cross-origin request
+    excerpt: The same-origin policy, the preflight OPTIONS request, and the headers the server has to send back.
+    site: layoutlab.dev
+    text: |
+      A page served from one origin, meaning scheme, host and port together, cannot read the response of a request it makes to another origin unless that other origin says so. The request itself usually leaves the browser; it is the response that the browser withholds from your JavaScript, which is why the network tab shows a 200 while the console shows a CORS error. The rule exists so that a random site cannot use your logged-in cookies to read your bank's pages.
+
+      The server opts in with response headers. Access-Control-Allow-Origin names the origin allowed to read the response, or * for anyone, which is fine for a public read-only API and wrong for anything that uses cookies. For requests that are not simple, meaning a method other than GET or POST, a JSON content type, or a custom header such as Authorization, the browser first sends an OPTIONS request, the preflight, and expects Access-Control-Allow-Methods and Access-Control-Allow-Headers in the answer before it sends the real request.
+
+      Credentials are the usual trap. If the frontend sets credentials: include, the server must answer with Access-Control-Allow-Credentials: true and an explicit origin, not a wildcard, and the cookie needs SameSite=None and Secure to travel at all. During development the simplest fix is often none of this: proxy the API through the dev server so the browser sees one origin, and configure CORS only for the origins that really need it in production.
+    tags: [dev / web]
+  - id: en-git-rebase
+    lang: en
+    title: Cleaning up a branch before the pull request
+    excerpt: Interactive rebase to squash, reorder and reword commits, and the one rule about shared history.
+    site: devhabits.io
+    text: |
+      A branch that grew over a week usually carries commits like fix typo, wip, and address review, which tell a reviewer nothing. Before opening the pull request, git rebase -i against the base branch opens the list of commits in an editor, where each line can be kept, squashed into the one above, reworded, reordered or dropped. The result is a short series of commits that each do one thing and whose messages explain why, which is what makes git log and git blame useful a year later.
+
+      Conflicts during a rebase are resolved one commit at a time: fix the files, git add them, git rebase --continue, and if it goes badly git rebase --abort returns the branch to where it started. Autosquash makes the common case automatic. Commit a fix with git commit --fixup followed by the hash of the commit it repairs, and rebase -i --autosquash will place and mark it for you.
+
+      The rule that must not be broken is to rewrite only history nobody else has built on. Once a branch has been pushed and a colleague has branched from it or reviewed specific commits, rebasing it replaces those commits with new ones and leaves everyone else with a conflict. On a personal branch, force-pushing with --force-with-lease is routine; on anything shared, merge instead and keep the history as it happened.
+    tags: [dev]
+  - id: en-fresh-pasta
+    lang: en
+    title: Fresh egg pasta by hand
+    excerpt: Flour, eggs, a rolling pin and some patience make tagliatelle better than anything from a packet.
+    site: thekitchentable.co
+    text: |
+      Fresh pasta needs only flour and eggs: one large egg per hundred grams of flour, so three eggs make enough for four people. Tip the flour onto a clean counter, make a wide well in the middle, crack the eggs into it and beat them with a fork, drawing in flour from the walls a little at a time until a shaggy dough forms. Then knead with the heel of your hand for a full ten minutes, until the ball is smooth, springy and no longer sticky. Wrap it and let it rest for at least half an hour so the gluten relaxes.
+
+      Rolling by hand works without a machine. Cut the dough in quarters, keep the rest wrapped, flatten one piece and roll from the centre outwards, turning it a quarter each pass and dusting with flour only when it sticks. Keep going until the sheet is thin enough to see the grain of the counter through it. For tagliatelle, flour the sheet, roll it loosely into a flat log and slice it into ribbons just under a centimetre wide, then shake them out and toss them in a little semolina.
+
+      It cooks in two to three minutes in plenty of well-salted water and wants a sauce that clings rather than drowns: butter and sage, a slow ragù, or just the starchy cooking water, grated cheese and pepper. Any ribbons you do not cook can be dried on a rack for a day or frozen in nests.
+    tags: [cooking / recipes]
+  - id: en-no-knead-bread
+    lang: en
+    title: No-knead bread in a Dutch oven
+    excerpt: A wet dough, a tiny pinch of yeast and an overnight rest do the work your hands would.
+    site: thekitchentable.co
+    text: |
+      This loaf gets its structure from time rather than kneading. Stir together four hundred grams of bread flour, eight grams of salt, a quarter teaspoon of instant yeast and about three hundred millilitres of cool water until no dry flour remains. It will be far wetter and shaggier than a dough you could knead, and that is the point. Cover the bowl and leave it on the counter for twelve to eighteen hours, until the surface is bubbly and the dough has more than doubled.
+
+      Turn it out onto a floured surface, fold it over itself a few times and shape it loosely into a ball. Let it rest seam side down on a floured towel for about two hours while the oven heats to its highest setting with a lidded cast-iron pot inside. The pot is the trick: the lid traps the steam from the dough, which keeps the crust soft long enough for the loaf to spring up, and then the dry heat after you take the lid off browns it deeply.
+
+      Drop the dough into the hot pot, lid on, thirty minutes; lid off, another fifteen to twenty until the crust is dark brown. Cool it on a rack for an hour before cutting, however good it smells, because the crumb is still setting. The whole thing takes ten minutes of actual work spread across a day, and it keeps for three days in a paper bag.
+    tags: [cooking / baking]
+  - id: en-rebalancing
+    lang: en
+    title: Rebalancing a portfolio without overthinking it
+    excerpt: When your stocks have grown past their target share, selling a little is risk management, not market timing.
+    site: plainmoney.org
+    text: |
+      Suppose you decided on seventy percent stocks and thirty percent bonds. After a strong year the stocks are worth eighty percent of the whole, which means you are now carrying more risk than you chose, and the next downturn will hit harder than you planned for. Rebalancing is moving money back to the target mix: selling some of what grew and buying what lagged. It feels like the opposite of what the market is rewarding, and that is the point; it is a mechanical way to take profit and buy low without a view on what happens next.
+
+      Two triggers work. Calendar rebalancing checks the allocation once a year, on a date you will remember, and adjusts if it is off. Threshold rebalancing acts whenever any holding drifts more than, say, five percentage points from its target. Checking more often than quarterly adds trading costs and taxes for no measurable benefit. In a taxable account, prefer to rebalance with new contributions and dividends directed at the underweight asset, so that nothing has to be sold and no gain is realised.
+
+      Rebalancing does not apply within a single broad index fund, which rebalances itself by construction. It matters between asset classes, between regions if you hold them separately, and between the stock and bond halves of a plan. If a single stock has become a large share of your net worth, the same logic applies with more urgency.
+    tags: [finance / investing]
+  - id: en-interval-training
+    lang: en
+    title: Getting faster once you can run for thirty minutes
+    excerpt: "Interval sessions, a weekly long run and easy days: the week that turns a jogger into a runner."
+    site: runeasy.fit
+    text: |
+      Once you can jog for half an hour without stopping, more of the same makes you fitter only slowly. What moves your pace is spending part of the week running faster than feels comfortable and the rest running slower than feels necessary. Three runs a week is enough: one interval session, one long easy run and one relaxed run of thirty to forty minutes.
+
+      The interval session starts with ten minutes of easy jogging, then repeats of a hard effort with a recovery jog between them. A good first version is six times two minutes at a pace you could hold for about fifteen minutes, with two minutes of jogging after each. Over a couple of months the repeats get longer, four times five minutes, then three times eight, while the pace stays controlled: the last repeat should feel like the first, not like a sprint finish.
+
+      The long run grows by about ten percent a week and should be slow enough to talk in full sentences. Everything else is recovery, and skipping the easy days to do more hard ones is the surest way to a sore shin or a lost month. After eight to ten weeks, run a timed five kilometres and set the next block of paces from that.
+    tags: [health / fitness]
+  # Spanish
+  - id: es-tortilla
+    lang: es
+    title: Tortilla de patatas jugosa, paso a paso
+    excerpt: La receta de siempre, con los tiempos y las cantidades que marcan la diferencia.
+    site: recetasdecasa.es
+    text: |
+      Para una tortilla de seis huevos hacen falta unas cuatro patatas medianas, media cebolla si te gusta, y bastante aceite de oliva. Las patatas se cortan en láminas finas e irregulares, se salan y se confitan a fuego medio-bajo durante unos veinte minutos: tienen que quedar tiernas, no doradas. Escúrrelas bien y guarda el aceite, que sirve para otra vez.
+
+      Bate los huevos en un bol grande con una pizca de sal y mezcla las patatas aún calientes. Déjalo reposar diez minutos; el huevo empapa la patata y es lo que da la textura jugosa. En una sartén antiadherente con una cucharada de aceite muy caliente, vierte la mezcla y baja el fuego enseguida.
+
+      Al minuto y medio, cuando los bordes cuajan pero el centro sigue líquido, dale la vuelta con un plato y cocina el otro lado otro minuto escaso. Sácala a un plato y déjala reposar cinco minutos antes de cortar: el calor residual termina de cuajar el interior sin secarlo.
+    tags: [cooking / recipes]
+  - id: es-go-testing
+    lang: es
+    title: Pruebas unitarias en Go con tests de tabla
+    excerpt: El paquete testing, los casos organizados en una tabla y t.Run para ejecutarlos por separado.
+    site: programandoengo.es
+    text: |
+      Go trae todo lo necesario para escribir pruebas en su biblioteca estándar. Un test es una función cuyo nombre empieza por Test, que recibe un *testing.T y que vive en un archivo terminado en _test.go, junto al código que prueba. Cuando algo no cuadra, se llama a t.Errorf para anotar el fallo y seguir, o a t.Fatalf para detener esa prueba en el acto.
+
+      Si una función tiene muchos casos, lo idiomático es un test de tabla. Se declara un slice de structs con el nombre, la entrada y el resultado esperado de cada caso, y un bucle recorre la tabla comparando lo obtenido con lo esperado. Añadir un caso nuevo es añadir una línea, y quien lee la prueba ve de un vistazo qué combinaciones están cubiertas y cuáles faltan.
+
+      Dentro del bucle conviene envolver cada caso en t.Run con su nombre. Así cada uno se convierte en un subtest: si falla, el mensaje dice exactamente cuál, un t.Fatalf solo corta ese caso y no el resto, y se puede llamar a t.Parallel para ejecutarlos en paralelo.
+
+      Desde la terminal, go test ./... ejecuta todas las pruebas del módulo. Para lanzar solo una se usa go test -run TestParsearFecha, que acepta una expresión regular, y con una barra se elige un subtest concreto, como en go test -run 'TestParsearFecha/año_bisiesto'. Los espacios del nombre de un subtest se convierten en guiones bajos, así que conviene usar nombres cortos. Con -v se ve cada prueba a medida que se ejecuta.
+    tags: [dev / go]
+  - id: es-go-errores
+    lang: es
+    title: Manejo de errores en Go con %w, errors.Is y errors.As
+    excerpt: Cómo añadir contexto a un error sin perder el original y cómo comprobarlo más arriba en la pila de llamadas.
+    site: codigoclaro.dev
+    text: |
+      En Go los errores son valores que se devuelven y se comprueban, y la tentación es pasarlos hacia arriba tal cual con un return err. El problema aparece al leer el registro: «no such file or directory», sin saber qué archivo faltaba ni qué operación lo buscaba. Cada capa que deja pasar un error debería añadir lo que sabe.
+
+      Para eso está fmt.Errorf con el verbo %w, por ejemplo return fmt.Errorf("cargar configuración %s: %w", ruta, err). El mensaje encadena el contexto de cada nivel, del más general al más concreto, y el error original queda envuelto dentro en lugar de convertirse en texto. Con %v el mensaje sería idéntico, pero la cadena se rompe y nadie podría inspeccionar el error de origen.
+
+      Esa cadena es la que recorren errors.Is y errors.As. La llamada errors.Is(err, fs.ErrNotExist) responde si en algún punto aparece ese error concreto, aunque se haya envuelto tres veces, y es la forma correcta de comparar con errores centinela, en vez de usar == o buscar texto en el mensaje. errors.As sirve cuando importa el tipo: recibe un puntero a una variable, por ejemplo de tipo *fs.PathError, y si encuentra un error de ese tipo lo asigna para que puedas leer sus campos, como la ruta que falló.
+
+      Una regla práctica: envuelve con %w cuando quien llama pueda necesitar reaccionar al error original, y usa %v cuando ese detalle sea interno y no quieras que forme parte de tu API.
+    tags: [dev / go]
+  - id: es-flexbox
+    lang: es
+    title: Flexbox explicado sin rodeos
+    excerpt: El eje principal, justify-content y align-items, y la forma más corta de centrar un elemento.
+    site: cssfacil.es
+    text: |
+      Flexbox coloca los hijos de un contenedor a lo largo de una línea, y todo se entiende mejor pensando en dos ejes. El eje principal es el que marca flex-direction: horizontal con row, el valor por defecto, o vertical con column. El eje transversal es el perpendicular. Casi todas las confusiones con flexbox vienen de olvidar cuál es cuál después de cambiar la dirección.
+
+      La propiedad justify-content reparte los elementos a lo largo del eje principal: al inicio, al final, en el centro o con el espacio sobrante entre ellos, con space-between. align-items los coloca en el eje transversal, y su valor por defecto, stretch, es el que hace que todas las tarjetas de una fila tengan la misma altura sin que nadie lo haya pedido. Para separar los elementos, gap es más limpio que andar con márgenes.
+
+      Centrar un elemento horizontal y verticalmente, durante años un chiste recurrente del CSS, se reduce a tres líneas en el contenedor: display: flex, justify-content: center y align-items: center. Si el contenedor ocupa toda la altura de la ventana, el hijo queda justo en medio de la pantalla.
+
+      Con flex-wrap: wrap, los elementos que no caben pasan a la línea siguiente, y eso permite columnas que se adaptan sin media queries. Si cada tarjeta lleva flex: 1 1 250px, en un móvil hay una por fila y en una pantalla ancha tres o cuatro, todas estirándose para ocupar el espacio disponible.
+    tags: [dev / web]
+  - id: es-accesibilidad-web
+    lang: es
+    title: Accesibilidad web para quien empieza
+    excerpt: Etiquetas, contraste, teclado y lectores de pantalla, las cuatro bases de una web que cualquiera puede usar.
+    site: webparatodos.org
+    text: |
+      Una web accesible es la que puede usar cualquiera: quien ve poco, quien no distingue ciertos colores, quien no puede manejar un ratón o quien navega con un lector de pantalla. Buena parte del trabajo consiste en usar el HTML como se diseñó. Un botón debe ser un elemento button y no un div con un evento de clic, y cada campo de un formulario necesita su etiqueta label asociada, porque el texto de ejemplo del campo desaparece al escribir y muchos lectores de pantalla no lo anuncian.
+
+      El contraste de color es lo que más falla en la práctica. Las pautas WCAG piden una relación de al menos 4,5 a 1 entre el texto normal y su fondo, y de 3 a 1 para el texto grande. Ese gris claro tan elegante sobre fondo blanco suele quedarse muy por debajo y resulta ilegible para personas con baja visión, o para cualquiera que mire el móvil a pleno sol. Las herramientas de desarrollo de los navegadores incluyen un comprobador de contraste.
+
+      Prueba a usar tu web solo con el teclado. Con la tecla Tab deberías poder llegar a cada enlace, botón y campo en un orden lógico, ver siempre dónde está el foco, y abrir y cerrar menús y ventanas modales sin quedarte atrapado. Después activa el lector de pantalla del sistema o del móvil: las imágenes necesitan un texto alternativo que describa lo que aportan, y unos encabezados bien jerarquizados permiten recorrer la página como si fuera un índice.
+    tags: [dev / web]
+  - id: es-deuda-tecnica
+    lang: es
+    title: Pagar la deuda técnica sin parar el desarrollo
+    excerpt: Un inventario honesto, pagos pequeños y constantes, y la disciplina de no tocar lo que no estorba.
+    site: ingenieriasensata.com
+    text: |
+      Casi ningún equipo puede permitirse parar tres meses para «limpiar el código», y los que lo intentan suelen acabar con otra versión del mismo desorden. La deuda técnica se paga mejor como una hipoteca: en cuotas pequeñas y constantes, sin dejar de entregar funcionalidad.
+
+      El primer paso es saber cuánto se debe y dónde. Basta una lista compartida con una línea por problema: qué es, dónde está y cuánto cuesta hoy, por ejemplo despliegues que fallan una de cada diez veces o un módulo que nadie se atreve a tocar. Ese coste es lo que permite priorizar y explicar a negocio por qué merece la pena dedicarle tiempo.
+
+      Después vienen los pagos. Funciona bien reservar una parte fija de cada iteración, en torno al quince o el veinte por ciento, y aplicar la regla del boy scout: quien toca un archivo para una tarea lo deja un poco mejor de lo que estaba. Lo más rentable suele ser lo que se modifica a menudo, porque ahí la deuda cobra intereses cada semana.
+
+      Igual de importante es decidir qué no tocar. Un módulo feo pero estable, que nadie ha cambiado en años, no genera intereses, y reescribirlo solo añade riesgo. La deuda que no estorba puede esperar indefinidamente, y la que vive en código que se va a retirar pronto ni siquiera merece entrar en la lista.
+    tags: [dev]
+  - id: es-documentar-codigo
+    lang: es
+    title: Documentar un proyecto para quien llega después
+    excerpt: Un README que funcione, las decisiones por escrito y ejemplos que se puedan copiar y ejecutar.
+    site: notasdedesarrollo.es
+    text: |
+      La persona que más necesita la documentación de un proyecto no eres tú hoy, sino alguien que llega dentro de un año, o tú mismo cuando hayas olvidado los detalles. Esa persona tiene preguntas muy concretas: qué hace esto, cómo lo arranco en mi máquina, por qué está hecho así y dónde toco para cambiar tal cosa.
+
+      El README debe responder a las dos primeras en pocos minutos de lectura: una frase que explique para qué sirve el proyecto, los requisitos, los comandos exactos para instalar dependencias, pasar las pruebas y levantar la aplicación en local, y a quién preguntar. Si un recién llegado necesita más de una hora para tener el proyecto funcionando, el README tiene un error, aunque no lo parezca.
+
+      El porqué es lo que más se pierde. Los registros de decisiones de arquitectura son notas breves, de una página como mucho, que cuentan qué se decidió, qué alternativas se descartaron y por qué. Se guardan en el propio repositorio, junto al código, y se escriben en el momento de decidir, no meses después y de memoria.
+
+      Por último, los ejemplos valen más que las descripciones. Un fragmento que se puede copiar, pegar y ejecutar enseña más sobre una API que tres párrafos explicándola, y si los ejemplos forman parte de las pruebas automáticas, nunca se quedan desactualizados.
+    tags: [dev]
+  - id: es-lentejas
+    lang: es
+    title: Lentejas con verduras para toda la semana
+    excerpt: Una olla de lentejas estofadas con un buen sofrito que aguanta varios días y gana sabor de un día para otro.
+    site: cocinasemanal.es
+    text: |
+      Con medio kilo de lentejas pardinas sale una olla de seis raciones, justo lo necesario para comer de táper toda la semana. Las pardinas no necesitan remojo: basta con lavarlas y escurrirlas. Mientras tanto, pica una cebolla, un pimiento verde, dos dientes de ajo y dos zanahorias, y ralla un tomate maduro.
+
+      El sofrito es lo que marca la diferencia. Pocha la cebolla y el pimiento en aceite de oliva a fuego lento durante diez minutos, añade el ajo y la zanahoria y, cuando todo esté blando, el tomate, hasta que pierda el agua. Aparta la cazuela del fuego antes de echar una cucharadita de pimentón dulce, para que no se queme, y añade una hoja de laurel. Incorpora las lentejas, cubre con agua fría dos dedos por encima y lleva a ebullición.
+
+      A fuego suave, las pardinas tardan entre 35 y 45 minutos. Si quieres un caldo más espeso, añade a mitad de cocción una patata chascada en trozos pequeños. Prueba a los treinta minutos y ajusta la sal al final, porque el caldo reduce; si se quedan secas, añade un poco de agua caliente.
+
+      Para guardarlas, déjalas templar y repártelas en recipientes herméticos. En la nevera aguantan tres o cuatro días y, como casi todos los guisos, están más ricas al día siguiente. Las raciones del final de la semana es mejor congelarlas el primer día; se pasan a la nevera la noche anterior y se calientan con un chorrito de agua.
+    tags: [cooking / recipes]
+  - id: es-pan-de-pueblo
+    lang: es
+    title: Pan de pueblo con masa madre
+    excerpt: Una hogaza de corteza gruesa y miga húmeda, con masa madre natural y un levado largo en la nevera.
+    site: panaderiacasera.es
+    text: |
+      Todo empieza con la masa madre. Refréscala por la mañana con harina y agua a partes iguales y úsala cuando haya doblado su volumen, normalmente entre cuatro y ocho horas después. Si no sube, casi siempre es por frío o porque está débil: déjala en un sitio templado, cerca de los 25 grados, y dale dos o tres refrescos seguidos con algo de harina integral o de centeno antes de amasar con ella.
+
+      Para una hogaza de algo más de un kilo, mezcla 500 gramos de harina de fuerza, 100 de harina integral, 420 de agua, 120 de masa madre activa y 12 de sal. Es una hidratación de en torno al 70 por ciento, suficiente para una miga abierta sin que la masa se vuelva imposible de manejar. En lugar de amasar mucho, haz tres o cuatro tandas de pliegues, una cada media hora, durante las dos primeras horas.
+
+      El secreto de este pan es el tiempo. Tras la primera fermentación a temperatura ambiente, forma la hogaza, colócala en una cesta de fermentación o en un bol con un paño enharinado y métela en la nevera entre doce y dieciséis horas. El frío ralentiza las levaduras, deja trabajar a las bacterias y da ese sabor ligeramente ácido del pan de antes.
+
+      La corteza gruesa sale de un horno muy caliente y con vapor. Precalienta una olla de hierro a 250 grados, vuelca la masa directamente desde la nevera, hazle un corte con una cuchilla y hornea veinte minutos con la tapa puesta y otros veinticinco sin ella, a 230 grados, hasta que esté bien tostada. Deja que se enfríe del todo antes de cortarla.
+    tags: [cooking / baking]
+  - id: es-organizar-cocina
+    lang: es
+    title: Cómo organizar la despensa y la nevera
+    excerpt: Zonas claras, lo más antiguo delante y el congelador como aliado para tirar menos comida.
+    site: casaenorden.es
+    text: |
+      Una despensa ordenada ahorra dinero, porque lo que no se ve se compra dos veces o caduca al fondo del armario. Agrupa por zonas según el uso: legumbres, arroz y pasta juntos; las conservas en otra balda; harinas, azúcar y lo de repostería en otra; y a mano, los básicos de cada día, como el aceite, la sal y las especias. Los botes transparentes y etiquetados dejan ver de un vistazo qué queda.
+
+      La regla que más desperdicio evita es la de «primero en entrar, primero en salir». Al volver de la compra, lo nuevo va detrás y lo que ya había pasa delante. Con los frescos funciona igual: basta revisar la nevera una vez por semana, antes de hacer la lista, para cocinar primero lo que está a punto de estropearse.
+
+      La nevera también tiene zonas, porque no enfría igual en todas partes. La balda de abajo, justo encima de los cajones, es la más fría y le corresponde a la carne y el pescado crudos, siempre en un recipiente para que no goteen. Los lácteos y las sobras van en las baldas del medio, las frutas y verduras en los cajones, y la puerta, que es la zona más templada, se reserva para bebidas, salsas y conservas abiertas.
+
+      El congelador es el gran aliado. Se congelan bien el pan en rebanadas, los guisos en raciones, las hierbas picadas en aceite y la fruta madura para batidos. Etiqueta cada bolsa con el contenido y la fecha, y no congeles lechuga, pepino ni patata cocida, que al descongelarse quedan aguados o arenosos.
+    tags: [cooking]
+  - id: es-pirineos
+    lang: es
+    title: Tres días por el Pirineo de refugio en refugio
+    excerpt: Una travesía por Ordesa y la Brecha de Rolando con dos noches en refugios guardados.
+    site: pirineoapie.com
+    text: |
+      Esta travesía de tres días por el Pirineo aragonés es una buena primera experiencia de dormir en refugios. Se sale de la pradera de Ordesa, a unos 1300 metros, y la primera etapa remonta el valle entre hayedos y cascadas hasta la Cola de Caballo, para subir después al refugio de Góriz, a casi 2200 metros. Son unas cinco o seis horas de marcha y algo más de 900 metros de desnivel.
+
+      La segunda etapa es la más alta y la más espectacular. Se cruza la Brecha de Rolando, un tajo enorme en la muralla de roca que hace de frontera, a más de 2800 metros, y en media hora se baja al refugio del lado francés. A principios de verano puede quedar nieve en el último tramo, así que conviene preguntar en Góriz por el estado del camino. El tercer día se vuelve a España por el puerto de Bujaruelo y se desciende por un valle largo hasta el viejo puente de San Nicolás de Bujaruelo.
+
+      En julio y agosto los refugios se llenan, así que hay que reservar con semanas de antelación y avisar si cambian los planes, porque si alguien con reserva no aparece, el guarda puede pensar que le ha pasado algo. La media pensión incluye cena y desayuno, y casi todos piden saco sábana.
+
+      Para el material basta una mochila de unos 30 litros con chubasquero, forro polar, gorro y guantes aunque sea agosto, frontal, crema solar, bastones, dos litros de agua y algo de efectivo. Las tormentas de tarde son habituales en verano, así que lo sensato es salir temprano y estar en el refugio antes de las tres.
+    tags: [travel / hiking]
+  - id: es-oaxaca
+    lang: es
+    title: Guía de Oaxaca para viajar sin prisa
+    excerpt: Mercados, mezcal, cantera verde y barrios tranquilos en una de las ciudades con más sabor de México.
+    site: viajeroslentos.com
+    text: |
+      Oaxaca se recorre a pie y sin prisa. El centro histórico, patrimonio mundial, es una cuadrícula de calles con casas bajas pintadas de colores, y sus iglesias y edificios coloniales están levantados con cantera verde, una piedra volcánica que cambia de tono con la luz de la tarde. La joya es el templo de Santo Domingo de Guzmán, con el interior cubierto de oro, el antiguo convento convertido en museo y, detrás, un jardín etnobotánico.
+
+      Para comer, los mercados. En el 20 de Noviembre hay un pasillo lleno de humo donde se elige la carne cruda y te la asan al momento, para comerla con tortillas, cebollitas y salsa. El Benito Juárez, justo enfrente, es el sitio para probar chapulines, quesillo, chocolate de metate y tejate, una bebida fría de maíz y cacao. Por la noche, una tlayuda en un puesto callejero es casi obligatoria.
+
+      El mezcal forma parte de la vida diaria. En las mezcalerías de la ciudad se bebe despacio, a sorbos, con gajos de naranja y sal de gusano. Quien quiera ver cómo se hace puede ir a Santiago Matatlán, a una hora de camino, donde los palenques cuecen las piñas de agave en hornos excavados en la tierra.
+
+      Para alojarse lejos del bullicio, Jalatlaco es el barrio más bonito, con calles empedradas, murales y cafés tranquilos a cinco minutos del centro. Xochimilco, al norte, conserva un acueducto colonial. Y para una mañana fuera de la ciudad, las ruinas zapotecas de Monte Albán quedan en lo alto de un cerro a unos veinte minutos.
+    tags: [travel / city guides]
+  - id: es-viajar-barato
+    lang: es
+    title: Cómo viajar barato sin viajar peor
+    excerpt: Vuelos con escala, alojamiento con cocina, temporada baja y mesas donde comen los de allí.
+    site: mochilaligera.es
+    text: |
+      El vuelo suele ser el gasto más grande del viaje, y también el más flexible. Un vuelo con escala cuesta a menudo bastante menos que el directo, y si la escala es larga puede convertirse en una tarde para conocer otra ciudad. Buscar con fechas flexibles, comparar aeropuertos cercanos y volar entre semana ahorra más que cualquier truco de navegación privada.
+
+      La temporada baja es el otro gran ahorro. Viajar en noviembre o en marzo, fuera de las vacaciones escolares, abarata el alojamiento a la mitad en muchos destinos, y las ciudades y los museos se disfrutan sin colas. Los meses intermedios, como mayo o finales de septiembre, suelen tener además buen tiempo.
+
+      Para dormir, un apartamento con cocina o una habitación en casa de alguien sale más barato que un hotel en cuanto el viaje pasa de unos pocos días, porque permite desayunar y cenar algo sencillo sin salir. Los albergues ya no son solo para mochileros: muchos tienen habitaciones privadas a buen precio.
+
+      Y para comer, lo mejor es ir donde comen los locales. Basta con alejarse dos calles de la plaza principal para que los precios bajen y la comida mejore. Los menús del mediodía, los mercados y los puestos con cola de trabajadores a la hora de comer casi nunca fallan; los restaurantes con la carta en cinco idiomas y fotos de los platos, casi siempre.
+    tags: [travel]
+  - id: es-fondos-indexados
+    lang: es
+    title: Fondos indexados para invertir cada mes sin complicarse
+    excerpt: Una aportación periódica a un fondo barato y diversificado, y muchos años de paciencia.
+    site: finanzasclaras.es
+    text: |
+      Un fondo indexado no intenta adivinar qué empresas lo harán mejor. Replica un índice, por ejemplo uno de las principales bolsas del mundo, y compra todas las acciones que lo forman en la misma proporción. Con una sola aportación se tiene un trocito de miles de compañías de decenas de países, lo que reparte el riesgo mucho mejor que cualquier cartera de cinco o seis acciones elegidas a mano.
+
+      La forma más sencilla de invertir en ellos es una aportación periódica automática. Se fija una cantidad que no haga falta tocar, aunque sean cincuenta euros al mes, y se programa la orden para el día después de cobrar la nómina. Así se compra todos los meses, cuando la bolsa está cara y cuando está barata, y desaparece la tentación de esperar al momento perfecto, que nadie sabe cuál es.
+
+      Las comisiones importan más de lo que parece. Un fondo de gestión activa puede cobrar un 1,5 % anual, y uno indexado entre un 0,1 y un 0,4 %. Esa diferencia, acumulada durante treinta años, se come una parte enorme del resultado final. En España, además, los fondos permiten traspasar el dinero de uno a otro sin pagar impuestos hasta el reembolso final.
+
+      Lo demás es paciencia. La bolsa tendrá años malos, y alguno muy malo, pero quien sigue aportando durante las caídas compra más barato. Es una inversión para el largo plazo, con dinero que no se vaya a necesitar en al menos diez años.
+    tags: [finance / investing]
+  - id: es-declaracion-renta
+    lang: es
+    title: La declaración de la renta para autónomos
+    excerpt: Qué gastos se pueden deducir, cómo funciona el IVA trimestral y qué plazos no conviene olvidar.
+    site: autonomoaldia.es
+    text: |
+      Un autónomo en estimación directa tributa en el IRPF por su rendimiento neto, es decir, por lo que factura menos los gastos deducibles de la actividad. Por eso llevar bien los gastos durante el año es lo que más se nota en la declaración. Para que un gasto se pueda deducir tiene que estar vinculado a la actividad, justificado con una factura a tu nombre y anotado en el libro registro de gastos.
+
+      Son deducibles, entre otros, la cuota de autónomos, el alquiler del local, la gestoría, el material y los equipos informáticos, los suministros del local y los seguros ligados al negocio. Si trabajas desde casa, puedes deducir una parte de los suministros en proporción a los metros dedicados a la actividad, aplicando además el porcentaje que fija la ley. Las comidas con clientes y los desplazamientos tienen requisitos más estrictos, y conviene revisarlos antes de incluirlos.
+
+      Aparte de la renta anual, cada trimestre hay que presentar el IVA, con el modelo 303, y en la mayoría de los casos el pago fraccionado del IRPF, con el modelo 130. Los plazos van del 1 al 20 de abril, julio y octubre, y del 1 al 30 de enero para el último trimestre. La declaración anual se presenta entre abril y finales de junio. Un truco sencillo es apartar en otra cuenta el IVA cobrado y un porcentaje de cada factura, para no llevarse sustos.
+    tags: [finance / taxes]
+  - id: es-presupuesto-mensual
+    lang: es
+    title: Un presupuesto mensual que sí se cumple
+    excerpt: Pocas categorías, diez minutos de revisión a la semana y una partida para lo que no se espera.
+    site: economiadomestica.net
+    text: |
+      Un presupuesto mensual no es una hoja de cálculo para castigarse, sino un plan para decidir de antemano a qué se dedica el dinero. Al empezar el mes, con la nómina ya cobrada, se reparte entre unas pocas categorías amplias: vivienda y facturas, comida, transporte, ocio, ahorro e imprevistos. Las cifras tienen que salir de lo que de verdad gastaste en los tres últimos meses, no de lo que te gustaría gastar, o el plan se rompe en la segunda semana.
+
+      El ahorro se aparta primero, el mismo día que entra la nómina, con una transferencia automática a otra cuenta. Lo que queda es lo que hay para el mes, y así desaparece la costumbre de ahorrar «lo que sobre», que suele ser nada.
+
+      La revisión semanal es lo que hace que el presupuesto se cumpla. Diez minutos el domingo, con la aplicación del banco o una hoja de cálculo, para ver cuánto queda en cada categoría. Si el ocio va muy por encima a mitad de mes, todavía hay tiempo de corregir; si lo descubres el día 30, ya solo queda lamentarse.
+
+      La partida de imprevistos evita que un mes raro lo tire todo por la borda. El dentista, una multa o un regalo de boda no son tan imprevistos, porque alguno llega casi todos los meses. Reservar una cantidad fija para ellos convierte la sorpresa en un gasto previsto.
+    tags: [finance]
+  - id: es-entrenar-fuerza
+    lang: es
+    title: Entrenamiento de fuerza para principiantes
+    excerpt: Cinco ejercicios básicos, tres series bien hechas y una progresión lenta pero constante.
+    site: fuerzaysalud.es
+    text: |
+      Para empezar a entrenar fuerza no hacen falta máquinas sofisticadas ni rutinas de una hora. Basta con unos pocos movimientos que trabajan mucho músculo a la vez: una sentadilla, un peso muerto o un puente de glúteos, un empuje como las flexiones o el press de banca, un tirón como el remo y una plancha para el abdomen. Dos o tres sesiones de cuerpo completo por semana, con al menos un día de descanso entre ellas, lo cubren todo.
+
+      Al principio, haz tres series de ocho a doce repeticiones de cada ejercicio y descansa un par de minutos entre series. El peso adecuado es el que permite terminar la última repetición con buena técnica, pero con la sensación de que aún quedaban una o dos en reserva. Si la técnica se rompe, sobra peso.
+
+      La clave es la progresión. Cuando completes las tres series con doce repeticiones limpias, sube un poco la carga, aunque sea un kilo o dos, y vuelve a empezar desde ocho. Apuntar cada sesión en una libreta o en el móvil hace visible el progreso y evita repetir lo mismo durante meses sin darse cuenta.
+
+      Los primeros meses se gana fuerza muy deprisa, más por aprender el movimiento que por ganar músculo. Merece la pena dedicar las primeras semanas a pesos ligeros y a una técnica impecable, porque las lesiones de quien empieza casi siempre vienen de querer avanzar demasiado rápido.
+    tags: [health / fitness]
+  - id: es-fibra
+    lang: es
+    title: La fibra, la gran olvidada de la dieta
+    excerpt: Por qué importa, cuánta conviene tomar al día y en qué alimentos se encuentra.
+    site: nutricionsencilla.es
+    text: |
+      La fibra es la parte de los alimentos vegetales que el intestino delgado no digiere, y precisamente por eso es útil. La fibra soluble, como la de la avena y las legumbres, forma un gel que ralentiza la absorción del azúcar y ayuda a bajar el colesterol. La insoluble, la del salvado y la piel de frutas y verduras, da volumen a las heces y mejora el tránsito. Además, las bacterias del colon fermentan parte de ella y la convierten en sustancias que alimentan la pared intestinal.
+
+      Las recomendaciones para adultos rondan los 25 a 30 gramos al día, y la mayoría de la gente se queda en 15 o 20. La diferencia no se cubre con un suplemento, sino con unos cuantos cambios de hábito: pan y pasta integrales en lugar de refinados, legumbres tres o cuatro veces por semana, fruta entera en vez de zumo y un puñado de frutos secos al día.
+
+      Para hacerse una idea, un plato de lentejas aporta unos ocho gramos, una pera mediana con piel cinco o seis y un tazón de copos de avena unos cuatro. Conviene aumentar la fibra poco a poco, a lo largo de un par de semanas, y beber agua suficiente, porque un cambio brusco suele traer gases e hinchazón.
+    tags: [health / nutrition]
+  - id: es-dolor-espalda
+    lang: es
+    title: Dolor de espalda por trabajar sentado
+    excerpt: Ajustar la silla y la pantalla ayuda, pero lo que más alivia es levantarse a menudo y moverse.
+    site: saludenlaoficina.es
+    text: |
+      Pasar ocho horas sentado frente a un ordenador es una de las causas más comunes de dolor lumbar y de cuello. No es que exista una postura perfecta, sino que cualquier postura mantenida durante horas acaba cargando los mismos músculos y articulaciones. Aun así, ajustar el puesto ayuda: el borde superior de la pantalla a la altura de los ojos, los pies apoyados en el suelo, las rodillas a la altura de la cadera o algo por debajo y la zona lumbar apoyada en el respaldo.
+
+      Más importante que la silla es levantarse. Una pausa breve cada treinta o cuarenta y cinco minutos, para ir a por agua, hablar por teléfono de pie o simplemente estirarse, rompe la carga continua sobre la espalda. Un aviso en el móvil o en el ordenador ayuda a no olvidarlo cuando el trabajo absorbe.
+
+      Unos ejercicios de movilidad sencillos, repetidos varias veces al día, también alivian. El gato-camello a cuatro patas, arqueando y redondeando la espalda despacio; rotaciones del tronco sentado, girando hacia cada lado con ayuda del respaldo; y la extensión torácica, con las manos detrás de la nuca, inclinándose hacia atrás sobre el borde del respaldo. Si el dolor baja por una pierna o no mejora en unas semanas, conviene consultar a un médico o a un fisioterapeuta.
+    tags: [health]
+  - id: es-senderismo-forma
+    lang: es
+    title: Ponerse en forma para una travesía larga
+    excerpt: Entre ocho y doce semanas de preparación con salidas cada vez más largas, la mochila cargada y piernas fuertes.
+    site: caminantes.org
+    text: |
+      Una travesía de varios días por montaña no exige ser atleta, pero sí llegar preparado. Lo que cansa no es una etapa, sino encadenar cinco o seis seguidas con mochila, subiendo y bajando cientos de metros cada día. Con ocho a doce semanas de preparación, la mayoría de las personas sanas llega en buena forma.
+
+      La base son las salidas de fin de semana. Empieza con caminatas de dos o tres horas y alárgalas poco a poco hasta las seis, buscando siempre desnivel. A partir de la mitad del plan, lleva la mochila que usarás en la travesía con el peso real, y en las últimas semanas sal dos días seguidos para que el cuerpo aprenda a recuperarse de un día para otro. Así también se estrenan las botas y las rozaduras se descubren cerca de casa, no a mitad de ruta.
+
+      Entre semana, dos sesiones de fuerza para las piernas marcan la diferencia, sobre todo en las bajadas, que es donde sufren las rodillas: sentadillas, zancadas, subidas a un banco o a un escalón alto y elevaciones de gemelos. Subir escaleras con la mochila puesta es un entrenamiento excelente para quien vive lejos de la montaña.
+
+      La resistencia se trabaja con una o dos sesiones de cardio suave a la semana, en bici, corriendo despacio o caminando rápido, de cuarenta minutos o más. La última semana antes de salir, reduce la carga y descansa: se llega a la travesía con ganas y con las piernas frescas.
+    tags: [travel / hiking, health / fitness]
+  - id: es-go-concurrencia
+    lang: es
+    title: Goroutines, mutex y el detector de carreras
+    excerpt: Cómo proteger datos compartidos en Go y cómo encontrar la condición de carrera que se te ha escapado.
+    site: devenespanol.net
+    text: |
+      Dos goroutines que escriben en el mismo mapa a la vez hacen que el programa termine con un fatal error de escrituras concurrentes, y eso es lo mejor que puede pasar, porque lo peor es que la carrera se quede silenciosa y corrompa datos de vez en cuando. En Go la regla es sencilla: cualquier variable que lean y escriban varias goroutines necesita sincronización, y hay dos herramientas para dársela.
+
+      La primera es sync.Mutex. Se envuelve el dato en una struct junto con el mutex, y cada método que lo toca hace Lock al entrar y defer Unlock a continuación. Si hay muchas lecturas y pocas escrituras, sync.RWMutex permite que las lecturas vayan en paralelo. Para contadores sueltos, el paquete sync/atomic evita el mutex del todo. La segunda herramienta son los canales: en lugar de compartir el mapa, una sola goroutine lo posee y las demás le envían mensajes. Comparte memoria comunicándote, como dice el refrán del lenguaje.
+
+      Lo importante es comprobarlo. go test -race y go run -race instrumentan el programa y detectan accesos sin sincronizar en el momento en que ocurren, con la pila de las dos goroutines implicadas. Es más lento, pero debería formar parte de la integración continua, porque las carreras que no se reproducen en el portátil aparecen siempre en producción bajo carga.
+    tags: [dev / go]
+  - id: es-go-json
+    lang: es
+    title: Leer y generar JSON en Go con encoding/json
+    excerpt: Etiquetas de struct, campos opcionales y los errores típicos al serializar.
+    site: devenespanol.net
+    text: |
+      El paquete encoding/json convierte structs a JSON y viceversa a partir de los nombres de los campos, que tienen que ser exportados, es decir, empezar en mayúscula; un campo en minúscula simplemente se ignora sin aviso. Para que la clave del JSON tenga otro nombre se usa la etiqueta de struct, json:"nombre", y es lo normal, porque las APIs suelen usar snake_case o camelCase y Go no.
+
+      La etiqueta admite opciones después de una coma. omitempty deja fuera el campo cuando tiene el valor cero de su tipo: cadena vacía, cero, nil o un slice vacío. Para distinguir entre "no viene" y "viene vacío" hay que usar un puntero, de modo que nil signifique ausente. Un guion como nombre, json:"-", excluye el campo siempre, útil para contraseñas o datos internos. Con un json.RawMessage se puede guardar un fragmento sin interpretar y decidir más tarde qué tipo tiene.
+
+      Para leer, json.Unmarshal sobre un []byte y json.NewDecoder sobre un io.Reader hacen lo mismo; el decoder además permite DisallowUnknownFields, que convierte en error una clave inesperada en vez de ignorarla. Los números sin tipo acaban como float64, las fechas se esperan en formato RFC 3339, y una struct anidada que no existía en el JSON queda con sus valores cero, no como nil, así que conviene comprobar errores y campos obligatorios a mano después de decodificar.
+    tags: [dev / go]
+  - id: es-validar-formularios
+    lang: es
+    title: Validar formularios en el navegador sin frameworks
+    excerpt: Los atributos de HTML, la API de validación y cómo mostrar los errores junto a cada campo.
+    site: frontendclaro.es
+    text: |
+      Antes de escribir una línea de JavaScript, HTML ya valida bastante: required impide enviar un campo vacío, type="email" y type="url" comprueban el formato, minlength, maxlength, min, max y pattern acotan el valor, y el navegador muestra un mensaje al intentar enviar. El problema es que ese mensaje nativo es feo, no se puede estilar y desaparece en cuanto el usuario hace clic en otro sitio.
+
+      La API de validación da acceso a lo mismo desde JavaScript. Cada campo tiene una propiedad validity con banderas como valueMissing, typeMismatch o tooShort, y un método checkValidity que devuelve si es válido. Añadiendo novalidate al formulario se desactiva el aviso nativo y se puede, en el evento submit, recorrer los campos, preguntar a cada uno si es válido y escribir un texto propio en un elemento junto al campo. setCustomValidity permite además reglas que HTML no expresa, como que dos contraseñas coincidan.
+
+      Para que el aviso sirva a todo el mundo, el elemento del mensaje se enlaza con el campo mediante aria-describedby y el campo recibe aria-invalid="true", de modo que un lector de pantalla lo anuncie. Validar al salir del campo, no en cada tecla, evita avisos antes de que la persona haya terminado de escribir, y al enviar conviene llevar el foco al primer campo con error.
+    tags: [dev / web]
+  - id: es-git-commits
+    lang: es
+    title: Mensajes de commit que alguien querrá leer
+    excerpt: Qué contar en la primera línea, qué en el cuerpo y por qué el porqué importa más que el qué.
+    site: devenespanol.net
+    text: |
+      Un mensaje de commit tiene dos lectores: quien revisa el cambio hoy y quien, dentro de dos años, hace git blame sobre una línea rara y quiere saber por qué está ahí. El diff ya cuenta qué cambió; el mensaje tiene que contar por qué. "Arreglar bug" no sirve a ninguno de los dos; "Reintentar la conexión a la cola cuando el broker reinicia" sí.
+
+      La forma habitual es una primera línea de hasta unos cincuenta caracteres, en imperativo y sin punto final, una línea en blanco y después un cuerpo con los párrafos que hagan falta. En el cuerpo caben el contexto, las alternativas descartadas y los efectos secundarios conocidos, así como la referencia al ticket. Muchos equipos anteponen un tipo y un ámbito, como fix(api) o feat(ui), para que el historial se pueda filtrar y generar notas de versión automáticamente.
+
+      Igual de importante es que cada commit sea una unidad: un cambio lógico, que compile y pase las pruebas por sí solo. Mezclar un cambio de formato con una corrección de lógica obliga a quien lee a separarlos mentalmente, y hace imposible revertir uno sin el otro. Si el mensaje necesita la palabra "y" para describir lo que hace, probablemente son dos commits.
+    tags: [dev]
+  - id: es-gazpacho
+    lang: es
+    title: Gazpacho andaluz como se hace en casa
+    excerpt: "Tomates maduros, buen aceite y una batidora: la sopa fría que salva los veranos."
+    site: recetasdecasa.es
+    text: |
+      El gazpacho es una sopa fría que no se cocina, así que todo depende de la materia prima: un kilo de tomates muy maduros, un pepino pequeño, medio pimiento verde, un diente de ajo sin el germen, un trozo de pan del día anterior, aceite de oliva virgen extra, vinagre de Jerez y sal. Si los tomates están pálidos y duros, mejor esperar a julio que forzarlo con tomate de lata.
+
+      Se trocea todo y se tritura con la batidora durante un par de minutos, hasta que quede fino. Entonces se añade el aceite, unos sesenta mililitros, en un hilo con la batidora en marcha, como si fuera una mayonesa, para que emulsione y el color pase de rojo a anaranjado. Después se ajustan el vinagre y la sal, se pasa por un colador si se quiere más fino y se añade agua muy fría hasta la textura deseada: para beber en vaso, más ligera; para plato, más espesa.
+
+      Tiene que reposar al menos dos horas en la nevera, que es cuando el ajo y el vinagre se asientan. Se sirve muy frío, con dados de pepino, pimiento, cebolla y pan frito aparte para que cada cual se lo ponga. Aguanta tres días en la nevera en una botella cerrada y, de hecho, el segundo día está mejor.
+    tags: [cooking / recipes]
+  - id: es-bizcocho
+    lang: es
+    title: Bizcocho de yogur, el de las medidas con el vaso
+    excerpt: La receta que todo el mundo aprende de memoria, con los trucos para que salga alto y esponjoso.
+    site: recetasdecasa.es
+    text: |
+      El bizcocho de yogur se mide con el propio envase del yogur, por eso se recuerda sin libro: un yogur natural, tres huevos, dos medidas de azúcar, tres de harina, una de aceite de girasol, un sobre de levadura química y la ralladura de un limón. No hay que pesar nada, solo guardar el vaso vacío y usarlo de medida.
+
+      El orden importa más de lo que parece. Primero se baten los huevos con el azúcar durante unos cinco minutos, hasta que tripliquen el volumen y queden pálidos; ahí está casi toda la esponjosidad. Luego se añaden el yogur, el aceite y la ralladura, y por último la harina tamizada con la levadura, mezclando con movimientos envolventes y sin batir, para no deshacer el aire. La masa va a un molde de unos veinte centímetros engrasado y enharinado.
+
+      Se hornea a 180 grados, calor arriba y abajo sin ventilador, en la parte baja del horno, unos treinta y cinco minutos, y no se abre la puerta durante la primera media hora o se hunde el centro. Está hecho cuando un palillo sale limpio. Desmoldar en caliente lo rompe; hay que esperar diez minutos. Admite todas las variantes: cacao en lugar de una medida de harina, naranja en vez de limón, o manzana en láminas por encima.
+    tags: [cooking / baking]
+  - id: es-madrid
+    lang: es
+    title: Madrid en dos días, a pie y en metro
+    excerpt: Un itinerario de fin de semana entre museos, barrios y terrazas sin necesidad de coche.
+    site: viajerosinprisa.com
+    text: |
+      Madrid se recorre a pie mejor de lo que parece, y para lo demás está el metro, que llega a todas partes por poco dinero. Un fin de semana da para dos itinerarios. El sábado, el centro histórico: desde la Puerta del Sol hasta la Plaza Mayor y el Mercado de San Miguel para picar algo, luego el Palacio Real y los jardines de Sabatini, y por la tarde una caminata por el barrio de La Latina, que al atardecer se llena de gente en las terrazas de la Cava Baja.
+
+      El domingo toca el paseo del arte. El Prado, el Reina Sofía y el Thyssen están a diez minutos a pie unos de otros; con un día es mejor elegir uno y verlo con calma que correr por los tres. El Prado tiene entrada gratuita las últimas dos horas de cada tarde, y la cola avanza rápido. Después, el parque del Retiro queda justo detrás para tumbarse en la hierba o alquilar una barca en el estanque.
+
+      Para comer, huir de las plazas con menús en seis idiomas y meterse en una calle lateral: un bocadillo de calamares cerca de la Plaza Mayor, cocido madrileño si hace frío, y un vermut con aceitunas a la hora del aperitivo. El abono turístico de transporte sale a cuenta solo si se va a ir al aeropuerto en metro; si no, los billetes sueltos bastan.
+    tags: [travel / city guides]
+  - id: es-hipoteca
+    lang: es
+    title: "Hipoteca fija o variable: cómo decidir"
+    excerpt: Qué significa cada una, cómo comparar ofertas y qué gastos van más allá de la cuota.
+    site: dineroclaro.es
+    text: |
+      En una hipoteca a tipo fijo la cuota es la misma durante toda la vida del préstamo, pase lo que pase con los tipos de interés. En una variable, el interés se revisa cada seis o doce meses sumando un diferencial al euríbor, así que la cuota baja cuando el euríbor baja y sube cuando sube. La fija compra tranquilidad y suele empezar un poco más cara; la variable apuesta a que los tipos se mantendrán bajos durante años, y esa apuesta se paga si se equivoca. Las mixtas fijan los primeros años y luego pasan a variable.
+
+      Para comparar ofertas hay que mirar la TAE, que incluye comisiones y productos vinculados, y no solo el tipo nominal. Muchos bancos rebajan el interés a cambio de domiciliar la nómina y contratar seguros de hogar y de vida con ellos; conviene calcular cuánto cuestan esos seguros frente a contratarlos aparte, porque a veces anulan la rebaja. También importan la comisión de amortización anticipada, por si se quiere devolver antes, y si el banco permite cambiar de variable a fija más adelante y a qué precio.
+
+      La cuota no debería superar un tercio de los ingresos netos del hogar, y hay que contar con la entrada, normalmente el veinte por ciento del precio, más alrededor de un diez por ciento adicional en impuestos, notaría, registro y tasación. Un simulador de cuota con varios escenarios de euríbor, incluido uno pesimista, dice más que cualquier folleto.
+    tags: [finance]
+  # German
+  - id: de-brot-backen
+    lang: de
+    title: Roggenmischbrot mit Sauerteig backen
+    excerpt: Ein Alltagsbrot mit langer Teigführung, das ohne Hefe auskommt.
+    site: brotbackbuch.de
+    text: |
+      Ein Roggenmischbrot lebt von einem aktiven Sauerteig. Am Vorabend werden hundert Gramm Anstellgut mit je zweihundert Gramm Roggenmehl und lauwarmem Wasser verrührt und zwölf bis sechzehn Stunden bei Raumtemperatur stehen gelassen. Reif ist der Sauerteig, wenn er sich deutlich gewölbt hat, säuerlich riecht und an der Oberfläche kleine Blasen zeigt.
+
+      Für den Hauptteig kommen dreihundert Gramm Weizenmehl, zweihundert Gramm Roggenmehl, zwölf Gramm Salz und etwa dreihundert Milliliter Wasser dazu. Roggenteig wird nicht geknetet wie Weizenteig, sondern nur gründlich vermischt, bis keine Mehlnester mehr zu sehen sind. Danach ruht er abgedeckt eine Stunde, wird zu einem runden Laib geformt und geht im bemehlten Gärkorb noch einmal etwa neunzig Minuten.
+
+      Gebacken wird im gut vorgeheizten Ofen bei 250 Grad mit Dampf, nach zehn Minuten auf 210 Grad reduziert, insgesamt rund fünfzig Minuten. Das Brot ist fertig, wenn es beim Klopfen auf den Boden hohl klingt. Vor dem Anschneiden sollte es mindestens vier Stunden auskühlen, sonst bleibt die Krume klebrig.
+    tags: [cooking / baking]
+  - id: de-go-interfaces
+    lang: de
+    title: Interfaces in Go richtig einsetzen
+    excerpt: Kleine Interfaces, definiert dort, wo sie gebraucht werden, und erfüllt ohne ein einziges implements.
+    site: golang-praxis.de
+    text: |
+      In Go erfüllt ein Typ ein Interface automatisch, sobald er alle Methoden besitzt, die das Interface verlangt. Es gibt kein implements und keine Typhierarchie. Das klingt nach einem Detail, verändert aber, wie man Interfaces einsetzt: Ein Typ muss nichts von den Interfaces wissen, die er erfüllt, und ein Paket kann ein Interface für einen fremden Typ definieren, ohne dessen Code anzufassen.
+
+      Daraus folgt die wichtigste Regel: Interfaces gehören zum Verbraucher, nicht zum Anbieter. Ein Paket, das einen Datenbankzugriff anbietet, exportiert einen konkreten Typ. Der Code, der nur Benutzer laden muss, definiert sich selbst ein Interface mit genau der einen Methode, die er braucht, und im Test übergibt man ihm eine kleine Testimplementierung statt einer echten Datenbank.
+
+      Je kleiner ein Interface, desto nützlicher ist es. io.Reader und io.Writer haben jeweils eine einzige Methode, und gerade deshalb passen Dateien, Netzwerkverbindungen, Puffer und Kompressoren so mühelos zusammen. Ein Interface mit fünfzehn Methoden hat dagegen meist genau eine Implementierung und macht jede weitere mühsam.
+
+      Wann also lohnt sich ein Interface? Wenn es tatsächlich mehrere Implementierungen gibt oder bald geben wird, oder wenn eine Abhängigkeit im Test ersetzt werden muss. Vorher reicht der konkrete Typ. Ein Interface lässt sich später jederzeit einführen, ohne den bestehenden Typ zu ändern, eben weil die Erfüllung implizit ist.
+    tags: [dev / go]
+  - id: de-go-http-server
+    lang: de
+    title: Ein HTTP-Server mit net/http
+    excerpt: Wie man mit der Standardbibliothek Handler schreibt, Routen festlegt, Middleware einhängt und den Server sauber herunterfährt.
+    site: golang-praxis.de
+    text: |
+      Für einen Webserver in Go braucht man kein Framework. Das Paket net/http aus der Standardbibliothek bringt alles mit, und das Kernstück ist der Handler: ein Typ mit der Methode ServeHTTP oder, einfacher, eine Funktion mit der Signatur func(w http.ResponseWriter, r *http.Request). Sie liest aus der Anfrage, was sie braucht, und schreibt Statuscode, Header und Body in die Antwort.
+
+      Seit Go 1.22 versteht der eingebaute http.ServeMux auch HTTP-Methoden und Platzhalter. Ein Muster wie "GET /artikel/{id}" leitet nur GET-Anfragen an den Handler weiter, und dort liefert r.PathValue("id") den Wert aus der URL. Für die meisten Dienste ist ein externer Router damit überflüssig geworden.
+
+      Middleware ist in Go einfach eine Funktion, die einen Handler entgegennimmt und einen neuen zurückgibt. Der neue Handler erledigt etwas vor oder nach dem Aufruf des ursprünglichen, etwa Anfragen mit Dauer und Statuscode zu protokollieren, eine Anmeldung zu prüfen oder Panics abzufangen. Mehrere solcher Funktionen lassen sich ineinander verschachteln.
+
+      Bleibt das saubere Herunterfahren. Statt ListenAndServe einfach laufen zu lassen, startet man den Server in einer eigenen Goroutine und wartet mit signal.NotifyContext auf SIGINT oder SIGTERM. Kommt das Signal, ruft man server.Shutdown mit einem Kontext auf, der zum Beispiel zehn Sekunden Zeit lässt. Der Server nimmt dann keine neuen Verbindungen mehr an, laufende Anfragen werden aber noch zu Ende bearbeitet.
+    tags: [dev / go]
+  - id: de-javascript-fetch
+    lang: de
+    title: Daten laden mit fetch und async/await
+    excerpt: Wie man JSON von einer API holt, Fehler richtig erkennt und eine laufende Anfrage abbricht.
+    site: webentwickler-notizen.de
+    text: |
+      Mit fetch lädt der Browser Daten von einer API, ohne die Seite neu zu laden, und mit async/await liest sich der Code fast wie synchroner Code. Ein Aufruf wie const antwort = await fetch("/api/artikel") liefert ein Response-Objekt, und erst await antwort.json() liest den Body und wandelt das JSON in ein JavaScript-Objekt um. Beide Schritte sind asynchron, deshalb braucht jeder sein eigenes await.
+
+      Die häufigste Falle bei der Fehlerbehandlung: fetch wirft bei einem Statuscode wie 404 oder 500 keinen Fehler. Das Promise wird nur abgelehnt, wenn gar keine Antwort ankommt, etwa weil das Netzwerk weg ist. Man muss also selbst antwort.ok prüfen und bei false einen Fehler werfen. Ein try/catch um das Ganze fängt dann beide Fälle ab, und der Nutzer sieht eine verständliche Meldung statt einer leeren Seite.
+
+      Abbrechen lässt sich eine Anfrage mit einem AbortController. Man übergibt dessen signal an fetch und ruft controller.abort() auf, sobald das Ergebnis nicht mehr gebraucht wird, zum Beispiel weil der Nutzer im Suchfeld schon weitertippt. Das abgebrochene fetch wirft dann einen AbortError, den man im catch bewusst ignorieren sollte. Für eine einfache Zeitgrenze gibt es AbortSignal.timeout(5000).
+    tags: [dev / web]
+  - id: de-webfonts
+    lang: de
+    title: Webfonts laden ohne Layoutsprünge
+    excerpt: Mit font-display, Preload und einer angepassten Fallback-Schrift springt beim Laden nichts mehr.
+    site: schnelle-websites.de
+    text: |
+      Wer eine eigene Schrift einbindet, kennt das Problem: Die Seite erscheint zunächst in einer Systemschrift, und wenn der Webfont eine halbe Sekunde später eintrifft, verschieben sich Zeilenumbrüche, Absätze und Buttons. Dieser Sprung stört beim Lesen und verschlechtert den Cumulative Layout Shift, eine der Kennzahlen, mit denen Suchmaschinen und Messwerkzeuge die Ladeerfahrung einer Seite bewerten.
+
+      Die Eigenschaft font-display in der @font-face-Regel bestimmt, was der Browser in der Zwischenzeit tut. Mit swap zeigt er sofort die Ersatzschrift und tauscht sie später aus, was den Text schnell lesbar macht, aber den Sprung verursacht. Mit optional verwendet er den Webfont nur, wenn er sehr schnell verfügbar ist, und bleibt sonst bei der Ersatzschrift. So springt nichts, auch wenn manche Besucher beim ersten Aufruf die eigene Schrift nicht zu sehen bekommen.
+
+      Damit die Schrift früher da ist, lädt man die ein oder zwei wichtigsten Dateien mit einem preload-Link im Kopf der Seite vor, im Format WOFF2 und vom eigenen Server. Wichtig ist dabei das Attribut crossorigin, sonst lädt der Browser die Datei doppelt.
+
+      Den verbleibenden Sprung verkleinert eine angepasste Fallback-Schrift. Mit size-adjust, ascent-override und descent-override in einer zweiten @font-face-Regel lässt sich eine lokale Schrift wie Arial so skalieren, dass sie fast genauso viel Platz einnimmt wie der Webfont. Beim Austausch ändern sich dann nur noch die Buchstabenformen, nicht mehr die Zeilen.
+    tags: [dev / web]
+  - id: de-logging
+    lang: de
+    title: Logging, das beim Debuggen wirklich hilft
+    excerpt: Strukturierte Felder statt Fließtext, klare Log-Level und eine feste Grenze für sensible Daten.
+    site: devops-alltag.de
+    text: |
+      Ein Log ist dann gut, wenn man um drei Uhr nachts damit herausfindet, was passiert ist. Zeilen wie „Fehler beim Speichern“ helfen dabei kaum. Brauchbar wird ein Eintrag erst mit Kontext: welche Anfrage, welcher Nutzer, welcher Datensatz, wie lange es gedauert hat und was genau fehlgeschlagen ist.
+
+      Diesen Kontext schreibt man am besten als strukturierte Felder statt in einen zusammengesetzten Satz, also etwa als JSON mit Schlüsseln wie request_id, user_id und duration_ms. Dann lässt sich im Log-System gezielt nach allen Einträgen einer Anfrage filtern, und man kann zählen, wie oft ein Fehler pro Stunde auftritt, ohne Text mit regulären Ausdrücken zu zerlegen. Eine Anfrage-ID, die durch alle Dienste weitergereicht wird, ist dabei Gold wert.
+
+      Log-Level sind nur nützlich, wenn das ganze Team sie gleich versteht. Eine bewährte Aufteilung: error für Dinge, um die sich jemand kümmern muss, warn für Ungewöhnliches, das sich von selbst erledigt hat, info für wichtige Ereignisse im normalen Ablauf und debug für Details, die in der Produktion normalerweise abgeschaltet sind.
+
+      Genauso wichtig ist, was nicht ins Log gehört: Passwörter, Tokens, Kartennummern und personenbezogene Daten wie E-Mail-Adressen oder Wohnanschriften. Logs werden oft lange aufbewahrt und von vielen Leuten gelesen, und ein Datenleck im Log ist genauso ein Datenleck wie jedes andere.
+    tags: [dev]
+  - id: de-onboarding-entwickler
+    lang: de
+    title: Neue Entwickler gut ins Team holen
+    excerpt: Eine geplante erste Woche, viel Pairing und eine Dokumentation, die mit jedem Neuzugang besser wird.
+    site: teamkultur-it.de
+    text: |
+      Ob sich eine neue Entwicklerin im Team wohlfühlt und schnell produktiv wird, entscheidet sich oft in der ersten Woche. Am ersten Tag sollten Laptop, Zugänge und Konten bereitstehen, statt dass sie zwei Tage auf Berechtigungen wartet. Ein fester Ansprechpartner, eine Art Pate, beantwortet die vielen kleinen Fragen, die man in einem großen Chatkanal nicht stellen mag.
+
+      Ein bewährtes Ziel: Bis zum Ende der ersten Woche hat die neue Person eine kleine, echte Änderung in Produktion gebracht, vielleicht nur eine Textkorrektur oder einen kleinen Bugfix. Dabei lernt sie den gesamten Weg kennen, vom Ticket über das Review bis zum Deployment, und hat gleich ein erstes Erfolgserlebnis.
+
+      Pairing ist der schnellste Weg, Wissen weiterzugeben, das nirgends aufgeschrieben ist: warum ein Modul so seltsam aufgebaut ist, welche Tests gern flackern, wen man bei welcher Frage anspricht. In den ersten Wochen lohnt es sich, einen Großteil der Arbeit zu zweit zu erledigen und dabei regelmäßig die Rollen zu tauschen.
+
+      Und die Dokumentation? Niemand liest sie so aufmerksam wie jemand, der neu ist. Deshalb gehört zum Einstieg die Bitte, alles, was im Einrichtungsleitfaden fehlt oder nicht mehr stimmt, gleich selbst zu korrigieren. So bleibt das Dokument aktuell, und der nächste Einstieg wird ein Stück leichter.
+    tags: [dev]
+  - id: de-kaesespaetzle
+    lang: de
+    title: Käsespätzle wie im Allgäu
+    excerpt: Selbst gemachte Spätzle, würziger Bergkäse und knusprige Röstzwiebeln, lagenweise in die Form geschichtet.
+    site: alpenkueche.de
+    text: |
+      Für vier Personen verrührt man 400 Gramm Mehl, vier Eier, einen Teelöffel Salz und etwa 150 Milliliter Wasser zu einem zähen Teig. Er wird mit dem Kochlöffel so lange geschlagen, bis er Blasen wirft und schwer vom Löffel reißt. Danach darf er eine Viertelstunde ruhen.
+
+      In einem großen Topf bringt man reichlich Salzwasser zum Kochen. Den Teig portionsweise in den Spätzlehobel geben und den Schlitten über dem Topf hin und her schieben, sodass kleine Teigstücke ins Wasser fallen. Sobald die Spätzle an die Oberfläche steigen, sind sie fertig. Man hebt sie mit dem Schaumlöffel heraus und lässt sie kurz abtropfen. Wer geübt ist, schabt sie klassisch vom Brett.
+
+      Inzwischen werden 300 Gramm Bergkäse gerieben, gern gemischt mit etwas Emmentaler oder einem kräftigen Weißlacker. Spätzle und Käse kommen abwechselnd in eine vorgewärmte Auflaufform, und jede Lage wird kurz in den warmen Ofen gestellt, damit der Käse schmilzt und Fäden zieht.
+
+      Für die Röstzwiebeln schneidet man drei große Zwiebeln in feine Ringe, wendet sie in etwas Mehl und brät sie in reichlich Butter langsam goldbraun und knusprig. Sie kommen ganz zum Schluss obendrauf. Dazu passt ein grüner Salat mit einer Essig-Öl-Marinade, der gegen die Schwere des Käses hilft.
+    tags: [cooking / recipes]
+  - id: de-linsensuppe
+    lang: de
+    title: Linsensuppe mit Würstchen
+    excerpt: Ein deftiger Eintopf aus Tellerlinsen und Suppengemüse, der erst mit einem Schuss Essig richtig rund wird.
+    site: hausmannskost-heute.de
+    text: |
+      Für eine kräftige Linsensuppe nimmt man am besten braune Tellerlinsen. Sie müssen nicht unbedingt eingeweicht werden, aber wenn man sie über Nacht in kaltem Wasser liegen lässt, verkürzt sich die Garzeit und sie werden gleichmäßiger weich. Das Einweichwasser gießt man weg und spült die Linsen kurz ab.
+
+      Ein Bund Suppengemüse, also Möhren, ein Stück Knollensellerie und eine Stange Lauch, wird klein gewürfelt und mit einer gehackten Zwiebel und etwas durchwachsenem Speck in einem großen Topf angeschwitzt. Dann kommen 300 Gramm Linsen, eineinhalb Liter Brühe, zwei Lorbeerblätter und zwei gewürfelte, mehligkochende Kartoffeln dazu. Mit Deckel köchelt alles etwa vierzig Minuten, bis die Linsen weich sind und die zerfallenden Kartoffeln die Suppe binden.
+
+      Die Würstchen, Wiener oder Frankfurter, legt man erst in den letzten zehn Minuten ganz oder in Stücken in die Suppe. Sie sollen nur heiß werden, denn wenn sie mitkochen, platzen sie auf und werden fade.
+
+      Das Wichtigste kommt zum Schluss: ein guter Schuss Essig. Erst die Säure bringt die erdigen Linsen und das süßliche Gemüse richtig zur Geltung. Am besten stellt man die Essigflasche gleich mit auf den Tisch, damit jeder nach Geschmack nachwürzen kann, dazu Salz, Pfeffer und frisch gehackte Petersilie.
+    tags: [cooking / recipes]
+  - id: de-gewuerze
+    lang: de
+    title: Gewürze richtig lagern und kombinieren
+    excerpt: Warum ganze Gewürze länger halten, wie Rösten ihr Aroma weckt und was gut zusammenpasst.
+    site: gewuerzwerkstatt.de
+    text: |
+      Das Aroma von Gewürzen steckt in ätherischen Ölen, die mit der Zeit verfliegen. Gemahlene Gewürze verlieren es besonders schnell, weil beim Mahlen eine riesige Oberfläche entsteht: Nach einem halben Jahr schmeckt gemahlener Kreuzkümmel oft nur noch nach Staub. Ganze Samen, Schoten und Rinden halten dagegen zwei bis drei Jahre. Wer Kreuzkümmel, Koriander oder Pfeffer ganz kauft und erst kurz vor dem Kochen im Mörser oder in einer alten Kaffeemühle mahlt, schmeckt den Unterschied sofort.
+
+      Gelagert werden Gewürze dunkel, kühl und trocken, in gut schließenden Gläsern. Das Regal direkt über dem Herd ist der schlechteste Platz, denn Wärme und Dampf setzen ihnen zu. Ein Etikett mit dem Kaufdatum hilft beim Aussortieren.
+
+      Rösten weckt das Aroma ganzer Gewürze. Man gibt sie ohne Fett in eine trockene Pfanne und schwenkt sie bei mittlerer Hitze, bis sie zu duften beginnen, meist nach ein bis zwei Minuten. Danach kommen sie sofort auf einen Teller, denn in der heißen Pfanne verbrennen sie schnell und werden bitter.
+
+      Beim Kombinieren hilft ein Blick in die Küchen, aus denen die Gewürze stammen. Kreuzkümmel und Koriander bilden die Grundlage vieler indischer und orientalischer Gerichte, Zimt, Nelke und Piment gehören in Lebkuchen und Schmorgerichte, und Paprika, Kümmel und Majoran prägen ein klassisches Gulasch. Zu Beginn reichen zwei oder drei Gewürze, die sich ergänzen, statt eines ganzen Regals.
+    tags: [cooking]
+  - id: de-alpenueberquerung
+    lang: de
+    title: Zu Fuß über die Alpen auf dem E5
+    excerpt: Von Oberstdorf nach Meran in sieben Etappen, mit Hüttennächten, vielen Höhenmetern und leichtem Gepäck.
+    site: bergwandern-heute.de
+    text: |
+      Die Alpenüberquerung auf dem Fernwanderweg E5 von Oberstdorf nach Meran gehört zu den beliebtesten Mehrtagestouren der Alpen. In sieben Etappen geht es vom Allgäu über die Lechtaler und die Ötztaler Alpen bis nach Südtirol, übernachtet wird fast ausschließlich auf Hütten. Einige Talabschnitte werden traditionell mit Bus, Taxi oder Seilbahn überbrückt, ohne dass dabei die schönsten Teile verloren gehen.
+
+      Die Hütten sind das Herz der Tour und zugleich ihr Nadelöhr. Kemptner Hütte, Memminger Hütte, Braunschweiger Hütte und die Similaunhütte auf über 3000 Metern sind im Sommer oft Monate im Voraus ausgebucht. Wer im Juli oder August gehen möchte, reserviert am besten schon im Winter alle Nächte am Stück.
+
+      Technisch ist der E5 nicht schwierig, aber die Höhenmeter haben es in sich. Pro Etappe kommen oft 1000 bis 1500 Meter im Auf- und Abstieg zusammen, verteilt auf sechs bis acht Stunden Gehzeit. Trittsicherheit an ausgesetzten Stellen und eine solide Grundkondition sind Voraussetzung, und wer vorher einige lange Tagestouren mit Rucksack gegangen ist, genießt die Tour deutlich mehr.
+
+      Bei der Ausrüstung entscheidet das Gewicht. Ein Rucksack mit 30 bis 35 Litern und unter neun Kilo reicht. Eingelaufene Bergschuhe mit fester Sohle sind Pflicht, Teleskopstöcke schonen bei den langen Abstiegen die Knie. Dazu kommen Regenjacke und Regenhose, eine warme Zwischenschicht, Mütze und Handschuhe für die Übergänge, Hüttenschlafsack, Stirnlampe, Sonnenschutz und genug Bargeld für die Hütten.
+    tags: [travel / hiking]
+  - id: de-wien-wochenende
+    lang: de
+    title: Ein Wochenende in Wien
+    excerpt: Zwei Tage zwischen Kaffeehaus, Museumsquartier, lebendigen Bezirken und Heurigen am Stadtrand.
+    site: stadtzeit-reisen.de
+    text: |
+      Ein Wochenende in Wien beginnt am besten im Kaffeehaus. Man bestellt eine Melange, bekommt ein Glas Wasser dazu und darf so lange sitzen bleiben, wie man möchte, mit Zeitung, Buch oder einfach dem Blick auf die anderen Gäste. Zum Frühstück passt ein Kipferl, am Nachmittag ein Stück Sachertorte oder ein Apfelstrudel.
+
+      Für Museen ist der Samstagvormittag ideal. Das Kunsthistorische Museum zeigt in einem prachtvollen Bau an der Ringstraße Bruegel, Rubens und Vermeer, gleich gegenüber liegt das Museumsquartier mit dem Leopold Museum und seinen Schiele-Bildern. Wer Klimts Kuss sehen will, fährt ins Obere Belvedere.
+
+      Wien ist in 23 Bezirke gegliedert, und jeder hat seinen eigenen Charakter. Rund um den Stephansdom im ersten Bezirk drängen sich die Besucher, im siebten, dem Neubau, findet man kleine Läden, Cafés und Werkstätten, und im zweiten, der Leopoldstadt, den Augarten und den Karmelitermarkt. Am Naschmarkt zwischen viertem und sechstem Bezirk gibt es samstags zusätzlich einen Flohmarkt.
+
+      Den Sonntagnachmittag verbringt man beim Heurigen. In Grinzing, Nussdorf oder Stammersdorf schenken Winzer ihren jungen Wein aus, oft unter Kastanienbäumen mit Blick auf die Weinberge, dazu gibt es ein Buffet mit Aufstrichen, Braten und Brot. Ein Föhrenbuschen über der Tür zeigt, dass ausg'steckt ist.
+    tags: [travel / city guides]
+  - id: de-bahnreisen
+    lang: de
+    title: Mit dem Zug durch Europa
+    excerpt: Wie man mit Nachtzug und Interrail-Pass reist, Anschlüsse plant und mit wenig Gepäck auskommt.
+    site: schienenweit.de
+    text: |
+      Wer mit dem Zug durch Europa reist, sieht die Landschaft zwischen den Städten, statt sie zu überfliegen. Für Strecken über acht oder neun Stunden ist der Nachtzug die eleganteste Lösung: Man steigt abends ein, schläft im Liegewagen oder im Schlafwagenabteil und wacht in einer anderen Stadt auf. Die Nacht im Zug spart zugleich ein Hotel. Plätze sind begrenzt und vor allem in den Ferien schnell weg, deshalb lohnt es sich, früh zu buchen.
+
+      Für längere Reisen mit vielen Stationen bietet sich ein Interrail-Pass an. Er gilt je nach Variante für eine bestimmte Zahl von Reisetagen innerhalb eines Monats oder durchgehend für eine feste Dauer. Allerdings verlangen viele Schnellzüge und fast alle Nachtzüge eine zusätzliche Reservierung, die extra kostet und für beliebte Verbindungen frühzeitig gebucht werden sollte.
+
+      Beim Umsteigen gilt: lieber großzügig planen. Wer zwischen zwei Zügen verschiedener Bahngesellschaften nur zehn Minuten Zeit hat, verliert bei der kleinsten Verspätung den Anschluss. Mit einer Stunde Puffer bleibt sogar Zeit für einen Kaffee am Bahnhof. Wer eine durchgehende Fahrkarte hat, ist zudem besser abgesichert, falls doch etwas schiefgeht.
+
+      Beim Gepäck ist weniger mehr. Ein Rucksack oder ein kleiner Koffer passt in die Ablage über dem Sitz, während große Koffer an engen Treppen und in vollen Zügen schnell zur Last werden. Proviant, eine Wasserflasche und ein Ladekabel sollten griffbereit sein, denn nicht jeder Zug hat einen Speisewagen.
+    tags: [travel]
+  - id: de-etf-sparplan
+    lang: de
+    title: Einen ETF-Sparplan einrichten
+    excerpt: Depot eröffnen, einen breit gestreuten Welt-ETF wählen und jeden Monat automatisch investieren.
+    site: geldanlage-einfach.de
+    text: |
+      Ein ETF-Sparplan ist für viele der einfachste Einstieg in die Geldanlage. Zuerst braucht man ein Depot, also ein Wertpapierkonto. Online-Banken und Direktbroker bieten es meist kostenlos an, und die Eröffnung dauert mit Video- oder Online-Identifikation nur wenige Minuten. Wichtig ist, dass der gewünschte ETF dort als Sparplan angeboten wird und die Ausführung nichts oder nur sehr wenig kostet.
+
+      Für den Anfang genügt ein einziger, breit gestreuter Welt-ETF, der die großen Unternehmen der Industrieländer abbildet, oder ein noch breiterer, der auch die Schwellenländer enthält. Damit ist man schon mit einer kleinen Rate an Tausenden Unternehmen aus Dutzenden Ländern beteiligt. Thesaurierende ETFs legen die Dividenden automatisch wieder an, sodass der Zinseszinseffekt ohne eigenes Zutun wirkt.
+
+      Die monatliche Rate sollte so gewählt sein, dass man sie auch in einem teuren Monat nicht aussetzen muss; viele Sparpläne starten schon bei 25 oder 50 Euro. Die Ausführung erfolgt automatisch, meist zum Monatsanfang oder zur Monatsmitte, und durch den gleichbleibenden Betrag kauft man bei niedrigen Kursen mehr Anteile und bei hohen weniger.
+
+      Bei den Kosten lohnt sich ein genauer Blick. Die laufenden Kosten eines ETFs, die TER, liegen bei Welt-ETFs oft zwischen 0,1 und 0,3 Prozent im Jahr, ein Bruchteil dessen, was aktiv gemanagte Fonds verlangen. Dazu kommen gegebenenfalls Ausführungsgebühren der Bank, die bei kleinen Raten stark ins Gewicht fallen können.
+    tags: [finance / investing]
+  - id: de-steuererklaerung
+    lang: de
+    title: Steuererklärung für Arbeitnehmer
+    excerpt: Welche Werbungskosten zählen, was die Pendlerpauschale bringt und bis wann die Erklärung fällig ist.
+    site: steuern-verstaendlich.de
+    text: |
+      Viele Arbeitnehmer verschenken Geld, weil sie keine Steuererklärung abgeben. Wer nicht dazu verpflichtet ist, kann sie freiwillig einreichen, und oft gibt es dann eine Erstattung von mehreren Hundert Euro. Der Grund ist einfach: Die Lohnsteuer, die der Arbeitgeber jeden Monat abführt, berücksichtigt viele Ausgaben nicht, die man absetzen kann.
+
+      Die wichtigsten sind die Werbungskosten, also Ausgaben für den Beruf. Ohne Nachweis zieht das Finanzamt automatisch eine Pauschale von gut 1200 Euro im Jahr ab. Wer insgesamt auf mehr kommt, etwa durch Arbeitsmittel wie Laptop und Fachliteratur, Fortbildungen, Bewerbungskosten, einen doppelten Haushalt oder die Tagespauschale fürs Homeoffice, trägt die einzelnen Posten ein und setzt sie statt der Pauschale an.
+
+      Der größte Posten ist für viele die Pendlerpauschale. Sie gilt für jeden Arbeitstag, an dem man zur ersten Tätigkeitsstätte fährt, und richtet sich nur nach der einfachen Entfernung, nicht nach Hin- und Rückweg. Für jeden Kilometer gibt es einen festen Betrag, ganz gleich, ob man mit dem Auto, dem Fahrrad oder der Bahn fährt. Wer an gut 200 Tagen im Jahr 25 Kilometer pendelt, liegt damit schnell über der Werbungskostenpauschale.
+
+      Wer zur Abgabe verpflichtet ist, etwa wegen Nebeneinkünften oder der Steuerklassenkombination III/V, hat bis zum 31. Juli des Folgejahres Zeit, mit Steuerberater oder Lohnsteuerhilfeverein deutlich länger. Eine freiwillige Erklärung kann man sogar bis zu vier Jahre rückwirkend einreichen.
+    tags: [finance / taxes]
+  - id: de-haushaltsbuch
+    lang: de
+    title: Ein Haushaltsbuch führen, ohne die Lust zu verlieren
+    excerpt: Wenige Kategorien, ein klarer Blick auf die Fixkosten und ein kurzer Rückblick am Monatsende.
+    site: haushalt-im-griff.de
+    text: |
+      Die meisten Haushaltsbücher scheitern nicht am Rechnen, sondern an der Geduld. Wer jede Brezel und jeden Parkschein in eine von dreißig Kategorien einträgt, hört nach drei Wochen entnervt auf. Besser sind sieben oder acht grobe Kategorien, etwa Wohnen, Lebensmittel, Mobilität, Versicherungen, Freizeit, Kleidung und Sonstiges, und die Gewohnheit, Ausgaben einmal am Abend oder alle paar Tage nachzutragen statt sofort.
+
+      Am Anfang steht ein Blick auf die Fixkosten: Miete, Strom, Internet, Handyvertrag, Versicherungen, Abos und Kreditraten. Sie werden einmal erfasst und laufen dann jeden Monat automatisch mit. Oft zeigt schon diese Liste, wo das Geld bleibt, und manches vergessene Abo fällt dabei auf und kann gekündigt werden.
+
+      Der eigentliche Nutzen entsteht beim monatlichen Rückblick. Eine halbe Stunde am Monatsende reicht, um die Summen jeder Kategorie mit dem Vormonat zu vergleichen und eine einzige Frage zu stellen: Wofür habe ich mehr ausgegeben, als mir lieb ist? Daraus wird ein konkretes Vorhaben für den nächsten Monat, nicht zehn auf einmal.
+
+      Ob man dafür eine App, eine Tabelle oder ein Notizbuch nimmt, ist zweitrangig. Wichtig ist nur, dass es schnell geht. Viele Banking-Apps sortieren Kartenzahlungen inzwischen selbst in Kategorien, dann bleibt nur noch das Bargeld zum Eintragen.
+    tags: [finance]
+  - id: de-rueckentraining
+    lang: de
+    title: Rückentraining für den Schreibtischalltag
+    excerpt: Ein paar Rumpfübungen, gezieltes Dehnen und zwei bis drei kurze Einheiten pro Woche gegen den steifen Rücken.
+    site: fit-im-buero.de
+    text: |
+      Wer den ganzen Tag am Schreibtisch sitzt, spürt es oft abends im unteren Rücken oder im Nacken. Gegen diese Beschwerden hilft vor allem eine kräftige Rumpfmuskulatur, denn Bauch-, Rücken- und Gesäßmuskeln stabilisieren die Wirbelsäule gemeinsam. Dafür braucht es kein Fitnessstudio, eine Matte im Wohnzimmer genügt.
+
+      Drei Übungen bilden eine gute Grundlage. Der Unterarmstütz, auch Plank genannt, kräftigt die gesamte Körpermitte; man beginnt mit dreimal zwanzig bis dreißig Sekunden. Im Vierfüßlerstand streckt man gleichzeitig den rechten Arm und das linke Bein lang aus, hält kurz und wechselt die Seite. Und die Beckenbrücke in Rückenlage, bei der man das Becken anhebt, bis Knie, Hüfte und Schultern eine Linie bilden, stärkt Gesäß und unteren Rücken.
+
+      Dehnen ergänzt das Training. Durch langes Sitzen verkürzen sich vor allem die Hüftbeuger und die Brustmuskulatur. Ein tiefer Ausfallschritt mit dem hinteren Knie am Boden dehnt die Hüfte, eine Dehnung im Türrahmen öffnet die Brust. Jede Position hält man etwa dreißig Sekunden, ohne zu wippen.
+
+      Entscheidend ist die Regelmäßigkeit: Zwei bis drei Einheiten von zwanzig Minuten pro Woche bringen mehr als eine lange Einheit im Monat. Nach vier bis sechs Wochen merken die meisten einen deutlichen Unterschied. Strahlen die Schmerzen ins Bein aus, sollte man sie vor dem Training ärztlich abklären lassen.
+    tags: [health / fitness]
+  - id: de-meal-prep
+    lang: de
+    title: Meal Prep für eine gesunde Woche
+    excerpt: Am Sonntag vorkochen, sinnvoll portionieren und die Boxen so lagern, dass sie bis Freitag frisch bleiben.
+    site: vorgekocht.de
+    text: |
+      Meal Prep heißt, die Mahlzeiten für mehrere Tage auf einmal vorzukochen, meist am Sonntag in zwei bis drei Stunden. Der Vorteil liegt auf der Hand: Unter der Woche greift man nicht zum Imbiss oder zur Tiefkühlpizza, sondern zu einer Box, deren Inhalt man selbst bestimmt hat. Wer ein paar Grundregeln beachtet, isst dabei gesünder und spart Geld.
+
+      Eine ausgewogene Portion besteht etwa zur Hälfte aus Gemüse, zu einem Viertel aus einer Eiweißquelle und zu einem Viertel aus Kohlenhydraten wie Vollkornreis, Kartoffeln oder Nudeln. Als Eiweiß eignen sich Hähnchenbrust, gebackener Tofu, hart gekochte Eier oder Fisch, ergänzt durch Quark oder Joghurt als Dip. Gemüse wie Brokkoli, Paprika und Zucchini röstet man auf dem Blech, Rohkost wie Gurke oder Karotten kommt erst kurz vor dem Essen dazu.
+
+      Zum Portionieren eignen sich Glasboxen mit Deckel, die auch in die Mikrowelle dürfen. Am besten füllt man gleich fünf gleiche Portionen ab, damit man unter der Woche nicht nachdenken muss, und gibt Soßen in kleine Extra-Behälter, damit nichts durchweicht.
+
+      Bei der Aufbewahrung ist Vorsicht geboten. Gegarte Speisen halten im Kühlschrank etwa drei bis vier Tage, Fisch eher kürzer. Die Portionen für Donnerstag und Freitag friert man deshalb direkt ein und legt sie am Vorabend zum Auftauen in den Kühlschrank. Alles sollte rasch abkühlen, bevor es in den Kühlschrank kommt, und mit dem Datum beschriftet werden.
+    tags: [cooking / recipes, health / nutrition]
+  - id: de-schlaf
+    lang: de
+    title: Besser schlafen mit einfachen Routinen
+    excerpt: Feste Zeiten, ein kühles Schlafzimmer, Kaffee nur bis zum frühen Nachmittag und eine Stunde ohne Bildschirm.
+    site: gesund-schlafen.de
+    text: |
+      Guter Schlaf beginnt lange vor dem Zubettgehen. Der Körper liebt Regelmäßigkeit, und wer jeden Tag zur gleichen Zeit aufsteht, auch am Wochenende, stellt seine innere Uhr verlässlich. Ein kleines Abendritual hilft zusätzlich beim Abschalten: Licht dimmen, einen Kräutertee kochen, ein paar Seiten lesen. Nach einigen Wochen reagiert der Körper darauf wie auf ein Signal.
+
+      Das Schlafzimmer sollte kühl, dunkel und ruhig sein. Ideal sind etwa 16 bis 18 Grad, denn die Körpertemperatur sinkt beim Einschlafen, und ein zu warmer Raum stört diesen Vorgang. Verdunkelnde Vorhänge oder eine Schlafmaske helfen gegen Straßenlaternen und frühe Sommermorgen, Ohrstöpsel gegen Lärm.
+
+      Koffein blockiert im Gehirn die Wirkung von Adenosin, dem Botenstoff, der im Laufe des Tages den Schlafdruck aufbaut, und es wird nur langsam abgebaut. Wer abends schlecht einschläft, sollte die letzte Tasse Kaffee oder Schwarztee auf den frühen Nachmittag legen und auch an versteckte Quellen wie Cola, Energydrinks und dunkle Schokolade denken.
+
+      Bildschirme sind ein doppeltes Problem. Ihr helles Licht signalisiert dem Gehirn Tag, und Nachrichten, Serien oder soziale Netzwerke halten den Kopf wach. Der Nachtmodus vieler Geräte macht das Licht wärmer, ändert aber nichts an den Inhalten. Besser ist eine feste Grenze: Eine Stunde vor dem Schlafengehen bleiben Handy und Laptop aus.
+    tags: [health]
+  - id: de-zuckerarm
+    lang: de
+    title: Zuckerarm essen ohne Verzicht
+    excerpt: Wo sich Zucker versteckt, wie man Etiketten liest und womit man ihn ersetzen kann.
+    site: ernaehrung-im-alltag.de
+    text: |
+      Zuckerarm zu essen heißt nicht, nie wieder Kuchen zu essen. Der meiste Zucker steckt gar nicht in den Süßigkeiten, die man bewusst isst, sondern in Lebensmitteln, in denen man ihn nicht vermutet: Fruchtjoghurt, Müsli, Ketchup, Salatdressing, Fertigsoßen und sogar Brot. Die Weltgesundheitsorganisation empfiehlt, höchstens zehn Prozent der täglichen Energie aus freiem Zucker zu beziehen, besser fünf, also etwa 25 Gramm. Ein einziges Glas Limonade liegt oft schon darüber.
+
+      Der Blick aufs Etikett hilft. In der Nährwerttabelle steht unter „davon Zucker“, wie viel Gramm in hundert Gramm stecken. In der Zutatenliste ist Zucker oft auf mehrere Namen verteilt, etwa Glukosesirup, Dextrose, Maltodextrin, Fruktose oder Gerstenmalzextrakt, damit keiner davon ganz vorne steht. Die Zutaten sind nach Menge sortiert, und je weiter vorne eine Zuckerart auftaucht, desto mehr davon ist enthalten.
+
+      Statt zu verzichten, kann man ersetzen: Naturjoghurt mit frischen Beeren statt Fruchtjoghurt, Haferflocken mit Banane statt gesüßtem Müsli, Wasser mit Zitrone oder Minze statt Limonade. Beim Backen lässt sich die Zuckermenge in den meisten Rezepten um ein Drittel reduzieren, ohne dass es jemand merkt, und Zimt, Vanille oder reife Früchte bringen Süße auf anderem Weg. Der Geschmack gewöhnt sich übrigens schnell um. Nach ein paar Wochen schmeckt vieles, was früher normal war, deutlich zu süß.
+    tags: [health / nutrition]
+  - id: de-go-flags
+    lang: de
+    title: Kommandozeilenwerkzeuge mit dem flag-Paket
+    excerpt: Optionen einlesen, Standardwerte setzen und eine brauchbare Hilfe ausgeben, ohne eine Bibliothek dafür zu ziehen.
+    site: gocode.de
+    text: |
+      Für ein kleines Werkzeug reicht das flag-Paket aus der Standardbibliothek völlig. Jede Option wird vor dem Parsen deklariert: flag.String("out", "report.txt", "Pfad der Ausgabedatei") liefert einen Zeiger auf den Wert, flag.Int, flag.Bool und flag.Duration arbeiten genauso, und mit flag.StringVar lässt sich das Ziel direkt in eine Variable oder ein Feld einer Konfigurationsstruct schreiben. flag.Parse() wertet dann os.Args aus; alles, was keine Option ist, bleibt über flag.Args() als positionale Argumente erreichbar.
+
+      Die Schreibweisen -out datei und --out=datei werden beide akzeptiert, Bool-Flags brauchen keinen Wert. Eine Option, die mehrfach vorkommen darf, bekommt einen eigenen Typ, der das flag.Value-Interface mit String und Set erfüllt, und wird mit flag.Var registriert. Beim Aufruf mit -h oder -help druckt das Paket automatisch jede Option mit Standardwert und Beschreibung; eine eigene Einleitung davor liefert flag.Usage.
+
+      Werte, die nicht auf der Kommandozeile stehen sollen, etwa Zugangsdaten, liest man aus Umgebungsvariablen und verwendet sie als Standardwert des Flags, so dass beides geht. Bei mehreren Unterbefehlen wie init, run und export legt man pro Befehl ein flag.NewFlagSet an und wählt es anhand von os.Args[1]. Erst wenn Unterbefehle verschachtelt werden oder Shell-Vervollständigung gewünscht ist, lohnt sich eine Bibliothek.
+    tags: [dev / go]
+  - id: de-go-sql
+    lang: de
+    title: Datenbankzugriff mit database/sql
+    excerpt: Verbindungspool, vorbereitete Anweisungen, Transaktionen und die typischen Fehler beim Scannen von Zeilen.
+    site: gocode.de
+    text: |
+      sql.Open öffnet in Go keine Verbindung, sondern legt einen Pool an; die erste echte Verbindung entsteht beim ersten Ping oder der ersten Abfrage. Der Treiber wird mit einem Blank-Import registriert, der Verbindungsstring hängt vom Treiber ab. Mit SetMaxOpenConns und SetConnMaxLifetime begrenzt man, wie viele Verbindungen die Datenbank gleichzeitig sieht und wie lange eine wiederverwendet wird, was hinter einem Load Balancer wichtig ist.
+
+      Abfragen nehmen Platzhalter statt zusammengesetzter Strings, etwa db.QueryContext(ctx, "select id, name from users where email = $1", email). Das verhindert SQL-Injection und lässt die Datenbank den Plan wiederverwenden. Für eine einzelne Zeile ist QueryRow bequemer; ein fehlendes Ergebnis kommt als sql.ErrNoRows zurück und sollte mit errors.Is geprüft werden. Bei Query muss rows.Close aufgerufen werden, am besten per defer, und nach der Schleife rows.Err, sonst gehen Verbindungen und Fehler verloren.
+
+      Spalten, die NULL sein können, werden in sql.NullString oder einen Zeiger gescannt, sonst schlägt Scan fehl. Mehrere zusammengehörende Schreibzugriffe gehören in eine Transaktion: tx, err := db.BeginTx(ctx, nil), dann die Anweisungen über tx, am Ende Commit oder im Fehlerfall Rollback, idealerweise per defer abgesichert. Wer die Zuordnung von Spalten zu Structfeldern leid ist, nimmt eine kleine Bibliothek wie sqlx oder generiert den Code aus den Abfragen.
+    tags: [dev / go]
+  - id: de-css-animationen
+    lang: de
+    title: Übergänge und Animationen mit CSS, die nicht stören
+    excerpt: Transitions für Hover und Fokus, Keyframes für mehr, und prefers-reduced-motion für alle, die Bewegung lieber abschalten.
+    site: webwerkstatt.de
+    text: |
+      Die meisten Animationen auf einer Seite sind Übergänge zwischen zwei Zuständen: eine Schaltfläche, die beim Überfahren dunkler wird, ein Menü, das aufklappt. Dafür genügt transition auf dem Element, etwa transition: background-color 150ms ease-out, und der Browser interpoliert den Wechsel, sobald sich der Wert ändert, egal ob durch :hover, :focus-visible oder eine per JavaScript gesetzte Klasse. Kurze Zeiten um 150 bis 250 Millisekunden wirken reaktionsschnell; alles über einer halben Sekunde bremst.
+
+      Für Abläufe mit mehreren Schritten gibt es @keyframes und die Eigenschaft animation, zum Beispiel für einen Ladeindikator oder ein Element, das einblendet und leicht nach oben rutscht. Flüssig bleibt das, solange nur transform und opacity animiert werden, denn die erledigt der Browser auf der Grafikkarte, ohne das Layout neu zu berechnen; Breite, Höhe oder Ränder zu animieren ruckelt auf schwachen Geräten.
+
+      Bewegung ist nicht für alle angenehm. Mit der Media Query prefers-reduced-motion: reduce lassen sich Animationen für Menschen verkürzen oder abschalten, die das im Betriebssystem eingestellt haben, etwa indem man alle Dauern auf 1ms setzt und Parallax-Effekte weglässt. Das gehört in jedes Stylesheet, nicht nur in barrierefreie Sonderversionen.
+    tags: [dev / web]
+  - id: de-apfelstrudel
+    lang: de
+    title: Apfelstrudel mit selbst gezogenem Teig
+    excerpt: Ein elastischer Teig, der sich hauchdünn ausziehen lässt, und eine Füllung aus säuerlichen Äpfeln.
+    site: backstube.at
+    text: |
+      Der Strudelteig besteht nur aus zweihundertfünfzig Gramm glattem Mehl, einer Prise Salz, zwei Esslöffeln Öl und etwa hundertdreißig Millilitern lauwarmem Wasser. Er wird mindestens zehn Minuten geknetet, bis er seidig glatt ist, dann mit Öl bestrichen und unter einer warmen Schüssel eine halbe Stunde ruhen gelassen. Diese Ruhe ist der ganze Trick: ohne sie reißt der Teig beim Ausziehen.
+
+      Ausgezogen wird auf einem bemehlten Tischtuch. Den Teig erst mit dem Nudelholz ausrollen, dann mit den Handrücken von der Mitte her nach außen ziehen, immer rund um den Tisch gehend, bis er so dünn ist, dass man das Muster des Tuchs durchsieht. Dicke Ränder werden abgeschnitten. Für die Fülle kommen ein Kilo säuerliche Äpfel in dünnen Scheiben, Zucker, Zimt, eine Handvoll Rosinen und in Butter geröstete Semmelbrösel, die den Saft aufnehmen, damit der Boden nicht durchweicht.
+
+      Die Brösel auf zwei Drittel des Teigs streuen, die Äpfel darauf verteilen und den Strudel mit Hilfe des Tuchs von der Apfelseite her aufrollen. Mit zerlassener Butter bestreichen und bei 190 Grad etwa vierzig Minuten backen, zwischendurch noch einmal buttern. Lauwarm mit Staubzucker, Vanillesauce oder Schlagobers servieren.
+    tags: [cooking / baking]
+  - id: de-kartoffelsalat
+    lang: de
+    title: Schwäbischer Kartoffelsalat mit Brühe
+    excerpt: Lauwarm, ohne Mayonnaise, mit Essig, Zwiebeln und Brühe, die die Kartoffeln aufsaugen.
+    site: hausmannskost.de
+    text: |
+      Der schwäbische Kartoffelsalat lebt davon, dass die Kartoffeln warm angemacht werden. Ein Kilo festkochende Kartoffeln werden in der Schale gekocht, noch heiß gepellt und in dünne Scheiben geschnitten. Währenddessen kocht man eine fein gewürfelte Zwiebel in zweihundertfünfzig Millilitern kräftiger Fleisch- oder Gemüsebrühe kurz auf und gibt vier Esslöffel Weißweinessig, einen Teelöffel Senf, Salz, Pfeffer und eine Prise Zucker dazu.
+
+      Die heiße Brühe kommt über die warmen Kartoffelscheiben, und dann heißt es warten: mindestens eine halbe Stunde, besser eine Stunde, immer wieder vorsichtig wenden, bis die Flüssigkeit fast ganz aufgesogen ist. Erst jetzt kommen vier Esslöffel neutrales Öl dazu, nicht vorher, sonst nehmen die Kartoffeln die Brühe nicht mehr an. Der Salat soll "schlonzig" sein, wie man in Schwaben sagt: weich, saftig, leicht sämig, aber nicht matschig.
+
+      Serviert wird er lauwarm oder bei Zimmertemperatur, nie aus dem Kühlschrank, mit Schnittlauch, zu Maultaschen, Schnitzel oder Würstchen. Im Kühlschrank wird er fest; vor dem Servieren etwas Brühe nachgießen und ihn Zimmertemperatur annehmen lassen, dann ist er am nächsten Tag fast so gut wie frisch.
+    tags: [cooking / recipes]
+  - id: de-berlin-wochenende
+    lang: de
+    title: Berlin an einem Wochenende
+    excerpt: "Museumsinsel, Kreuzberg und Currywurst: zwei Tage in der Hauptstadt ohne Auto."
+    site: unterwegsmagazin.de
+    text: |
+      Berlin ist groß, und wer alles sehen will, sieht nichts. Zwei Tage reichen für zwei Schwerpunkte, und die Bahn bringt einen überall hin; ein Tagesticket für die Zonen AB lohnt sich ab der dritten Fahrt. Der Samstag gehört der Mitte: vom Brandenburger Tor am Reichstag vorbei, dessen Kuppel kostenlos ist, aber vorher online gebucht werden muss, über Unter den Linden zur Museumsinsel. Dort lieber ein Haus in Ruhe als drei im Laufschritt; das Neue Museum mit der Nofretete ist die sichere Wahl.
+
+      Der Sonntag ist für die Kieze. Kreuzberg und Neukölln entlang des Landwehrkanals, der Flohmarkt im Mauerpark am Vormittag, danach die East Side Gallery, der längste erhaltene Abschnitt der Mauer. Wer Geschichte will, geht zur Gedenkstätte Berliner Mauer an der Bernauer Straße, die den Todesstreifen begreifbar macht, ohne Eintritt.
+
+      Essen ist in Berlin günstig und international: Currywurst an der Bude, Döner in Kreuzberg, vietnamesische Küche in Prenzlauer Berg, dazu Spätis an jeder Ecke für ein Bier auf der Parkbank. Reservieren muss man selten, nur sonntags zum Brunch wird es voll.
+    tags: [travel / city guides]
+  - id: de-girokonto-wechseln
+    lang: de
+    title: Girokonto wechseln ohne Ärger
+    excerpt: Was ein kostenloses Konto wirklich kostet, wie der Kontowechselservice hilft und was man selbst umstellen muss.
+    site: geldratgeber.de
+    text: |
+      Viele zahlen seit Jahren Kontoführungsgebühren, weil der Wechsel nach Aufwand klingt. Dabei ist er seit dem Zahlungskontengesetz weitgehend automatisiert: die neue Bank muss auf Wunsch einen Kontowechselservice anbieten, bei dem die alte Bank innerhalb weniger Tage alle Daueraufträge, Lastschriftmandate und die Zahlungspartner der letzten dreizehn Monate übermittelt. Die neue Bank richtet die Daueraufträge ein und informiert Arbeitgeber, Vermieter und Versicherungen über die neue Verbindung.
+
+      Trotzdem bleibt Handarbeit. Online-Dienste, bei denen die Karte hinterlegt ist, Abonnements und Zahlungsdienste muss man selbst umstellen, und das alte Konto sollte drei Monate mit Guthaben weiterlaufen, damit keine Lastschrift platzt, die noch an die alte Verbindung geht. Eine Liste aller Zahlungspartner aus den Kontoauszügen des letzten Jahres ist der sicherste Weg, nichts zu vergessen.
+
+      Beim Vergleich zählen nicht nur die Grundgebühr, sondern Gebühren für die Karte, für Bargeld im Ausland und für Überweisungen auf Papier, dazu die Bedingungen, an die "kostenlos" geknüpft ist, meist ein monatlicher Geldeingang. Eine Filiale braucht kaum jemand noch, ein gut erreichbarer Kundendienst dagegen schon, wenn die Karte gesperrt werden muss.
+    tags: [finance]
+  - id: de-fahrrad-pendeln
+    lang: de
+    title: Mit dem Rad zur Arbeit, ohne verschwitzt anzukommen
+    excerpt: Tempo, Kleidung und Ausrüstung für den täglichen Arbeitsweg, bei jedem Wetter.
+    site: fitimalltag.de
+    text: |
+      Der Trick gegen das verschwitzte Ankommen ist nicht Duschen im Büro, sondern langsamer fahren. Wer in einem Tempo tritt, bei dem er sich noch unterhalten könnte, kommt auf zehn Kilometern nur wenige Minuten später an als beim Rasen und muss sich nicht umziehen. Dazu hilft es, in Schichten zu fahren und die oberste nach den ersten Minuten auszuziehen, bevor es warm wird, und eine Jacke mit Belüftungsöffnungen statt einer dichten Regenjacke zu nehmen.
+
+      Für den Alltag taugt jedes verkehrssichere Rad; wichtiger als der Rahmen sind Schutzbleche, ein fest montiertes Licht mit Nabendynamo und ein Gepäckträger mit Tasche, damit der Rucksack nicht auf dem Rücken klebt. Ein Satz Wechselkleidung und Schuhe bleibt im Büro, und ein feuchtes Tuch ersetzt die Dusche. Im Winter sind Handschuhe, eine dünne Mütze unter dem Helm und eine Überhose das, was den Unterschied zwischen Durchhalten und Aufgeben macht.
+
+      Nach ein paar Wochen ist der Arbeitsweg die Bewegung, die man sonst im Fitnessstudio suchen würde, zweimal am Tag, ohne zusätzlichen Zeitaufwand. Wer weiter als fünfzehn Kilometer fährt oder große Steigungen hat, kombiniert mit der Bahn oder nimmt ein Rad mit Motor, das die Hinfahrt entspannt und die Rückfahrt zum Training macht.
+    tags: [health / fitness]
+queries:
+  - {id: en-q-go-deps, lang: en, text: how do I pin dependency versions in a go project, relevant: [en-go-modules]}
+  - {id: en-q-worker-pool, lang: en, text: limit the number of concurrent goroutines with a worker pool, relevant: [en-go-concurrency]}
+  - {id: en-q-css-columns, lang: en, text: responsive column layout without media queries, relevant: [en-css-grid, es-flexbox]}
+  - {id: en-q-browser-cache, lang: en, text: make the browser cache static assets, relevant: [en-http-caching]}
+  - {id: en-q-quick-dinner, lang: en, text: quick pasta dinner with canned tomatoes, relevant: [en-weeknight-pasta]}
+  - {id: en-q-sourdough-starter, lang: en, text: my sourdough starter is not rising, relevant: [en-sourdough, es-pan-de-pueblo]}
+  - {id: en-q-alps-huts, lang: en, text: multi day hike sleeping in mountain huts, relevant: [en-alpine-hut-hike, de-alpenueberquerung, es-pirineos]}
+  - {id: en-q-index-vs-stocks, lang: en, text: is picking stocks better than buying an index fund, relevant: [en-index-funds, es-fondos-indexados]}
+  - {id: en-q-start-running, lang: en, text: beginner running plan starting from zero, relevant: [en-couch-to-5k]}
+  - {id: en-q-protein, lang: en, text: daily protein intake for building muscle, relevant: [en-protein-basics]}
+  - {id: es-q-tests-go, lang: es, text: cómo escribir tests de tabla en go, relevant: [es-go-testing]}
+  - {id: es-q-errores-go, lang: es, text: envolver errores con contexto en go, relevant: [es-go-errores]}
+  - {id: es-q-centrar-div, lang: es, text: centrar elementos horizontal y verticalmente con css, relevant: [es-flexbox, en-css-grid]}
+  - {id: es-q-contraste, lang: es, text: contraste de colores accesible para personas con baja visión, relevant: [es-accesibilidad-web]}
+  - {id: es-q-tortilla, lang: es, text: tortilla de patatas que quede jugosa por dentro, relevant: [es-tortilla]}
+  - {id: es-q-legumbres-semana, lang: es, text: cocinar legumbres para varios días, relevant: [es-lentejas, en-meal-prep-bowls]}
+  - {id: es-q-pirineos, lang: es, text: travesía de varios días por montaña con refugios, relevant: [es-pirineos, en-alpine-hut-hike, de-alpenueberquerung]}
+  - {id: es-q-indexados, lang: es, text: empezar a invertir con poco dinero cada mes, relevant: [es-fondos-indexados, de-etf-sparplan]}
+  - {id: es-q-autonomos-irpf, lang: es, text: qué gastos puede deducir un autónomo, relevant: [es-declaracion-renta, en-freelance-taxes]}
+  - {id: es-q-espalda, lang: es, text: ejercicios para el dolor de espalda por estar sentado, relevant: [es-dolor-espalda, de-rueckentraining]}
+  - {id: de-q-go-interface, lang: de, text: wann sollte man in go ein interface definieren, relevant: [de-go-interfaces]}
+  - {id: de-q-http-handler, lang: de, text: einfachen webserver in go schreiben, relevant: [de-go-http-server]}
+  - {id: de-q-fetch-json, lang: de, text: json von einer api im browser laden, relevant: [de-javascript-fetch]}
+  - {id: de-q-schriftarten, lang: de, text: schriftarten laden ohne dass die seite springt, relevant: [de-webfonts]}
+  - {id: de-q-spaetzle, lang: de, text: käsespätzle selber machen, relevant: [de-kaesespaetzle]}
+  - {id: de-q-sauerteig, lang: de, text: sauerteigbrot backen anleitung, relevant: [de-brot-backen, en-sourdough, es-pan-de-pueblo]}
+  - {id: de-q-wien, lang: de, text: sehenswürdigkeiten und kaffeehäuser in wien, relevant: [de-wien-wochenende]}
+  - {id: de-q-etf, lang: de, text: monatlich in etf investieren als anfänger, relevant: [de-etf-sparplan, es-fondos-indexados]}
+  - {id: de-q-steuern-absetzen, lang: de, text: welche ausgaben kann ich von der steuer absetzen, relevant: [de-steuererklaerung, es-declaracion-renta, en-freelance-taxes]}
+  - {id: de-q-vorkochen, lang: de, text: gesunde mahlzeiten für die woche vorkochen, relevant: [de-meal-prep, en-meal-prep-bowls, es-lentejas]}
+  # Same-language queries that avoid their document's title words, so that a
+  # model has to understand the language rather than match its surface.
+  - {id: en-q-generic-sum, lang: en, text: write one function that adds up ints and floats instead of copying it per type, relevant: [en-go-generics]}
+  - {id: en-q-stages, lang: en, text: connect several processing steps with channels so the end of the stream reaches the last one, relevant: [en-go-pipelines]}
+  - {id: en-q-cors, lang: en, text: the browser refuses my api call from a different domain, relevant: [en-cors]}
+  - {id: en-q-squash, lang: en, text: reword and combine my messy commits before anyone reviews them, relevant: [en-git-rebase]}
+  - {id: en-q-tagliatelle, lang: en, text: make tagliatelle from scratch with a rolling pin, relevant: [en-fresh-pasta]}
+  - {id: en-q-overnight-loaf, lang: en, text: loaf from a quarter teaspoon of yeast and eighteen hours on the counter, relevant: [en-no-knead-bread]}
+  - {id: en-q-drift, lang: en, text: my stock share grew past the target percentage so should I sell some, relevant: [en-rebalancing]}
+  - {id: en-q-faster, lang: en, text: I can jog thirty minutes but I am not getting any faster, relevant: [en-interval-training]}
+  - {id: en-q-reproducible, lang: en, text: two machines built the same commit and got different library versions, relevant: [en-go-modules]}
+  - {id: en-q-throttle, lang: en, text: thousands of requests at once are overwhelming the backend so throttle them, relevant: [en-go-concurrency]}
+  - {id: en-q-not-modified, lang: en, text: stop the browser re-downloading files it already has, relevant: [en-http-caching]}
+  - {id: en-q-review-tone, lang: en, text: how to phrase review comments so people do not get defensive, relevant: [en-code-review]}
+  - {id: en-q-cash-cushion, lang: en, text: how many months of expenses to keep in a savings account, relevant: [en-emergency-fund]}
+  - {id: en-q-carry-on, lang: en, text: fit two weeks of clothes into a bag that goes in the overhead bin, relevant: [en-packing-light]}
+  - {id: es-q-carrera, lang: es, text: dos goroutines escriben en el mismo mapa y el programa se cae, relevant: [es-go-concurrencia]}
+  - {id: es-q-omitempty, lang: es, text: no incluir los campos vacíos al generar el json de una struct, relevant: [es-go-json]}
+  - {id: es-q-formulario, lang: es, text: avisar de un campo mal rellenado sin recargar la página, relevant: [es-validar-formularios]}
+  - {id: es-q-commit, lang: es, text: qué poner en el mensaje al confirmar un cambio en git, relevant: [es-git-commits]}
+  - {id: es-q-sopa-fria, lang: es, text: sopa fría de tomate y pepino para el calor, relevant: [es-gazpacho]}
+  - {id: es-q-vaso-yogur, lang: es, text: tarta esponjosa midiendo los ingredientes con el envase del yogur, relevant: [es-bizcocho]}
+  - {id: es-q-capital, lang: es, text: plan de fin de semana en la capital de españa sin coche, relevant: [es-madrid]}
+  - {id: es-q-euribor, lang: es, text: me conviene una cuota fija o una que siga al euríbor, relevant: [es-hipoteca]}
+  - {id: es-q-tabla, lang: es, text: probar una función con muchos casos de entrada y salida esperada en go, relevant: [es-go-testing]}
+  - {id: es-q-errors-as, lang: es, text: saber si el error devuelto es de un tipo concreto en go, relevant: [es-go-errores]}
+  - {id: es-q-lector-pantalla, lang: es, text: mi página no se entiende con un lector de pantalla, relevant: [es-accesibilidad-web]}
+  - {id: es-q-huevos-patata, lang: es, text: huevos con patata cuajados por fuera y cremosos por dentro, relevant: [es-tortilla]}
+  - {id: es-q-despensa, lang: es, text: ordenar la despensa y la nevera para que no se estropee la comida, relevant: [es-organizar-cocina]}
+  - {id: es-q-pesas, lang: es, text: rutina de pesas para quien nunca ha entrenado, relevant: [es-entrenar-fuerza]}
+  - {id: es-q-poco-presupuesto, lang: es, text: viajar con poco presupuesto sin pasarlo mal, relevant: [es-viajar-barato]}
+  - {id: de-q-flags, lang: de, text: optionen und schalter für ein kommandozeilenprogramm einlesen, relevant: [de-go-flags]}
+  - {id: de-q-sql, lang: de, text: aus go abfragen an postgres schicken ohne sql-injection, relevant: [de-go-sql]}
+  - {id: de-q-hover, lang: de, text: übergang beim hover weich machen und für empfindliche nutzer abschalten, relevant: [de-css-animationen]}
+  - {id: de-q-strudelteig, lang: de, text: teig so dünn ausziehen dass man das tischtuch durchsieht, relevant: [de-apfelstrudel]}
+  - {id: de-q-kartoffeln-bruehe, lang: de, text: lauwarmer salat aus gekochten kartoffeln mit brühe statt mayonnaise, relevant: [de-kartoffelsalat]}
+  - {id: de-q-kieze, lang: de, text: zwei tage zwischen mauerresten und kiezen ohne auto, relevant: [de-berlin-wochenende]}
+  - {id: de-q-bankwechsel, lang: de, text: bank wechseln ohne dass lastschriften platzen, relevant: [de-girokonto-wechseln]}
+  - {id: de-q-radeln, lang: de, text: täglich zehn kilometer radeln und im büro nicht duschen müssen, relevant: [de-fahrrad-pendeln]}
+  - {id: de-q-logmeldung, lang: de, text: welche informationen gehören in eine fehlermeldung im log, relevant: [de-logging]}
+  - {id: de-q-erste-wochen, lang: de, text: die ersten wochen eines neuen kollegen im team gestalten, relevant: [de-onboarding-entwickler]}
+  - {id: de-q-roestzwiebeln, lang: de, text: eiernudeln mit käse und röstzwiebeln überbacken, relevant: [de-kaesespaetzle]}
+  - {id: de-q-ohne-flug, lang: de, text: europa bereisen ohne zu fliegen, relevant: [de-bahnreisen]}
+  - {id: de-q-weniger-zucker, lang: de, text: weniger süßes essen ohne sich zu quälen, relevant: [de-zuckerarm]}
+  - {id: de-q-kleine-interfaces, lang: de, text: kleine schnittstellen mit einer methode statt großer in go, relevant: [de-go-interfaces]}
