@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
 	"slices"
 	"testing"
 
@@ -426,15 +425,6 @@ func TestAssign_NaNCutoffAssignsNoTag(t *testing.T) {
 	}
 }
 
-// scoreVec returns a unit vector whose cosine with the first axis, where the
-// tests put the document, is exactly score. The rest of its length goes on
-// axis, so vectors on different axes have nothing in common but the document.
-func scoreVec(dims, axis int, score float64) []float32 {
-	v := make([]float64, dims)
-	v[0], v[axis] = score, math.Sqrt(1-score*score)
-	return unitVec(v...)
-}
-
 // A ghost is the vector a deleted tag left behind, and it can outscore current
 // tags. The search has one slot per current tag, so each ghost it shows takes a
 // slot from a tag. In every case the ghosts are stored beforehand, each
@@ -750,109 +740,6 @@ func TestRefresh_FollowsTheMemberSet(t *testing.T) {
 	}
 }
 
-// TestBlend_ShiftsFromNamePriorToMemberCentroid pins the smoothing contract:
-// with k members' worth of smoothing, one member barely moves the vector off
-// the name prior, while many members pull it onto the centroid.
-func TestBlend_ShiftsFromNamePriorToMemberCentroid(t *testing.T) {
-	const k = 3.0
-	name := []float32{1, 0}
-	member := []float32{0, 1}
-
-	noMembers := blend(name, nil, k)
-	if noMembers[0] != 1 || noMembers[1] != 0 {
-		t.Fatalf("with no members the blend must be the name prior, got %v", noMembers)
-	}
-
-	// n=1: centroid weight 1/(1+3) = 0.25, so the name still dominates
-	one := blend(name, [][]float32{member}, k)
-	if one[0] <= one[1] {
-		t.Fatalf("one member should stay name-dominated, got %v", one)
-	}
-	// n=9: centroid weight 9/(9+3) = 0.75, so the centroid dominates
-	many := make([][]float32, 9)
-	for i := range many {
-		many[i] = member
-	}
-	nine := blend(name, many, k)
-	if nine[1] <= nine[0] {
-		t.Fatalf("nine members should be centroid-dominated, got %v", nine)
-	}
-	// more members must move strictly further toward the centroid
-	if nine[1] <= one[1] {
-		t.Fatalf("centroid weight did not grow with members: one=%v nine=%v", one, nine)
-	}
-	for _, v := range [][]float32{noMembers, one, nine} {
-		if l := length(v); math.Abs(l-1) > 1e-6 {
-			t.Fatalf("blend must return a unit vector, got length %f for %v", l, v)
-		}
-	}
-}
-
-func TestTagCutoff_NoMembersIsTheNameMinimum(t *testing.T) {
-	if got := tagCutoff(unitVec(1, 2, 3), nil, 3, 0.46, 0.70); got != 0.46 {
-		t.Fatalf("cutoff = %v, want 0.46", got)
-	}
-}
-
-// Comparing a document against the blended vector with tagCutoff must decide
-// exactly like judging the name against nameMin and the members' centroid
-// against memberMin, mixed by the blend weight.
-func TestTagCutoff_MatchesTheTwoScaleRule(t *testing.T) {
-	r := rand.New(rand.NewSource(1))
-	const dims, k, a, b = 16, 3.0, 0.46, 0.70
-	for n := 1; n <= 6; n++ {
-		name := randUnit(r, dims)
-		members := make([][]float32, n)
-		for i := range members {
-			members[i] = randUnit(r, dims)
-		}
-		vec := blend(name, members, k)
-		cut := tagCutoff(name, members, k, a, b)
-		c := centroid(members, dims)
-		w := float64(n) / (float64(n) + k)
-		// queries from far away to right on top of the tag, so both
-		// outcomes are exercised
-		for step := 0; step <= 200; step++ {
-			beta := float64(step) / 200
-			noise := randUnit(r, dims)
-			mix := make([]float64, dims)
-			for i := range mix {
-				mix[i] = beta*float64(vec[i]) + (1-beta)*float64(noise[i])
-			}
-			q := unitVec(mix...)
-			margin := (1-w)*(dot(q, name)-a) + w*(dot(q, c)-b)
-			if math.Abs(margin) < 1e-5 {
-				continue // float32 rounding decides the tie
-			}
-			if got, want := dot(q, vec) >= cut, margin >= 0; got != want {
-				t.Fatalf("n=%d: blended %.5f vs cutoff %.5f says %v, two-scale margin %.5f says %v",
-					n, dot(q, vec), cut, got, margin, want)
-			}
-		}
-	}
-}
-
-func TestTagCutoff_ApproachesTheMemberMinimumWithManyMembers(t *testing.T) {
-	m := unitVec(1, 1, 0) // 45° away from the name
-	members := make([][]float32, 1000)
-	for i := range members {
-		members[i] = m
-	}
-	if got := tagCutoff(unitVec(1, 0, 0), members, 3, 0.46, 0.70); math.Abs(got-0.70) > 0.01 {
-		t.Fatalf("cutoff with 1000 members = %.4f, want about 0.70", got)
-	}
-}
-
-// TestTagCutoff_OpposedNameAndCentroidMatchNothing: a centroid pointing
-// exactly away from the name cancels it out at equal weights, and a blend of
-// nothing has no direction any document could score against.
-func TestTagCutoff_OpposedNameAndCentroidMatchNothing(t *testing.T) {
-	members := [][]float32{unitVec(-1, 0), unitVec(-1, 0), unitVec(-1, 0)}
-	if got := tagCutoff(unitVec(1, 0), members, 3, 0.46, 0.70); !math.IsInf(got, 1) {
-		t.Fatalf("cutoff = %v, want +Inf", got)
-	}
-}
-
 // TestHashInputs_StableAcrossMemberOrderAndSensitiveToInputs is the guard
 // behind Refresh's "unchanged" short-circuit: the fingerprint must ignore the
 // store's member ordering, but change when anything the blend actually
@@ -891,43 +778,6 @@ func TestHashInputs_IsStable(t *testing.T) {
 	if got := hashInputs("dev / rust", []string{"h2", "h1"}, "m", 3); got != want {
 		t.Fatalf("hashInputs = %s, want %s", got, want)
 	}
-}
-
-// length returns the Euclidean length of v.
-func length(v []float32) float64 {
-	var sum float64
-	for _, x := range v {
-		sum += float64(x) * float64(x)
-	}
-	return math.Sqrt(sum)
-}
-
-func unitVec(v ...float64) []float32 {
-	var n float64
-	for _, x := range v {
-		n += x * x
-	}
-	out := make([]float32, len(v))
-	for i, x := range v {
-		out[i] = float32(x / math.Sqrt(n))
-	}
-	return out
-}
-
-func dot(a, b []float32) float64 {
-	var s float64
-	for i := range a {
-		s += float64(a[i]) * float64(b[i])
-	}
-	return s
-}
-
-func randUnit(r *rand.Rand, dims int) []float32 {
-	v := make([]float64, dims)
-	for i := range v {
-		v[i] = r.NormFloat64()
-	}
-	return unitVec(v...)
 }
 
 // verify the fake actually satisfies the interface

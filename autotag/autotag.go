@@ -17,7 +17,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math"
 	"slices"
 	"strconv"
 
@@ -258,74 +257,6 @@ func pickTags(hits []semsearch.Match, cuts map[string]float64) []string {
 		picks = append(picks, h.DocID)
 	}
 	return picks
-}
-
-// centroid returns the unit-length mean of vecs (dims long), or nil when
-// there are none.
-func centroid(vecs [][]float32, dims int) []float32 {
-	if len(vecs) == 0 {
-		return nil
-	}
-	c := make([]float32, dims)
-	for _, m := range vecs {
-		for i := range c {
-			c[i] += m[i]
-		}
-	}
-	semsearch.Normalize(c)
-	return c
-}
-
-// blend combines a tag's name-embedding prior with the centroid of its
-// members using Bayesian-style smoothing: with n members and smoothing
-// constant k, the centroid's weight is n/(n+k), so a tag with zero members
-// tags purely by name, and its vector gradually shifts toward the member
-// centroid as members accumulate.
-func blend(nameVec []float32, memberVecs [][]float32, k float64) []float32 {
-	out := make([]float32, len(nameVec))
-	copy(out, nameVec)
-	semsearch.Normalize(out)
-	n := float64(len(memberVecs))
-	if n == 0 {
-		return out
-	}
-	c := centroid(memberVecs, len(nameVec))
-	w := n / (n + k)
-	for i := range out {
-		out[i] = float32((1-w)*float64(out[i]) + w*float64(c[i]))
-	}
-	semsearch.Normalize(out)
-	return out
-}
-
-// tagCutoff is the score a document must reach against a tag's blended
-// vector (see blend) to be assigned that tag. The name prior and the member
-// centroid score on different scales: a document is never very close to a
-// short tag path, but always fairly close to other documents. So each part is
-// judged against its own minimum (nameMin, memberMin), and the two are mixed
-// with the blend's weight w = n/(n+k). The blended vector is renormalized, so
-// the mixed minimum is divided by the length the blend had before that.
-// Comparing a document's cosine to the blended vector with this cutoff is then
-// exactly (1-w)·(cos(name) − nameMin) + w·(cos(centroid) − memberMin) ≥ 0.
-func tagCutoff(nameVec []float32, memberVecs [][]float32, k, nameMin, memberMin float64) float64 {
-	n := float64(len(memberVecs))
-	if n == 0 {
-		return nameMin
-	}
-	name := make([]float32, len(nameVec))
-	copy(name, nameVec)
-	semsearch.Normalize(name)
-	c := centroid(memberVecs, len(nameVec))
-	w := n / (n + k)
-	var norm2 float64
-	for i := range name {
-		x := (1-w)*float64(name[i]) + w*float64(c[i])
-		norm2 += x * x
-	}
-	if norm2 == 0 {
-		return math.Inf(1) // name and centroid cancel out: nothing can match
-	}
-	return ((1-w)*nameMin + w*memberMin) / math.Sqrt(norm2)
 }
 
 // hashInputs fingerprints everything a tag's blended vector depends on (its
