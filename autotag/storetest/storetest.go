@@ -42,6 +42,7 @@ func Run(t *testing.T, newStore func(t *testing.T) autotag.Store) {
 		{"SetTagVectorsChecksTheVersion", setTagVectorsChecksTheVersion},
 		{"TagsAreOrderedByID", tagsAreOrderedByID},
 		{"DeleteTagDropsItsLinks", deleteTagDropsItsLinks},
+		{"RecreatedTagStartsAFreshVersion", recreatedTagStartsAFreshVersion},
 		{"ItemLifecycle", itemLifecycle},
 		{"LinkBumpsTheTagOnce", linkBumpsTheTagOnce},
 		{"LinkRejectsUnknownIDs", linkRejectsUnknownIDs},
@@ -61,25 +62,29 @@ func Run(t *testing.T, newStore func(t *testing.T) autotag.Store) {
 	}
 }
 
-// tagLifecycle: a tag is created at Version 1, and the current name changes
-// nothing, built or not. A rename bumps the Version and drops the name vector,
-// and keeps the rest until the next build.
+// tagLifecycle: a tag is created unbuilt, at a Version of its own, and the
+// current name changes nothing, built or not. A rename bumps the Version and
+// drops the name vector, and keeps the rest until the next build.
 func tagLifecycle(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 
 	if !sc.putTag("t1", "a") {
 		t.Error("PutTag of a new tag reported no change")
 	}
-	if got, want := sc.tag("t1"), (autotag.TagRecord{ID: "t1", Name: "a", Version: 1}); !reflect.DeepEqual(got, want) {
+	v0 := sc.tag("t1").Version
+	if v0 == 0 {
+		t.Fatal("new tag at Version 0: Built is 0 until the tag is built, so it would look built")
+	}
+	if got, want := sc.tag("t1"), (autotag.TagRecord{ID: "t1", Name: "a", Version: v0}); !reflect.DeepEqual(got, want) {
 		t.Errorf("new tag = %+v, want %+v", got, want)
 	}
 
 	if sc.putTag("t1", "a") {
 		t.Error("PutTag with the current name reported a change")
 	}
-	sc.wantVersion("t1", 1, "after PutTag with the current name")
+	sc.wantVersion("t1", v0, "after PutTag with the current name")
 
-	if !sc.setTagVectors("t1", 1, autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p"}) {
+	if !sc.setTagVectors("t1", v0, autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p"}) {
 		t.Fatal("SetTagVectors at the tag's Version stored nothing")
 	}
 	built := sc.tag("t1")
@@ -93,7 +98,7 @@ func tagLifecycle(t *testing.T, s autotag.Store) {
 	if !sc.putTag("t1", "b") {
 		t.Error("PutTag with a new name reported no change")
 	}
-	renamed := autotag.TagRecord{ID: "t1", Name: "b", NameVec: nil, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p", Version: 2, Built: 1}
+	renamed := autotag.TagRecord{ID: "t1", Name: "b", NameVec: nil, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p", Version: v0 + 1, Built: v0}
 	if got := sc.tag("t1"); !reflect.DeepEqual(got, renamed) {
 		t.Errorf("renamed tag = %+v, want only Name, NameVec (nil) and Version (+1) changed: %+v", got, renamed)
 	}
@@ -108,25 +113,27 @@ func tagLifecycle(t *testing.T, s autotag.Store) {
 func setTagVectorsChecksTheVersion(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 	sc.putTag("t1", "a")
+	v0 := sc.tag("t1").Version
 
-	if !sc.setTagVectors("t1", 1, autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p"}) {
+	if !sc.setTagVectors("t1", v0, autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p"}) {
 		t.Fatal("SetTagVectors at the tag's Version stored nothing")
 	}
-	want := autotag.TagRecord{ID: "t1", Name: "a", NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p", Version: 1, Built: 1}
+	want := autotag.TagRecord{ID: "t1", Name: "a", NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p", Version: v0, Built: v0}
 	if got := sc.tag("t1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("tag after SetTagVectors = %+v, want %+v", got, want)
 	}
 
-	for _, stale := range []int64{0, 2} {
+	for _, stale := range []int64{0, v0 - 1, v0 + 1} {
 		if sc.setTagVectors("t1", stale, autotag.TagVectors{NameVec: v2, Vec: v1, Cutoff: 0.9, Model: "other", Params: "q"}) {
-			t.Errorf("SetTagVectors at Version %d of a tag at Version 1 stored its vectors", stale)
+			t.Errorf("SetTagVectors at Version %d of a tag at Version %d stored its vectors", stale, v0)
 		}
 	}
 	if got := sc.tag("t1"); !reflect.DeepEqual(got, want) {
 		t.Errorf("tag after the refused SetTagVectors = %+v, want it unchanged: %+v", got, want)
 	}
 
-	if sc.setTagVectors("unknown", 1, autotag.TagVectors{NameVec: v1, Vec: v2, Model: "m"}) {
+	// at t1's Version, so a store that matched the Version alone would store
+	if sc.setTagVectors("unknown", v0, autotag.TagVectors{NameVec: v1, Vec: v2, Model: "m"}) {
 		t.Error("SetTagVectors of a tag that was never put stored its vectors")
 	}
 }
@@ -178,6 +185,45 @@ func deleteTagDropsItsLinks(t *testing.T, s autotag.Store) {
 	sc.deleteTag("unknown")
 }
 
+// recreatedTagStartsAFreshVersion: a tag deleted and created again under its
+// id starts unbuilt, at a Version the deleted one never had. SetTagVectors
+// stores only for the Version it names, so vectors computed from the deleted
+// tag, by a rebuild that ran while it was deleted, never land on the new one,
+// whatever its name and whatever changes it has seen. A store that started
+// every tag at the same Version would let them.
+func recreatedTagStartsAFreshVersion(t *testing.T, s autotag.Store) {
+	sc := newScope(t, s, idx, part)
+	sc.putTag("t1", "a")
+	sc.putItem(newItem("i1"))
+	seen := []int64{sc.tag("t1").Version}
+	for _, bump := range []func(){
+		func() { sc.putTag("t1", "b") },
+		func() { sc.link("i1", "t1") },
+		func() { sc.putItem(newItem("i1")) },
+		func() { sc.unlink("i1", "t1") },
+		func() { sc.putTag("t1", "a") },
+	} {
+		bump()
+		seen = append(seen, sc.tag("t1").Version)
+	}
+	sc.setVectors("t1", autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p"})
+
+	sc.deleteTag("t1")
+	sc.putTag("t1", "a")
+	rec := sc.tag("t1")
+	if slices.Contains(seen, rec.Version) {
+		t.Errorf("t1 created again is at Version %d, which the deleted t1 had: %v", rec.Version, seen)
+	}
+	if want := (autotag.TagRecord{ID: "t1", Name: "a", Version: rec.Version}); !reflect.DeepEqual(rec, want) {
+		t.Errorf("t1 created again = %+v, want a new tag, unbuilt: %+v", rec, want)
+	}
+	for _, v := range seen {
+		if sc.setTagVectors("t1", v, autotag.TagVectors{NameVec: v2, Vec: v1, Cutoff: 0.9, Model: "m", Params: "p"}) {
+			t.Errorf("SetTagVectors at Version %d, one of the deleted t1, stored its vectors in the t1 created again", v)
+		}
+	}
+}
+
 // itemLifecycle: PutItem creates an item and a second PutItem replaces it.
 func itemLifecycle(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
@@ -207,15 +253,16 @@ func linkBumpsTheTagOnce(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 	sc.putTag("t1", "a")
 	sc.putItem(autotag.ItemRecord{ID: "i1", Text: "x", Vec: v1, Model: "m"})
+	v0 := sc.tag("t1").Version
 
 	if !sc.link("i1", "t1") {
 		t.Error("Link of two unlinked ids reported no change")
 	}
-	sc.wantVersion("t1", 2, "after Link")
+	sc.wantVersion("t1", v0+1, "after Link")
 	if sc.link("i1", "t1") {
 		t.Error("Link of an existing link reported a change")
 	}
-	sc.wantVersion("t1", 2, "after Link of an existing link")
+	sc.wantVersion("t1", v0+1, "after Link of an existing link")
 
 	want := []autotag.Member{{ItemID: "i1", Vec: v1, Model: "m"}}
 	if got := sc.members("t1"); !reflect.DeepEqual(got, want) {
@@ -225,11 +272,11 @@ func linkBumpsTheTagOnce(t *testing.T, s autotag.Store) {
 	if !sc.unlink("i1", "t1") {
 		t.Error("Unlink of a link reported no change")
 	}
-	sc.wantVersion("t1", 3, "after Unlink")
+	sc.wantVersion("t1", v0+2, "after Unlink")
 	if sc.unlink("i1", "t1") {
 		t.Error("Unlink without a link reported a change")
 	}
-	sc.wantVersion("t1", 3, "after Unlink without a link")
+	sc.wantVersion("t1", v0+2, "after Unlink without a link")
 }
 
 // linkRejectsUnknownIDs: Link names the id it cannot find, the item first, and
@@ -238,6 +285,7 @@ func linkRejectsUnknownIDs(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 	sc.putTag("t1", "a")
 	sc.putItem(newItem("i1"))
+	v0 := sc.tag("t1").Version
 	ctx := t.Context()
 
 	cases := []struct {
@@ -254,7 +302,7 @@ func linkRejectsUnknownIDs(t *testing.T, s autotag.Store) {
 			t.Errorf("Link with %s: err = %v, want %v", c.name, err, c.want)
 		}
 	}
-	sc.wantVersion("t1", 1, "after the refused Links")
+	sc.wantVersion("t1", v0, "after the refused Links")
 
 	if changed, err := s.Unlink(ctx, idx, part, "nope", "nope"); changed || err != nil {
 		t.Errorf("Unlink of unknown ids = %v, %v; want false, nil", changed, err)
@@ -407,12 +455,16 @@ func scopesAreIsolated(t *testing.T, s autotag.Store) {
 		}
 	}
 
+	versions := make([]int64, len(scopes))
+	for i, sc := range scopes {
+		versions[i] = sc.tag("t1").Version
+	}
 	scopes[0].link("i1", "t1")
-	for _, sc := range scopes[1:] {
+	for i, sc := range scopes[1:] {
 		if got := sc.members("t1"); len(got) != 0 {
 			t.Errorf("Members in %s/%s after a Link in another scope = %+v, want none", sc.index, sc.partition, got)
 		}
-		sc.wantVersion("t1", 1, fmt.Sprintf("in %s/%s after a Link in another scope", sc.index, sc.partition))
+		sc.wantVersion("t1", versions[i+1], fmt.Sprintf("in %s/%s after a Link in another scope", sc.index, sc.partition))
 	}
 
 	// An item of one partition cannot be linked to a tag of another.
@@ -431,9 +483,10 @@ func scopesAreIsolated(t *testing.T, s autotag.Store) {
 
 // writesStayInTheirScope: every write made in one scope leaves the same ids in
 // the other scopes exactly as they were, records, vectors, Versions and links.
-// The three scopes are set up the same way, so the tag stands at the same
-// Version in each: a SetTagVectors that ignored the scope would otherwise find
-// nothing to overwrite elsewhere, since it only stores for the Version it names.
+// SetTagVectors stores only for the Version it names, and the tag of each scope
+// started at a Version of its own, so the writer's SetTagVectors names the
+// Version of every other scope's tag too: one that ignored the scope would
+// store there.
 func writesStayInTheirScope(t *testing.T, s autotag.Store) {
 	writer := newScope(t, s, "writer", "space")
 	others := []scope{newScope(t, s, "writer", "other"), newScope(t, s, "bystander", "space")}
@@ -449,9 +502,12 @@ func writesStayInTheirScope(t *testing.T, s autotag.Store) {
 		name string
 		do   func(sc scope)
 	}{
-		// SetTagVectors comes first, while the writer's tag is still at the others' Version.
 		{"SetTagVectors", func(sc scope) {
-			sc.setVectors("t1", autotag.TagVectors{NameVec: v2, Vec: v1, Cutoff: 0.9, Model: "other", Params: "q"})
+			vecs := autotag.TagVectors{NameVec: v2, Vec: v1, Cutoff: 0.9, Model: "other", Params: "q"}
+			for _, other := range unchanged {
+				sc.setTagVectors("t1", other.tag.Version, vecs)
+			}
+			sc.setVectors("t1", vecs)
 		}},
 		{"PutTag with a new name", func(sc scope) { sc.wantChanged(sc.putTag("t1", "renamed"), "PutTag with a new name") }},
 		{"PutItem", func(sc scope) {

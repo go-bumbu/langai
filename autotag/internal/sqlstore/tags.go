@@ -5,9 +5,18 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 
 	"github.com/go-bumbu/langai/autotag"
 )
+
+// newVersion returns the Version a tag starts at when it is created: a random
+// one, so that a tag created again under a deleted one's id never reuses a
+// Version the deleted one had (see autotag.TagRecord). It is at most 2^62, so
+// the bumps of the version column, a 64-bit integer, never overflow it.
+func newVersion() int64 {
+	return rand.Int64N(1<<62) + 1 //nolint:gosec // G404: a Version has to differ from a deleted tag's, not be unguessable
+}
 
 // tagCols are the columns of a tag, in the order scanTag reads them.
 const tagCols = `tag_id, name, name_vec, vec, cutoff, model, params, version, built`
@@ -71,16 +80,17 @@ func (s *Store) Tags(ctx context.Context, index, partition string) ([]autotag.Ta
 
 // PutTag needs no transaction: the INSERT creates the tag unless it exists, and
 // the UPDATE renames it unless the name is the one it has. Each is one
-// statement, so each is atomic by itself.
+// statement, so each is atomic by itself. A new tag's Version comes from Go
+// (see newVersion), bound like every other value.
 func (s *Store) PutTag(ctx context.Context, index, partition, tagID, name string) (bool, error) {
 	t, err := s.ensure(ctx, index)
 	if err != nil {
 		return false, err
 	}
 	created, err := changed(s.db.ExecContext(ctx,
-		s.q(`INSERT INTO %s (partition, tag_id, name, version) VALUES (?, ?, ?, 1)
+		s.q(`INSERT INTO %s (partition, tag_id, name, version) VALUES (?, ?, ?, ?)
 			ON CONFLICT (partition, tag_id) DO NOTHING`, t.tags),
-		partition, tagID, name))
+		partition, tagID, name, newVersion()))
 	if created || err != nil {
 		return created, err
 	}

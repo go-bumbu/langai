@@ -208,6 +208,7 @@ func TestStoresOnOneDatabaseShareTheirData(t *testing.T) {
 	if _, err := first.PutTag(ctx, "idx", "p", "t1", "a"); err != nil {
 		t.Fatal(err)
 	}
+	created := tagVersion(t, first)
 	item := autotag.ItemRecord{ID: "i1", Text: "x", Vec: []float32{0.5, -1}, Model: "m"}
 	if _, err := first.PutItem(ctx, "idx", "p", item); err != nil {
 		t.Fatal(err)
@@ -220,8 +221,8 @@ func TestStoresOnOneDatabaseShareTheirData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec, ok, err := second.Tag(ctx, "idx", "p", "t1"); err != nil || !ok || rec.Name != "a" || rec.Version != 2 {
-		t.Errorf("Tag = %+v, %v, %v; want the tag first wrote, at Version 2 after its Link", rec, ok, err)
+	if rec, ok, err := second.Tag(ctx, "idx", "p", "t1"); err != nil || !ok || rec.Name != "a" || rec.Version != created+1 {
+		t.Errorf("Tag = %+v, %v, %v; want the tag first wrote, at Version %d: one past its start, for its Link", rec, ok, err, created+1)
 	}
 	if got, ok, err := second.Item(ctx, "idx", "p", "i1"); err != nil || !ok || got.Text != item.Text || !slices.Equal(got.Vec, item.Vec) {
 		t.Errorf("Item = %+v, %v, %v; want %+v", got, ok, err, item)
@@ -375,6 +376,42 @@ func tagVersion(t *testing.T, s *Store) int64 {
 		t.Fatalf("Tag(t1) = %+v, %v, %v", rec, ok, err)
 	}
 	return rec.Version
+}
+
+// TestVersionColumn_HoldsTheLargestStartExactly: a new tag starts at a random
+// Version of up to 2^62 (see newVersion), so the version column must keep it
+// exactly, through a read, a bump and the Version check of SetTagVectors.
+// 2^62 and 2^62+1 are one and the same float64, so a column or a driver that
+// went through floating point would lose the bump.
+func TestVersionColumn_HoldsTheLargestStartExactly(t *testing.T) {
+	ctx := t.Context()
+	s, db := seedTagAndItem(t)
+	const top = int64(1) << 62
+	if _, err := db.ExecContext(ctx,
+		`UPDATE `+tableOf(t, "", "idx", "tags")+` SET version = ? WHERE partition = 'p' AND tag_id = 't1'`, top); err != nil {
+		t.Fatal(err)
+	}
+	if got := tagVersion(t, s); got != top {
+		t.Fatalf("Version of t1 = %d, want %d", got, top)
+	}
+	if _, err := s.Link(ctx, "idx", "p", "i1", "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := tagVersion(t, s); got != top+1 {
+		t.Fatalf("Version of t1 after a Link = %d, want %d", got, top+1)
+	}
+	for _, c := range []struct {
+		version int64
+		want    bool
+	}{{top, false}, {top + 1, true}} {
+		stored, err := s.SetTagVectors(ctx, "idx", "p", "t1", c.version, autotag.TagVectors{NameVec: []float32{1}, Vec: []float32{1}, Model: "m"})
+		if err != nil || stored != c.want {
+			t.Errorf("SetTagVectors at Version %d of a tag at %d = %v, %v; want %v, nil", c.version, top+1, stored, err, c.want)
+		}
+	}
+	if rec, _, err := s.Tag(ctx, "idx", "p", "t1"); err != nil || rec.Built != top+1 {
+		t.Errorf("Tag = %+v, %v; want it built at Version %d", rec, err, top+1)
+	}
 }
 
 // TestDeleteOfAnAbsentRowChangesNothing: deleting an item or a tag the store

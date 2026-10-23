@@ -4,11 +4,19 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"math/rand/v2"
 	"slices"
 	"sync"
 )
 
 var errEmptyIndex = errors.New("autotag: empty index")
+
+// newVersion returns the Version a tag starts at when it is created: a random
+// one, so that a tag created again under a deleted one's id never reuses a
+// Version the deleted one had (see TagRecord.Version).
+func newVersion() int64 {
+	return rand.Int64N(1<<62) + 1 //nolint:gosec // G404: a Version has to differ from a deleted tag's, not be unguessable
+}
 
 // scopeKey names one scope of a MemStore.
 type scopeKey struct{ index, partition string }
@@ -128,7 +136,7 @@ func (s *MemStore) PutTag(_ context.Context, index, partition, tagID, name strin
 	rec, ok := sc.tags[tagID]
 	switch {
 	case !ok:
-		sc.tags[tagID] = TagRecord{ID: tagID, Name: name, Version: 1}
+		sc.tags[tagID] = TagRecord{ID: tagID, Name: name, Version: newVersion()}
 	case rec.Name == name:
 		return false, nil
 	default:

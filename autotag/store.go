@@ -21,7 +21,7 @@ type TagRecord struct {
 	Cutoff  float64
 	Model   string // the model NameVec and Vec come from
 	Params  string // a fingerprint of the scoring settings Vec and Cutoff were computed with
-	Version int64  // 1 when created; +1 on every change to what Vec depends on
+	Version int64  // a random start when created, so a re-created id never reuses a version in practice; +1 on every change to what Vec depends on
 	Built   int64  // the Version Vec was built from; 0 until built
 }
 
@@ -58,8 +58,9 @@ type Member struct {
 type Store interface {
 	Tag(ctx context.Context, index, partition, tagID string) (TagRecord, bool, error)
 	Tags(ctx context.Context, index, partition string) ([]TagRecord, error) // ordered by ID
-	// PutTag creates the tag (Version 1, Built 0) or renames it (NameVec = nil,
-	// Version+1); the current name changes nothing and reports false.
+	// PutTag creates the tag (at a random Version, see TagRecord, and Built 0)
+	// or renames it (NameVec = nil, Version+1); the current name changes
+	// nothing and reports false.
 	PutTag(ctx context.Context, index, partition, tagID, name string) (bool, error)
 	// SetTagVectors stores v and sets Built = version, only if the tag still
 	// has that Version; otherwise (or when the tag is gone) it stores nothing
