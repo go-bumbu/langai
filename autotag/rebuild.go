@@ -21,44 +21,31 @@ func (t *Tagger) stale(tag TagRecord) bool {
 
 // rebuild computes the tag's vectors from its name and its members, with the
 // Tagger's scoring settings, and stores them only while the tag is at the
-// Version they were computed from. Members embedded under another model are
-// re-embedded first (see refreshMembers), and the name is embedded, as a
-// document, when the tag has no name vector of the Tagger's model; other
-// scoring settings alone embed nothing. A tag deleted meanwhile is no error,
-// and neither is one changed meanwhile: the change left it stale, for its
-// writer or the next Suggest to rebuild. Nor is a member still of another
-// model, one edited under that model after refreshMembers read it: rather
-// than build the tag without it, rebuild stores nothing and leaves the tag
-// stale, for the next pass of rebuildStale to re-embed the member. An error
-// comes back wrapped, naming the tag.
+// Version they were computed from. It reads the tag and its members once when
+// they are all of the Tagger's model; members embedded under another model are
+// re-embedded first, and the tag and its members read again (see
+// currentMembers). The name is embedded, as a document, when the tag has no
+// name vector of the Tagger's model; other scoring settings alone embed
+// nothing. A tag deleted meanwhile is no error, and neither is one changed
+// meanwhile: the change left it stale, for its writer or the next Suggest to
+// rebuild. Nor is a member that is still of another model after the re-embed,
+// because it was edited under that model meanwhile: rather than build the tag
+// without it, rebuild stores nothing and leaves the tag stale, for the next
+// pass of rebuildStale to re-embed the member. An error comes back wrapped,
+// naming the tag.
 func (s *Scope) rebuild(ctx context.Context, id string) (err error) {
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("autotag: rebuild tag %q: %w", id, err)
 		}
 	}()
-	if err = s.refreshMembers(ctx, id); err != nil {
-		return err
+	rec, members, ok, err := s.currentMembers(ctx, id)
+	if err != nil || !ok {
+		return err // !ok: deleted, or a member left of another model (see above)
 	}
 	store, cfg := s.tg.store, s.tg.cfg
-	rec, ok, err := store.Tag(ctx, s.index, s.partition, id)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil // deleted meanwhile
-	}
-	// read after rec: a change in between bumps the tag's Version, and
-	// SetTagVectors refuses vectors computed for an older one
-	members, err := store.Members(ctx, s.index, s.partition, id)
-	if err != nil {
-		return err
-	}
 	var vecs [][]float32
 	for _, m := range members {
-		if m.Model != cfg.Model {
-			return nil // edited under another model meanwhile: left stale (see above)
-		}
 		vecs = append(vecs, m.Vec)
 	}
 	nameVec := rec.NameVec
@@ -79,18 +66,52 @@ func (s *Scope) rebuild(ctx context.Context, id string) (err error) {
 	return err
 }
 
-// refreshMembers re-embeds, from the text the store keeps, the tag's members
-// whose vectors come from another model than the Tagger's, so that rebuild can
-// blend them in (see reembedItem). Each item it re-embeds bumps the Version of
-// every tag linked to it: rebuild reads this tag after that, and the others are
-// left stale, for their own rebuilds.
-func (s *Scope) refreshMembers(ctx context.Context, id string) error {
-	members, err := s.tg.store.Members(ctx, s.index, s.partition, id)
-	if err != nil {
-		return err
+// readTag reads the tag and then its members, in that order: a change that
+// lands in between bumps the tag's Version past the one read, and
+// SetTagVectors refuses vectors computed for an older one. ok is false when
+// the tag is gone, and then its members are not read.
+func (s *Scope) readTag(ctx context.Context, id string) (rec TagRecord, members []Member, ok bool, err error) {
+	rec, ok, err = s.tg.store.Tag(ctx, s.index, s.partition, id)
+	if err != nil || !ok {
+		return TagRecord{}, nil, false, err
 	}
+	if members, err = s.tg.store.Members(ctx, s.index, s.partition, id); err != nil {
+		return TagRecord{}, nil, false, err
+	}
+	return rec, members, true, nil
+}
+
+// currentMembers reads the tag and its members (see readTag), all a rebuild
+// needs when every member is of the Tagger's model. Otherwise it re-embeds
+// those of another model (see refreshMembers) and reads the tag and its
+// members again. ok is false when there is nothing to build: the tag is gone,
+// or a member is still of another model (see rebuild).
+func (s *Scope) currentMembers(ctx context.Context, id string) (rec TagRecord, members []Member, ok bool, err error) {
+	rec, members, ok, err = s.readTag(ctx, id)
+	if err != nil || !ok || !slices.ContainsFunc(members, s.tg.otherModel) {
+		return rec, members, ok, err
+	}
+	if err = s.refreshMembers(ctx, members); err != nil {
+		return TagRecord{}, nil, false, err
+	}
+	if rec, members, ok, err = s.readTag(ctx, id); err != nil || !ok {
+		return rec, members, ok, err
+	}
+	return rec, members, !slices.ContainsFunc(members, s.tg.otherModel), nil
+}
+
+// otherModel reports whether the member's vector comes from another model than
+// the Tagger's.
+func (t *Tagger) otherModel(m Member) bool { return m.Model != t.cfg.Model }
+
+// refreshMembers re-embeds, from the text the store keeps, the members whose
+// vectors come from another model than the Tagger's, so that rebuild can blend
+// them in (see reembedItem). Each item it re-embeds bumps the Version of every
+// tag linked to it: currentMembers reads this tag again after that, and the
+// others are left stale, for their own rebuilds.
+func (s *Scope) refreshMembers(ctx context.Context, members []Member) error {
 	for _, m := range members {
-		if m.Model == s.tg.cfg.Model {
+		if !s.tg.otherModel(m) {
 			continue
 		}
 		item, ok, err := s.tg.store.Item(ctx, s.index, s.partition, m.ItemID)
@@ -101,7 +122,7 @@ func (s *Scope) refreshMembers(ctx context.Context, id string) error {
 			continue // deleted or re-embedded meanwhile
 		}
 		// not stored: the item was edited or deleted meanwhile by a writer that
-		// bumped this tag, and rebuild reads what that writer left (see rebuild)
+		// bumped this tag, and currentMembers reads what that writer left
 		if _, _, err := s.reembedItem(ctx, item); err != nil {
 			return err
 		}

@@ -686,6 +686,43 @@ func TestRebuild_ReadsTheMembersAfterTheTag(t *testing.T) {
 	}
 }
 
+// membersCountingStore counts the calls to Members.
+type membersCountingStore struct {
+	*MemStore
+	calls int
+}
+
+func (c *membersCountingStore) Members(ctx context.Context, i, p, id string) ([]Member, error) {
+	c.calls++
+	return c.MemStore.Members(ctx, i, p, id)
+}
+
+// TestRebuild_ReadsTheMembersOnceWhenAllAreCurrent: a rebuild whose members
+// are all of the Tagger's model builds the tag from its first read of them.
+// Every hand tag rebuilds its tag from all of its members, so a bulk import of
+// n hand tags of one tag reads n² member rows, and a second read would double
+// that.
+func TestRebuild_ReadsTheMembersOnceWhenAllAreCurrent(t *testing.T) {
+	ctx := context.Background()
+	store := &membersCountingStore{MemStore: NewMemStore()}
+	space := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	for _, id := range []string{"a", "b", "c"} {
+		must(t, space.SetItem(ctx, id, "rust ownership, part "+id))
+	}
+	must(t, space.TagByHand(ctx, "a", "1"))
+	must(t, space.TagByHand(ctx, "b", "1"))
+
+	store.calls = 0
+	must(t, space.TagByHand(ctx, "c", "1"))
+	if store.calls != 1 {
+		t.Fatalf("the rebuild of a tag whose members are all current read Members %d times, want once", store.calls)
+	}
+	if rec := mustTag(t, store, "1"); rec.Built != rec.Version {
+		t.Fatalf("TagByHand left the tag stale: Built %d, Version %d", rec.Built, rec.Version)
+	}
+}
+
 // deleteOnReadStore deletes tag "1" just before the first read of it once
 // armed, so the tag goes while a rebuild of it runs.
 type deleteOnReadStore struct {
