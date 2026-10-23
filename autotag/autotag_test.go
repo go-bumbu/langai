@@ -1092,8 +1092,9 @@ func (f *failingStore) SetTagVectors(ctx context.Context, i, p, id string, v int
 }
 
 // TestRebuildFailure_KeepsTheChangeAndHealsOnSuggest: a write whose rebuild
-// fails stays written and returns the rebuild's error, naming the tag, and the
-// next Suggest rebuilds the tag it left stale.
+// fails stays written and returns an error wrapping ErrNotRebuilt and the
+// rebuild's, naming the tag, and the next Suggest rebuilds the tag it left
+// stale.
 func TestRebuildFailure_KeepsTheChangeAndHealsOnSuggest(t *testing.T) {
 	ctx := context.Background()
 	store := &failingStore{MemStore: NewMemStore()}
@@ -1104,11 +1105,11 @@ func TestRebuildFailure_KeepsTheChangeAndHealsOnSuggest(t *testing.T) {
 
 	store.fail = true
 	err := space.TagByHand(ctx, "a", "1")
-	if !errors.Is(err, errStoreDown) {
-		t.Fatalf("TagByHand = %v, want the store's error", err)
+	if !errors.Is(err, ErrNotRebuilt) || !errors.Is(err, errStoreDown) {
+		t.Fatalf("TagByHand = %v, want ErrNotRebuilt and the store's error", err)
 	}
-	if want := `autotag: rebuild tag "1": `; !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("TagByHand = %q, want it to start with %q", err, want)
+	if want := `autotag: tag not rebuilt: tag "1": store is down`; err.Error() != want {
+		t.Errorf("TagByHand = %q, want %q", err, want)
 	}
 	ms, _ := store.Members(ctx, "1", "10", "1")
 	if len(ms) != 1 || ms[0].ItemID != "a" {
@@ -1143,7 +1144,7 @@ func TestRebuildAll_StopsAtTheFirstError(t *testing.T) {
 
 	store.fail = true
 	err := space.SetItem(ctx, "a", "cooking with rust")
-	if !errors.Is(err, errStoreDown) || !strings.HasPrefix(err.Error(), `autotag: rebuild tag "1": `) {
+	if !errors.Is(err, ErrNotRebuilt) || !errors.Is(err, errStoreDown) || err.Error() != `autotag: tag not rebuilt: tag "1": store is down` {
 		t.Fatalf("SetItem = %v, want the error of the rebuild of tag 1", err)
 	}
 	if !slices.Equal(store.refused, []string{"1"}) {
@@ -1151,5 +1152,193 @@ func TestRebuildAll_StopsAtTheFirstError(t *testing.T) {
 	}
 	if rec := mustTag(t, store, "2"); rec.Built == rec.Version {
 		t.Fatal("tag 2 is built at its Version, though no rebuild of it was stored")
+	}
+}
+
+// TestWrites_ThatCannotRebuildAreStoredAndRetryAsANoOp: every write that
+// stores its change and then cannot rebuild a tag it affects returns an error
+// wrapping ErrNotRebuilt and the cause. The change is stored, so calling the
+// write again changes nothing and succeeds, and a later Rebuild builds the tag.
+func TestWrites_ThatCannotRebuildAreStoredAndRetryAsANoOp(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(ctx context.Context, space *Scope) error
+	}{
+		{"SetTag", func(ctx context.Context, s *Scope) error { return s.SetTag(ctx, "1", "rust, renamed") }},
+		{"SetItem", func(ctx context.Context, s *Scope) error { return s.SetItem(ctx, "a", "rust ownership, edited") }},
+		{"DeleteItem", func(ctx context.Context, s *Scope) error { return s.DeleteItem(ctx, "a") }},
+		{"TagByHand", func(ctx context.Context, s *Scope) error { return s.TagByHand(ctx, "b", "1") }},
+		{"UntagByHand", func(ctx context.Context, s *Scope) error { return s.UntagByHand(ctx, "a", "1") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &failingStore{MemStore: NewMemStore()}
+			space := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "fake"}).Scope("1", "10")
+			must(t, space.SetTag(ctx, "1", "rust"))
+			must(t, space.SetItem(ctx, "a", "rust ownership"))
+			must(t, space.SetItem(ctx, "b", "rust borrowing"))
+			must(t, space.TagByHand(ctx, "a", "1"))
+
+			store.fail = true
+			if err := tc.write(ctx, space); !errors.Is(err, ErrNotRebuilt) || !errors.Is(err, errStoreDown) {
+				t.Fatalf("%s = %v, want ErrNotRebuilt and the store's error", tc.name, err)
+			}
+			refused := len(store.refused)
+			if err := tc.write(ctx, space); err != nil || len(store.refused) != refused {
+				t.Fatalf("%s again = %v, after %d more rebuilds; want nil and none: the change is stored",
+					tc.name, err, len(store.refused)-refused)
+			}
+			store.fail = false
+			must(t, space.Rebuild(ctx))
+			if rec := mustTag(t, store, "1"); rec.Built != rec.Version {
+				t.Fatalf("Rebuild left the tag stale: Built %d, Version %d", rec.Built, rec.Version)
+			}
+		})
+	}
+}
+
+// rejectingStub is the embedder of the ErrNotRebuilt tests: the name "alpha"
+// scores 0.80 against the item "q" (text "query") and "gamma" 0.70, and it has
+// no vector for any other text, such as the names "bad" and "bad too", so a
+// tag of such a name cannot be built.
+func rejectingStub() stubEmbedder {
+	const dims = 4
+	return stubEmbedder{dims: dims, vecs: map[string][]float32{
+		"alpha": scoreVec(dims, 1, 0.80),
+		"gamma": scoreVec(dims, 2, 0.70),
+		"query": unitVec(1, 0, 0, 0),
+	}}
+}
+
+// wantNotRebuilt stops the test unless err wraps ErrNotRebuilt, and checks
+// that it names each of the tags once.
+func wantNotRebuilt(t *testing.T, what string, err error, tagIDs ...string) {
+	t.Helper()
+	if !errors.Is(err, ErrNotRebuilt) {
+		t.Fatalf("%s = %v, want ErrNotRebuilt", what, err)
+	}
+	for _, id := range tagIDs {
+		if n := strings.Count(err.Error(), fmt.Sprintf("tag %q", id)); n != 1 {
+			t.Errorf("%s = %q, which names tag %s %d times, want once", what, err, id, n)
+		}
+	}
+}
+
+// TestSetTag_ANameTheEmbedderRejectsIsStoredButNotRebuilt: SetTag stores the
+// tag before it embeds the name, so a name the embedder rejects fails the
+// rebuild and not the write: the error wraps ErrNotRebuilt and the cause and
+// names the tag, the tag is stored, and SetTag again is a no-op. A write that
+// fails before it stores anything, as SetItem does on a text the embedder
+// rejects, is not ErrNotRebuilt.
+func TestSetTag_ANameTheEmbedderRejectsIsStoredButNotRebuilt(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	space := mustNew(t, rejectingStub(), store, Config{Model: "stub"}).Scope("1", "10")
+
+	err := space.SetTag(ctx, "1", "bad")
+	if want := `autotag: tag not rebuilt: tag "1": stubEmbedder: no vector for "bad"`; !errors.Is(err, ErrNotRebuilt) || err.Error() != want {
+		t.Fatalf("SetTag with a name the embedder rejects = %v, want ErrNotRebuilt: %q", err, want)
+	}
+	if rec := mustTag(t, store, "1"); rec.Name != "bad" || rec.Built == rec.Version {
+		t.Fatalf("tag = %+v, want it stored under its name, and unbuilt", rec)
+	}
+	if err := space.SetTag(ctx, "1", "bad"); err != nil {
+		t.Fatalf("SetTag again = %v, want nil: the change is stored", err)
+	}
+
+	err = space.SetItem(ctx, "a", "a text the embedder rejects")
+	if err == nil || errors.Is(err, ErrNotRebuilt) {
+		t.Fatalf("SetItem with a text the embedder rejects = %v, want an error, and not ErrNotRebuilt: nothing was stored", err)
+	}
+	if _, ok, _ := store.Item(ctx, "1", "10", "a"); ok {
+		t.Fatal("SetItem stored the item whose text it could not embed")
+	}
+}
+
+// TestSuggest_ATagThatCannotBeRebuiltLeavesTheOthers: Suggest goes on past a
+// tag it cannot rebuild, and ranks the others as rank does: a tag never built
+// is left out, and one whose last rebuild failed scores with the vectors it
+// had. It returns their ids with an error that wraps ErrNotRebuilt and names
+// each tag that failed, once, and Rebuild returns the same error.
+func TestSuggest_ATagThatCannotBeRebuiltLeavesTheOthers(t *testing.T) {
+	ctx := context.Background()
+	store := &failingStore{MemStore: NewMemStore()}
+	space := mustNew(t, rejectingStub(), store, Config{Model: "stub"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "alpha"))
+	wantNotRebuilt(t, "SetTag(2, bad)", space.SetTag(ctx, "2", "bad"), "2")
+	must(t, space.SetTag(ctx, "3", "gamma"))
+	wantNotRebuilt(t, "SetTag(3, bad too)", space.SetTag(ctx, "3", "bad too"), "3")
+	store.fail = true
+	wantNotRebuilt(t, "SetTag(4, alpha) while the store is down", space.SetTag(ctx, "4", "alpha"), "4")
+	store.fail = false
+	must(t, space.SetItem(ctx, "q", "query"))
+
+	ids, err := space.Suggest(ctx, "q")
+	// 2 has no vector, 3 keeps the one of its old name, and 4, which comes
+	// after the tags that fail, is rebuilt and scores as 1 does
+	if want := []string{"1", "4", "3"}; !slices.Equal(ids, want) {
+		t.Errorf("Suggest = %v, want %v", ids, want)
+	}
+	wantNotRebuilt(t, "Suggest", err, "2", "3")
+	if strings.Contains(err.Error(), `tag "4"`) {
+		t.Errorf("Suggest = %q, which names tag 4, though it rebuilt it", err)
+	}
+	wantNotRebuilt(t, "Rebuild", space.Rebuild(ctx), "2", "3")
+}
+
+// flakyStore is a MemStore whose Item fails while itemDown is set, and whose
+// Tags fails from its tagsDownAt-th call on (0: never), as a backend's would
+// once its database cannot be reached.
+type flakyStore struct {
+	*MemStore
+	itemDown              bool
+	tagsCalls, tagsDownAt int
+}
+
+func (f *flakyStore) Item(ctx context.Context, i, p, id string) (ItemRecord, bool, error) {
+	if f.itemDown {
+		return ItemRecord{}, false, errStoreDown
+	}
+	return f.MemStore.Item(ctx, i, p, id)
+}
+
+func (f *flakyStore) Tags(ctx context.Context, i, p string) ([]TagRecord, error) {
+	f.tagsCalls++
+	if f.tagsDownAt > 0 && f.tagsCalls >= f.tagsDownAt {
+		return nil, errStoreDown
+	}
+	return f.MemStore.Tags(ctx, i, p)
+}
+
+// TestSuggest_OtherErrorsReturnNoIDs: only tags that cannot be rebuilt let
+// Suggest return ids with its error. A failed read of the item or of the tags
+// returns none, and no ErrNotRebuilt, even when it comes after a tag failed to
+// rebuild in the same call, and so does an unknown item.
+func TestSuggest_OtherErrorsReturnNoIDs(t *testing.T) {
+	ctx := context.Background()
+	store := &flakyStore{MemStore: NewMemStore()}
+	space := mustNew(t, rejectingStub(), store, Config{Model: "stub"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "alpha"))
+	wantNotRebuilt(t, "SetTag(2, bad)", space.SetTag(ctx, "2", "bad"), "2")
+	must(t, space.SetItem(ctx, "q", "query"))
+
+	for _, tc := range []struct {
+		name       string
+		itemDown   bool
+		tagsDownAt int
+		itemID     string
+		want       error
+	}{
+		{"the read of the item fails", true, 0, "q", errStoreDown},
+		{"the first read of the tags fails", false, 1, "q", errStoreDown},
+		// the first pass fails to rebuild tag 2, and the second reads the tags again
+		{"the read of the tags after a failed rebuild fails", false, 2, "q", errStoreDown},
+		{"the item is unknown", false, 0, "missing", ErrUnknownItem},
+	} {
+		store.itemDown, store.tagsCalls, store.tagsDownAt = tc.itemDown, 0, tc.tagsDownAt
+		ids, err := space.Suggest(ctx, tc.itemID)
+		if ids != nil || !errors.Is(err, tc.want) || errors.Is(err, ErrNotRebuilt) {
+			t.Errorf("Suggest when %s = %v, %v; want no ids and %v, and not ErrNotRebuilt", tc.name, ids, err, tc.want)
+		}
 	}
 }

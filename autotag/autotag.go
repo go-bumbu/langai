@@ -109,14 +109,22 @@ func New(emb semsearch.Embedder, store Store, cfg Config) (*Tagger, error) {
 	return &Tagger{emb: emb, store: store, cfg: cfg, params: params}, nil
 }
 
+// ErrNotRebuilt is wrapped, together with its cause, by the error of a write
+// that stored its change but could not then rebuild a tag the change affects:
+// the change is stored; the tag is rebuilt by a later Suggest or Rebuild;
+// retrying the call is a safe no-op. Suggest and Rebuild wrap it too, for the
+// tags they could not rebuild, and name each one. Test for it with errors.Is.
+var ErrNotRebuilt = errors.New("autotag: tag not rebuilt")
+
 // Scope is a handle on one set of tags and items: its index is the store's
 // hard isolation boundary (a tenant, say) and its partition a further
 // coordinate within it (a space of that tenant). Scopes never see each
 // other's tags, items or links.
 //
-// A write rebuilds the tags it changes before it returns. If that rebuild
-// fails, the write stays and the error is returned, naming the tag; the next
-// Suggest rebuilds it.
+// A write rebuilds the tags it changes before it returns. If a rebuild fails,
+// the write returns an error that wraps ErrNotRebuilt and the cause, naming
+// the tag: the change is stored; the tag is rebuilt by a later Suggest or
+// Rebuild; retrying the call is a safe no-op.
 type Scope struct {
 	tg               *Tagger
 	index, partition string
@@ -132,7 +140,9 @@ func (t *Tagger) Scope(index, partition string) *Scope {
 // SetTag creates the tag, or renames it, and rebuilds it. The name is
 // embedded as the tag's prior: a full path such as "colors / warm / red"
 // carries more than the leaf alone. Setting the name the tag has changes
-// nothing. An empty id or a blank name is an error.
+// nothing. An empty id or a blank name is an error. When the error wraps
+// ErrNotRebuilt, the change is stored; the tag is rebuilt by a later Suggest
+// or Rebuild; retrying the call is a safe no-op.
 func (s *Scope) SetTag(ctx context.Context, tagID, name string) error {
 	if tagID == "" {
 		return errors.New("autotag: empty tag id")
@@ -157,9 +167,12 @@ func (s *Scope) DeleteTag(ctx context.Context, tagID string) error {
 }
 
 // SetItem creates the item, or replaces its text, and rebuilds the tags it is
-// tagged with by hand. The text is embedded unless it is the item's current
-// text, embedded under the Tagger's model already. An empty id or blank text
-// is an error.
+// tagged with by hand, in id order, stopping at the first that fails. The text
+// is embedded unless it is the item's current text, embedded under the
+// Tagger's model already. An empty id or blank text is an error. When the
+// error wraps ErrNotRebuilt, the change is stored; the tag is rebuilt by a
+// later Suggest or Rebuild, and so are the ones after it; retrying the call is
+// a safe no-op.
 func (s *Scope) SetItem(ctx context.Context, itemID, text string) error {
 	if itemID == "" {
 		return errors.New("autotag: empty item id")
@@ -182,7 +195,10 @@ func (s *Scope) SetItem(ctx context.Context, itemID, text string) error {
 }
 
 // DeleteItem deletes the item and its hand-made links, and rebuilds the tags
-// it was tagged with. An unknown item is no error.
+// it was tagged with, in id order, stopping at the first that fails. An
+// unknown item is no error. When the error wraps ErrNotRebuilt, the change is
+// stored; the tag is rebuilt by a later Suggest or Rebuild, and so are the
+// ones after it; retrying the call is a safe no-op.
 func (s *Scope) DeleteItem(ctx context.Context, itemID string) error {
 	linked, err := s.tg.store.DeleteItem(ctx, s.index, s.partition, itemID)
 	if err != nil {
@@ -194,7 +210,9 @@ func (s *Scope) DeleteItem(ctx context.Context, itemID string) error {
 // TagByHand records that a person tagged the item with the tag, which makes
 // the item a member of the tag, one of the examples it learns from, and
 // rebuilds the tag. A link that exists already changes nothing. An unknown
-// item is ErrUnknownItem, and an unknown tag ErrUnknownTag.
+// item is ErrUnknownItem, and an unknown tag ErrUnknownTag. When the error
+// wraps ErrNotRebuilt, the change is stored; the tag is rebuilt by a later
+// Suggest or Rebuild; retrying the call is a safe no-op.
 func (s *Scope) TagByHand(ctx context.Context, itemID, tagID string) error {
 	changed, err := s.tg.store.Link(ctx, s.index, s.partition, itemID, tagID)
 	if err != nil {
@@ -207,7 +225,9 @@ func (s *Scope) TagByHand(ctx context.Context, itemID, tagID string) error {
 }
 
 // UntagByHand removes the hand-made link between the item and the tag, and
-// rebuilds the tag. Without such a link it does nothing.
+// rebuilds the tag. Without such a link it does nothing. When the error wraps
+// ErrNotRebuilt, the change is stored; the tag is rebuilt by a later Suggest
+// or Rebuild; retrying the call is a safe no-op.
 func (s *Scope) UntagByHand(ctx context.Context, itemID, tagID string) error {
 	changed, err := s.tg.store.Unlink(ctx, s.index, s.partition, itemID, tagID)
 	if err != nil {
@@ -225,6 +245,13 @@ func (s *Scope) UntagByHand(ctx context.Context, itemID, tagID string) error {
 // stored as a link: only TagByHand teaches a tag. Suggest first rebuilds every
 // stale tag of the scope, and re-embeds the item's stored text when it was
 // embedded under another model. An unknown item is ErrUnknownItem.
+//
+// A tag that cannot be rebuilt does not stop Suggest: it rebuilds the others,
+// ranks every tag it can, and returns the ids with an error that wraps
+// ErrNotRebuilt and names each tag that failed. When errors.Is(err,
+// ErrNotRebuilt), ids is still valid: it leaves out, or uses the previous
+// vectors of, the tags that could not be rebuilt. Any other error returns no
+// ids.
 func (s *Scope) Suggest(ctx context.Context, itemID string) ([]string, error) {
 	item, ok, err := s.tg.store.Item(ctx, s.index, s.partition, itemID)
 	if err != nil {
@@ -238,17 +265,19 @@ func (s *Scope) Suggest(ctx context.Context, itemID string) ([]string, error) {
 		return nil, err
 	}
 	tags, err := s.rebuildStale(ctx)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrNotRebuilt) {
 		return nil, err
 	}
-	return rank(vec, tags, s.tg.cfg.Model), nil
+	return rank(vec, tags, s.tg.cfg.Model), err
 }
 
 // Rebuild rebuilds every stale tag of the scope now, rather than at the next
 // Suggest: a tag whose rebuild failed or was overtaken, or one built under
 // another model or with other scoring settings. It warms a scope up, after a
 // switch of models say; an item that no tag is linked to is still re-embedded
-// only at its next Suggest.
+// only at its next Suggest. A tag that cannot be rebuilt does not stop it: once
+// it has rebuilt the others, it returns the error Suggest would, which wraps
+// ErrNotRebuilt and names each tag that failed.
 func (s *Scope) Rebuild(ctx context.Context) error {
 	_, err := s.rebuildStale(ctx)
 	return err

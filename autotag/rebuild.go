@@ -2,6 +2,7 @@ package autotag
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -31,12 +32,12 @@ func (t *Tagger) stale(tag TagRecord) bool {
 // rebuild. Nor is a member that is still of another model after the re-embed,
 // because it was edited under that model meanwhile: rather than build the tag
 // without it, rebuild stores nothing and leaves the tag stale, for the next
-// pass of rebuildStale to re-embed the member. An error comes back wrapped,
-// naming the tag.
+// pass of rebuildStale to re-embed the member. An error comes back wrapping
+// ErrNotRebuilt and the cause, naming the tag.
 func (s *Scope) rebuild(ctx context.Context, id string) (err error) {
 	defer func() {
 		if err != nil {
-			err = fmt.Errorf("autotag: rebuild tag %q: %w", id, err)
+			err = fmt.Errorf("%w: tag %q: %w", ErrNotRebuilt, id, err)
 		}
 	}()
 	rec, members, ok, err := s.currentMembers(ctx, id)
@@ -134,8 +135,9 @@ func (s *Scope) refreshMembers(ctx context.Context, members []Member) error {
 	return nil
 }
 
-// rebuildAll rebuilds the tags in order and stops at the first error; the
-// tags after it stay stale until the next Suggest.
+// rebuildAll rebuilds the tags in order and stops at the first error, which
+// wraps ErrNotRebuilt (see rebuild); that tag and the ones after it stay stale
+// until the next Suggest or Rebuild.
 func (s *Scope) rebuildAll(ctx context.Context, ids []string) error {
 	for _, id := range ids {
 		if err := s.rebuild(ctx, id); err != nil {
@@ -149,24 +151,36 @@ func (s *Scope) rebuildAll(ctx context.Context, ids []string) error {
 // change that lands during a pass can leave a tag stale again, so it makes up
 // to rebuildPasses passes and then returns the tags as they are: one still
 // stale then is scored with the vectors it has if they are of the Tagger's
-// model, and skipped if not (see rank).
+// model, and skipped if not (see rank). A tag whose rebuild fails is not tried
+// again in the passes after: rebuildStale goes on with the others, and returns
+// the tags with the errors of the tags that failed, joined, each wrapping
+// ErrNotRebuilt and naming its tag. Any other error, a failed read of the
+// tags, returns no tags, and that error alone.
 func (s *Scope) rebuildStale(ctx context.Context) ([]TagRecord, error) {
+	failed := map[string]bool{}
+	var errs []error
+	pending := func(tag TagRecord) bool { return s.tg.stale(tag) && !failed[tag.ID] }
 	for range rebuildPasses {
 		tags, err := s.tg.store.Tags(ctx, s.index, s.partition)
 		if err != nil {
 			return nil, err
 		}
-		if !slices.ContainsFunc(tags, s.tg.stale) {
-			return tags, nil
+		if !slices.ContainsFunc(tags, pending) {
+			return tags, errors.Join(errs...)
 		}
 		for _, tag := range tags {
-			if !s.tg.stale(tag) {
+			if !pending(tag) {
 				continue
 			}
 			if err := s.rebuild(ctx, tag.ID); err != nil {
-				return nil, err
+				failed[tag.ID] = true
+				errs = append(errs, err)
 			}
 		}
 	}
-	return s.tg.store.Tags(ctx, s.index, s.partition)
+	tags, err := s.tg.store.Tags(ctx, s.index, s.partition)
+	if err != nil {
+		return nil, err
+	}
+	return tags, errors.Join(errs...)
 }
