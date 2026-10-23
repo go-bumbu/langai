@@ -52,6 +52,17 @@ const (
 // a tag's members weigh as much as its name at SmoothingK members, and
 // outweigh it beyond that (<=0 defaults to DefaultSmoothingK; New refuses NaN
 // and +Inf). There is no limit on how many tags an item gets.
+//
+// Every Tagger that shares a Store must use one Model and one set of scoring
+// settings. A Tagger takes a tag built under another model or with other
+// settings for stale, and rebuilds it, re-embedding its members under its own
+// model when the models differ, so two Taggers that differ rebuild each
+// other's tags at every Suggest and never settle. To switch models in place,
+// stop every instance together, start them with the new Model, and call
+// Rebuild on every scope. To switch without stopping, open a new generation
+// of the store (WithGeneration, in sqlitestore and pgstore): its tables start
+// empty, so replay every tag, item and hand-made link into it, and write to
+// both stores until the cutover.
 type Config struct {
 	Model          string
 	NameMinScore   float64
@@ -209,11 +220,12 @@ func (s *Scope) DeleteItem(ctx context.Context, itemID string) error {
 
 // TagByHand records that a person tagged the item with the tag, which makes
 // the item a member of the tag, one of the examples it learns from, and
-// rebuilds the tag. A link that exists already changes nothing. An unknown
-// item is ErrUnknownItem, and an unknown tag ErrUnknownTag; an error of the
-// store comes back naming both ids. When the error wraps ErrNotRebuilt, the
-// change is stored; the tag is rebuilt by a later Suggest or Rebuild; retrying
-// the call is a safe no-op.
+// rebuilds the tag at once, from all of its members: a bulk import of n hand
+// tags of one tag reads its members n times, about n²/2 rows in all. A link
+// that exists already changes nothing. An unknown item is ErrUnknownItem, and
+// an unknown tag ErrUnknownTag; an error of the store comes back naming both
+// ids. When the error wraps ErrNotRebuilt, the change is stored; the tag is
+// rebuilt by a later Suggest or Rebuild; retrying the call is a safe no-op.
 func (s *Scope) TagByHand(ctx context.Context, itemID, tagID string) error {
 	changed, err := s.tg.store.Link(ctx, s.index, s.partition, itemID, tagID)
 	if err != nil {
