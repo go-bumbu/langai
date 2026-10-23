@@ -11,6 +11,15 @@
 // Several goroutines can write at once with no special setup. A write that
 // changes more than one row locks them in a fixed order, so concurrent writes
 // queue up on the row locks rather than deadlock.
+//
+// That locking relies on READ COMMITTED isolation, Postgres's default, where
+// each statement sees the rows committed before it ran. The store begins every
+// transaction of its own at READ COMMITTED, whatever the setting
+// default_transaction_isolation says. Its single-statement writes run outside
+// a transaction, at the session's default level, so keep that at READ
+// COMMITTED for the store's connections: under REPEATABLE READ or SERIALIZABLE
+// they can fail with a serialization error (SQLSTATE 40001), which the store
+// does not retry.
 package pgstore
 
 import (

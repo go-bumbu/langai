@@ -78,6 +78,25 @@ func TestCodec_RoundTripsAndRejectsTornBlobs(t *testing.T) {
 	}
 }
 
+// TestDialects_PinTheirTransactionIsolation: the Postgres store's writes rely
+// on READ COMMITTED, where each statement sees the rows committed before it
+// ran. Under REPEATABLE READ a DeleteItem racing a Link can leave a link row
+// behind, and under SERIALIZABLE writes fail with serialization errors, so its
+// transactions begin at READ COMMITTED whatever the database's default. SQLite
+// runs one writer at a time, and go-sqlite3 takes no level, so its Dialect asks
+// for the default, the one level database/sql lets every driver accept.
+func TestDialects_PinTheirTransactionIsolation(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		d    Dialect
+		want sql.IsolationLevel
+	}{{"Postgres", Postgres, sql.LevelReadCommitted}, {"SQLite", SQLite, sql.LevelDefault}} {
+		if c.d.Isolation != c.want {
+			t.Errorf("%s.Isolation = %v, want %v", c.name, c.d.Isolation, c.want)
+		}
+	}
+}
+
 func TestRebind(t *testing.T) {
 	cases := []struct{ query, want string }{
 		{"a = ? AND b = ?", "a = $1 AND b = $2"},

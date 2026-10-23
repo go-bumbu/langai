@@ -39,17 +39,29 @@ type Dialect struct {
 	// write compares, so that order and equality are byte-wise on every backend,
 	// as they are in Go. It is empty where the default collation already is.
 	Collate string
+	// Isolation is the level every transaction of the store begins at,
+	// whatever the database's default.
+	Isolation sql.IsolationLevel
 }
 
 // SQLite is the Dialect of SQLite, whose default collation, BINARY, compares
 // bytes, and which has no row locks: a write transaction locks the database.
-var SQLite = Dialect{Blob: "BLOB", Float: "REAL", Int: "INTEGER"}
+// It runs one writer at a time, and go-sqlite3 takes no isolation level, so
+// its transactions ask for the default: the one level database/sql lets every
+// driver accept.
+var SQLite = Dialect{Blob: "BLOB", Float: "REAL", Int: "INTEGER", Isolation: sql.LevelDefault}
 
 // Postgres is the Dialect of PostgreSQL, whose default collation follows the
-// database's locale: "C" compares bytes.
+// database's locale: "C" compares bytes. Its transactions begin at READ
+// COMMITTED, Postgres's own default, whatever default_transaction_isolation
+// says, because the locking of the writes (see Store) relies on each statement
+// seeing the rows committed before it ran: under REPEATABLE READ a DeleteItem
+// racing a Link could leave a link row behind, and under SERIALIZABLE writes
+// would fail with serialization errors.
 var Postgres = Dialect{
 	Blob: "BYTEA", Float: "DOUBLE PRECISION", Int: "BIGINT",
 	Numbered: true, ForUpdate: " FOR UPDATE", Collate: ` COLLATE "C"`,
+	Isolation: sql.LevelReadCommitted,
 }
 
 // tables are the names of the tables of one index.
@@ -206,11 +218,11 @@ type dbtx interface {
 // scanner is what *sql.Row and *sql.Rows share.
 type scanner interface{ Scan(dest ...any) error }
 
-// inTx runs fn in a transaction: it commits when fn returns nil, and rolls back
-// otherwise. fn must use tx and never s.db, whose other connection would wait
-// for the locks tx holds.
+// inTx runs fn in a transaction at the Dialect's isolation level: it commits
+// when fn returns nil, and rolls back otherwise. fn must use tx and never s.db,
+// whose other connection would wait for the locks tx holds.
 func (s *Store) inTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: s.d.Isolation})
 	if err != nil {
 		return err
 	}
