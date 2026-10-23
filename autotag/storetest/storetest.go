@@ -131,17 +131,19 @@ func setTagVectorsChecksTheVersion(t *testing.T, s autotag.Store) {
 	}
 }
 
-// tagsAreOrderedByID: Tags lists the tags by ID, whatever order they were put in.
+// tagsAreOrderedByID: Tags lists the tags by ID, byte-wise as Go compares
+// strings, whatever order they were put in. "B" sorts before "a" byte-wise but
+// after it in a locale's collation, such as Postgres's en_US.utf8.
 func tagsAreOrderedByID(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 	if got := sc.tags(); len(got) != 0 {
 		t.Fatalf("Tags of an empty scope = %+v, want none", got)
 	}
 
-	for _, id := range []string{"b", "a", "c"} {
+	for _, id := range []string{"b", "B", "a", "c"} {
 		sc.putTag(id, "tag "+id)
 	}
-	if got, want := tagIDs(sc.tags()), []string{"a", "b", "c"}; !slices.Equal(got, want) {
+	if got, want := tagIDs(sc.tags()), []string{"B", "a", "b", "c"}; !slices.Equal(got, want) {
 		t.Errorf("ids from Tags = %v, want %v", got, want)
 	}
 }
@@ -315,7 +317,10 @@ func setItemVectorChecksTheText(t *testing.T, s autotag.Store) {
 }
 
 // deleteItemBumpsItsTagsAndDropsLinks: deleting an item bumps and reports the
-// tags that were linked to it, and removes it from their members.
+// tags that were linked to it, and removes it from their members. Its links go
+// with it, so an item put later under the same id starts without them: a link
+// left behind would stay out of sight in Members, which joins links to the
+// items there are, until the id came back.
 func deleteItemBumpsItsTagsAndDropsLinks(t *testing.T, s autotag.Store) {
 	sc := seedLinked(t, s)
 	before := sc.versions("t1", "t2", "t3")
@@ -333,22 +338,42 @@ func deleteItemBumpsItsTagsAndDropsLinks(t *testing.T, s autotag.Store) {
 		t.Error("Item found the item after DeleteItem")
 	}
 
+	deleted := sc.versions("t1", "t2", "t3")
+	if got := sc.putItem(newItem("i1")); len(got) != 0 {
+		t.Errorf("PutItem of an item put again after DeleteItem returned %v, want none: its links went with it", got)
+	}
+	for _, id := range []string{"t1", "t2"} {
+		if got := sc.members(id); len(got) != 0 {
+			t.Errorf("Members of %s after the deleted item was put again = %+v, want none", id, got)
+		}
+	}
+	if got := sc.versions("t1", "t2", "t3"); !slices.Equal(got, deleted) {
+		t.Errorf("Versions of t1, t2, t3 after the deleted item was put again = %v, want them unchanged: %v", got, deleted)
+	}
+
 	if got := sc.deleteItem("unknown"); len(got) != 0 {
 		t.Errorf("DeleteItem of an unknown item returned %v, want none", got)
 	}
 }
 
-// membersAreOrderedByItemID: Members lists the items by ItemID, whatever order
-// they were linked in, each with the vector and model it was put with.
+// membersAreOrderedByItemID: Members lists the items by ItemID, byte-wise as
+// Go compares strings, whatever order they were put and linked in, each with
+// the vector and model it was put with. The order they are put and linked in,
+// b2 B1 a3, and a locale's collation, a3 B1 b2, both differ from the byte
+// order, B1 a3 b2, so a store that returns them in the order they came, or
+// sorts them by its database's collation, fails.
 func membersAreOrderedByItemID(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 	sc.putTag("t1", "a")
-	sc.putItem(autotag.ItemRecord{ID: "i1", Text: "x", Vec: v1, Model: "m1"})
-	sc.putItem(autotag.ItemRecord{ID: "i2", Text: "y", Vec: v2, Model: "m2"})
-	sc.link("i2", "t1")
-	sc.link("i1", "t1")
+	v3 := []float32{0.25}
+	sc.putItem(autotag.ItemRecord{ID: "b2", Text: "x", Vec: v1, Model: "m1"})
+	sc.putItem(autotag.ItemRecord{ID: "B1", Text: "y", Vec: v2, Model: "m2"})
+	sc.putItem(autotag.ItemRecord{ID: "a3", Text: "z", Vec: v3, Model: "m3"})
+	for _, id := range []string{"b2", "B1", "a3"} {
+		sc.link(id, "t1")
+	}
 
-	want := []autotag.Member{{ItemID: "i1", Vec: v1, Model: "m1"}, {ItemID: "i2", Vec: v2, Model: "m2"}}
+	want := []autotag.Member{{ItemID: "B1", Vec: v2, Model: "m2"}, {ItemID: "a3", Vec: v3, Model: "m3"}, {ItemID: "b2", Vec: v1, Model: "m1"}}
 	if got := sc.members("t1"); !reflect.DeepEqual(got, want) {
 		t.Errorf("Members = %+v, want %+v", got, want)
 	}
