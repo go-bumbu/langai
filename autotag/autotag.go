@@ -210,13 +210,14 @@ func (s *Scope) DeleteItem(ctx context.Context, itemID string) error {
 // TagByHand records that a person tagged the item with the tag, which makes
 // the item a member of the tag, one of the examples it learns from, and
 // rebuilds the tag. A link that exists already changes nothing. An unknown
-// item is ErrUnknownItem, and an unknown tag ErrUnknownTag. When the error
-// wraps ErrNotRebuilt, the change is stored; the tag is rebuilt by a later
-// Suggest or Rebuild; retrying the call is a safe no-op.
+// item is ErrUnknownItem, and an unknown tag ErrUnknownTag; an error of the
+// store comes back naming both ids. When the error wraps ErrNotRebuilt, the
+// change is stored; the tag is rebuilt by a later Suggest or Rebuild; retrying
+// the call is a safe no-op.
 func (s *Scope) TagByHand(ctx context.Context, itemID, tagID string) error {
 	changed, err := s.tg.store.Link(ctx, s.index, s.partition, itemID, tagID)
 	if err != nil {
-		return err
+		return fmt.Errorf("autotag: tag item %q with %q: %w", itemID, tagID, err)
 	}
 	if !changed {
 		return nil
@@ -225,13 +226,14 @@ func (s *Scope) TagByHand(ctx context.Context, itemID, tagID string) error {
 }
 
 // UntagByHand removes the hand-made link between the item and the tag, and
-// rebuilds the tag. Without such a link it does nothing. When the error wraps
-// ErrNotRebuilt, the change is stored; the tag is rebuilt by a later Suggest
-// or Rebuild; retrying the call is a safe no-op.
+// rebuilds the tag. Without such a link it does nothing. An error of the store
+// comes back naming both ids. When the error wraps ErrNotRebuilt, the change
+// is stored; the tag is rebuilt by a later Suggest or Rebuild; retrying the
+// call is a safe no-op.
 func (s *Scope) UntagByHand(ctx context.Context, itemID, tagID string) error {
 	changed, err := s.tg.store.Unlink(ctx, s.index, s.partition, itemID, tagID)
 	if err != nil {
-		return err
+		return fmt.Errorf("autotag: untag item %q from %q: %w", itemID, tagID, err)
 	}
 	if !changed {
 		return nil

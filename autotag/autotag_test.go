@@ -342,8 +342,32 @@ func TestTagByHand_UnknownItemOrTag(t *testing.T) {
 		{"missing", "1", ErrUnknownItem},
 		{"a", "missing", ErrUnknownTag},
 	} {
-		if err := space.TagByHand(ctx, tc.itemID, tc.tagID); !errors.Is(err, tc.want) {
+		err := space.TagByHand(ctx, tc.itemID, tc.tagID)
+		if !errors.Is(err, tc.want) {
 			t.Errorf("TagByHand(%q, %q) = %v, want %v", tc.itemID, tc.tagID, err, tc.want)
+		}
+		if want := fmt.Sprintf("autotag: tag item %q with %q: ", tc.itemID, tc.tagID); err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("TagByHand(%q, %q) = %v, want it to start with %q, naming both ids", tc.itemID, tc.tagID, err, want)
+		}
+	}
+}
+
+// TestHandTagStoreErrors_NameBothIDs: an error of the store's Link or Unlink
+// comes back naming the item and the tag, and still wraps what the store
+// returned. The store refuses an empty index.
+func TestHandTagStoreErrors_NameBothIDs(t *testing.T) {
+	ctx := context.Background()
+	space := mustNew(t, semsearch.FakeEmbedder{}, NewMemStore(), Config{Model: "fake"}).Scope("", "10")
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"TagByHand", space.TagByHand(ctx, "a", "1"), `autotag: tag item "a" with "1": `},
+		{"UntagByHand", space.UntagByHand(ctx, "a", "1"), `autotag: untag item "a" from "1": `},
+	} {
+		if !errors.Is(tc.err, errEmptyIndex) || !strings.HasPrefix(tc.err.Error(), tc.want) {
+			t.Errorf("%s in a scope with an empty index = %v, want the store's error, starting with %q", tc.name, tc.err, tc.want)
 		}
 	}
 }
