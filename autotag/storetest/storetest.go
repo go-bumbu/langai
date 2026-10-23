@@ -146,7 +146,8 @@ func tagsAreOrderedByID(t *testing.T, s autotag.Store) {
 }
 
 // deleteTagDropsItsLinks: a deleted tag takes its links with it, so a tag
-// created later under the same id starts without members.
+// created later under the same id starts without members. Members of a tag
+// the store does not hold, deleted or never put, are none, and no error.
 func deleteTagDropsItsLinks(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 	sc.putTag("t1", "a")
@@ -156,6 +157,11 @@ func deleteTagDropsItsLinks(t *testing.T, s autotag.Store) {
 	sc.deleteTag("t1")
 	if _, ok := sc.lookupTag("t1"); ok {
 		t.Error("Tag found the tag after DeleteTag")
+	}
+	for _, id := range []string{"t1", "never-put"} {
+		if got := sc.members(id); len(got) != 0 {
+			t.Errorf("Members of %s, a tag the store does not hold, = %+v, want none", id, got)
+		}
 	}
 
 	sc.putTag("t1", "a")
@@ -267,23 +273,20 @@ func putItemBumpsItsTags(t *testing.T, s autotag.Store) {
 
 // setItemVectorChecksTheText: SetItemVector stores an item's new vector and
 // model only while the item still has the text they were computed from, and
-// then bumps and reports the tags linked to it, as PutItem does. For an item
-// whose text changed, or one that is not there, it changes nothing.
+// then bumps and reports the tags linked to it, ordered, as PutItem does. For
+// an item whose text changed, or one that is not there, it changes nothing,
+// bumps nothing and reports no tag.
 func setItemVectorChecksTheText(t *testing.T, s autotag.Store) {
-	sc := newScope(t, s, idx, part)
-	sc.putTag("t1", "a")
-	sc.putTag("t2", "b")
-	sc.putItem(autotag.ItemRecord{ID: "i1", Text: "x", Vec: v1, Model: "m"})
-	sc.link("i1", "t1")
-	before := sc.versions("t1", "t2")
+	sc := seedLinked(t, s)
+	text := newItem("i1").Text
+	before := sc.versions("t1", "t2", "t3")
 
-	if linked, stored := sc.setItemVector("i1", "x", v2, "m2"); !stored || !slices.Equal(linked, []string{"t1"}) {
-		t.Errorf("SetItemVector with the item's text = %v, %v; want [t1], true", linked, stored)
+	// i1 was linked to t2 first, so ids in link order would come out reversed
+	if linked, stored := sc.setItemVector("i1", text, v2, "m2"); !stored || !slices.Equal(linked, []string{"t1", "t2"}) {
+		t.Errorf("SetItemVector with the item's text = %v, %v; want [t1 t2], true", linked, stored)
 	}
-	if got, want := sc.versions("t1", "t2"), []int64{before[0] + 1, before[1]}; !slices.Equal(got, want) {
-		t.Errorf("Versions of t1, t2 after SetItemVector = %v, want %v: only the linked t1 bumped", got, want)
-	}
-	want := autotag.ItemRecord{ID: "i1", Text: "x", Vec: v2, Model: "m2"}
+	wantLinkedTagsBumped(sc, before, "SetItemVector")
+	want := autotag.ItemRecord{ID: "i1", Text: text, Vec: v2, Model: "m2"}
 	if got := sc.item("i1"); !reflect.DeepEqual(got, want) {
 		t.Errorf("Item after SetItemVector = %+v, want %+v", got, want)
 	}
@@ -291,19 +294,19 @@ func setItemVectorChecksTheText(t *testing.T, s autotag.Store) {
 		t.Errorf("Members after SetItemVector = %+v, want %+v", got, want)
 	}
 
-	before = sc.versions("t1", "t2")
-	if linked, stored := sc.setItemVector("i1", "y", v1, "m3"); stored || len(linked) != 0 {
-		t.Errorf("SetItemVector with another text = %v, %v; want nothing, false", linked, stored)
+	before = sc.versions("t1", "t2", "t3")
+	if linked, stored := sc.setItemVector("i1", "another text", v1, "m3"); stored || len(linked) != 0 {
+		t.Errorf("SetItemVector with another text = %v, %v; want no tags, false", linked, stored)
 	}
 	if got := sc.item("i1"); !reflect.DeepEqual(got, want) {
 		t.Errorf("Item after SetItemVector with another text = %+v, want it unchanged: %+v", got, want)
 	}
-	if got := sc.versions("t1", "t2"); !slices.Equal(got, before) {
-		t.Errorf("Versions of t1, t2 after SetItemVector with another text = %v, want them unchanged: %v", got, before)
+	if got := sc.versions("t1", "t2", "t3"); !slices.Equal(got, before) {
+		t.Errorf("Versions of t1, t2, t3 after SetItemVector with another text = %v, want them unchanged: %v", got, before)
 	}
 
-	if linked, stored := sc.setItemVector("unknown", "x", v1, "m"); stored || len(linked) != 0 {
-		t.Errorf("SetItemVector of an unknown item = %v, %v; want nothing, false", linked, stored)
+	if linked, stored := sc.setItemVector("unknown", text, v1, "m"); stored || len(linked) != 0 {
+		t.Errorf("SetItemVector of an unknown item = %v, %v; want no tags, false", linked, stored)
 	}
 	if _, ok := sc.lookupItem("unknown"); ok {
 		t.Error("SetItemVector of an unknown item created it")

@@ -160,7 +160,7 @@ func (s *Scope) SetItem(ctx context.Context, itemID, text string) error {
 	if ok && item.Text == text && item.Model == s.tg.cfg.Model {
 		return nil
 	}
-	_, linked, err := s.putItem(ctx, itemID, text)
+	linked, err := s.putItem(ctx, itemID, text)
 	if err != nil {
 		return err
 	}
@@ -256,19 +256,15 @@ func (t *Tagger) embedOne(ctx context.Context, role semsearch.Role, text string)
 
 // putItem embeds the item's text as a query, the way Suggest scores an item
 // against the tag vectors, and stores the item under the Tagger's model. It
-// returns the vector and the ids of the tags the item is linked to, whose
-// Versions the store bumped.
-func (s *Scope) putItem(ctx context.Context, itemID, text string) (vec []float32, linked []string, err error) {
-	vec, err = s.tg.embedOne(ctx, semsearch.RoleQuery, text)
+// returns the ids of the tags the item is linked to, whose Versions the store
+// bumped.
+func (s *Scope) putItem(ctx context.Context, itemID, text string) (linked []string, err error) {
+	vec, err := s.tg.embedOne(ctx, semsearch.RoleQuery, text)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	linked, err = s.tg.store.PutItem(ctx, s.index, s.partition,
+	return s.tg.store.PutItem(ctx, s.index, s.partition,
 		ItemRecord{ID: itemID, Text: text, Vec: vec, Model: s.tg.cfg.Model})
-	if err != nil {
-		return nil, nil, err
-	}
-	return vec, linked, nil
 }
 
 // reembedItem embeds the item's stored text again under the Tagger's model,

@@ -72,8 +72,9 @@ type Store interface {
 	PutItem(ctx context.Context, index, partition string, item ItemRecord) ([]string, error)
 	// SetItemVector stores vec under model for the item, but only while its
 	// Text is still text; it then bumps the Version of every tag linked to the
-	// item and returns their ids, ordered. When the item is gone or its text
-	// has changed, it stores nothing and reports false.
+	// item and returns their ids, ordered. The text check, the write and the
+	// bumps happen atomically. When the item is gone or its text has changed,
+	// it stores nothing, bumps nothing and reports false, with no ids.
 	SetItemVector(ctx context.Context, index, partition, itemID, text string, vec []float32, model string) (linked []string, stored bool, err error)
 	// DeleteItem deletes the item and its links, bumps the Version of every tag
 	// it was linked to and returns those ids, ordered; unknown: no-op.
@@ -84,5 +85,5 @@ type Store interface {
 	Link(ctx context.Context, index, partition, itemID, tagID string) (bool, error)
 	// Unlink removes the link and bumps the tag's Version; no link: false.
 	Unlink(ctx context.Context, index, partition, itemID, tagID string) (bool, error)
-	Members(ctx context.Context, index, partition, tagID string) ([]Member, error) // ordered by ItemID
+	Members(ctx context.Context, index, partition, tagID string) ([]Member, error) // ordered by ItemID; unknown tag: none, nil error
 }

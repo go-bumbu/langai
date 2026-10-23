@@ -26,8 +26,11 @@ func (t *Tagger) stale(tag TagRecord) bool {
 // document, when the tag has no name vector of the Tagger's model; other
 // scoring settings alone embed nothing. A tag deleted meanwhile is no error,
 // and neither is one changed meanwhile: the change left it stale, for its
-// writer or the next Suggest to rebuild. An error comes back wrapped, naming
-// the tag.
+// writer or the next Suggest to rebuild. Nor is a member still of another
+// model, one edited under that model after refreshMembers read it: rather
+// than build the tag without it, rebuild stores nothing and leaves the tag
+// stale, for the next pass of rebuildStale to re-embed the member. An error
+// comes back wrapped, naming the tag.
 func (s *Scope) rebuild(ctx context.Context, id string) (err error) {
 	defer func() {
 		if err != nil {
@@ -51,16 +54,17 @@ func (s *Scope) rebuild(ctx context.Context, id string) (err error) {
 	if err != nil {
 		return err
 	}
+	var vecs [][]float32
+	for _, m := range members {
+		if m.Model != cfg.Model {
+			return nil // edited under another model meanwhile: left stale (see above)
+		}
+		vecs = append(vecs, m.Vec)
+	}
 	nameVec := rec.NameVec
 	if nameVec == nil || rec.Model != cfg.Model {
 		if nameVec, err = s.tg.embedOne(ctx, semsearch.RoleDocument, rec.Name); err != nil {
 			return err
-		}
-	}
-	var vecs [][]float32
-	for _, m := range members {
-		if m.Model == cfg.Model {
-			vecs = append(vecs, m.Vec)
 		}
 	}
 	k := cfg.SmoothingK
@@ -97,7 +101,7 @@ func (s *Scope) refreshMembers(ctx context.Context, id string) error {
 			continue // deleted or re-embedded meanwhile
 		}
 		// not stored: the item was edited or deleted meanwhile by a writer that
-		// bumped this tag, and rebuild reads what that writer left
+		// bumped this tag, and rebuild reads what that writer left (see rebuild)
 		if _, _, err := s.reembedItem(ctx, item); err != nil {
 			return err
 		}
