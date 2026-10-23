@@ -188,9 +188,9 @@ func deleteTagDropsItsLinks(t *testing.T, s autotag.Store) {
 // recreatedTagStartsAFreshVersion: a tag deleted and created again under its
 // id starts unbuilt, at a Version the deleted one never had. SetTagVectors
 // stores only for the Version it names, so vectors computed from the deleted
-// tag, by a rebuild that ran while it was deleted, never land on the new one,
-// whatever its name and whatever changes it has seen. A store that started
-// every tag at the same Version would let them.
+// tag, by a rebuild that read it before the delete and stores after it, never
+// land on the new one, whatever its name and whatever changes it has seen. A
+// store that started every tag at the same Version would let them.
 func recreatedTagStartsAFreshVersion(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 	sc.putTag("t1", "a")
