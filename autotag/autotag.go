@@ -256,7 +256,9 @@ func (s *Scope) Rebuild(ctx context.Context) error {
 
 // embedOne embeds a single text, refusing an embedder that breaks its contract
 // by answering with no vector, or several, rather than panicking on the
-// missing one.
+// missing one, and refusing a vector that is empty, or whose length is not the
+// embedder's Dimensions when it says them, rather than storing it for a
+// rebuild to blend with vectors of another length.
 func (t *Tagger) embedOne(ctx context.Context, role semsearch.Role, text string) ([]float32, error) {
 	vs, err := t.emb.Embed(ctx, role, []string{text})
 	if err != nil {
@@ -264,6 +266,12 @@ func (t *Tagger) embedOne(ctx context.Context, role semsearch.Role, text string)
 	}
 	if len(vs) != 1 {
 		return nil, fmt.Errorf("autotag: embedder returned %d vectors for one %s", len(vs), role)
+	}
+	switch dims := t.emb.Dimensions(); {
+	case dims > 0 && len(vs[0]) != dims:
+		return nil, fmt.Errorf("autotag: embedder returned a vector of %d dimensions, want %d", len(vs[0]), dims)
+	case len(vs[0]) == 0:
+		return nil, errors.New("autotag: embedder returned an empty vector")
 	}
 	return vs[0], nil
 }

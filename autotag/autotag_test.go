@@ -598,6 +598,109 @@ func TestEmbedderErrors_FailTheWrite(t *testing.T) {
 	}
 }
 
+// brokenEmbedder breaks the Embedder contract on purpose: it says its vectors
+// have dims entries, and returns doc for every text embedded as a document (a
+// tag's name) and query for every one embedded as a query (an item's text).
+type brokenEmbedder struct {
+	dims       int
+	doc, query []float32
+}
+
+func (b brokenEmbedder) Dimensions() int { return b.dims }
+
+func (b brokenEmbedder) Embed(_ context.Context, role semsearch.Role, texts []string) ([][]float32, error) {
+	v := b.query
+	if role == semsearch.RoleDocument {
+		v = b.doc
+	}
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = slices.Clone(v)
+	}
+	return out, nil
+}
+
+// TestEmbedderErrors_RefuseAVectorOfTheWrongLength: an embedding whose length
+// is not the embedder's Dimensions, or an empty one when the embedder does not
+// say its Dimensions, fails the write that needed it: SetItem stores nothing,
+// and SetTag fails its rebuild.
+func TestEmbedderErrors_RefuseAVectorOfTheWrongLength(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dims int
+		vec  []float32
+		want string
+	}{
+		{"nil", 4, nil, "embedder returned a vector of 0 dimensions, want 4"},
+		{"short", 4, []float32{1, 0}, "embedder returned a vector of 2 dimensions, want 4"},
+		{"long", 4, []float32{1, 0, 0, 0, 0}, "embedder returned a vector of 5 dimensions, want 4"},
+		{"empty, of unknown dimensions", 0, []float32{}, "embedder returned an empty vector"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewMemStore()
+			space := mustNew(t, brokenEmbedder{dims: tc.dims, doc: tc.vec, query: tc.vec}, store, Config{Model: "broken"}).Scope("1", "10")
+			for _, c := range []struct {
+				name string
+				err  error
+			}{
+				{"SetItem", space.SetItem(ctx, "a", "some text")},
+				{"SetTag", space.SetTag(ctx, "1", "rust")},
+			} {
+				if c.err == nil || !strings.Contains(c.err.Error(), tc.want) {
+					t.Errorf("%s = %v, want an error saying %q", c.name, c.err, tc.want)
+				}
+			}
+			if _, ok, _ := store.Item(ctx, "1", "10", "a"); ok {
+				t.Error("SetItem stored the item, with the vector it refused")
+			}
+		})
+	}
+}
+
+// TestEmbedderErrors_AnEmptyItemVectorPanicsNothing: an embedder that returns
+// a nil vector for an item's text, and a whole one for a tag's name, fails the
+// SetItem, so the item is not stored for a later hand tag to blend in: a
+// member with fewer entries than the name vector would index out of range.
+func TestEmbedderErrors_AnEmptyItemVectorPanicsNothing(t *testing.T) {
+	ctx := context.Background()
+	emb := brokenEmbedder{dims: 4, doc: unitVec(1, 0, 0, 0), query: nil}
+	space := mustNew(t, emb, NewMemStore(), Config{Model: "broken"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	if err := space.SetItem(ctx, "a", "some text"); err == nil {
+		t.Fatal("SetItem with an empty vector succeeded, want an error")
+	}
+	if err := space.TagByHand(ctx, "a", "1"); !errors.Is(err, ErrUnknownItem) {
+		t.Fatalf("TagByHand of the item SetItem refused = %v, want ErrUnknownItem", err)
+	}
+}
+
+// TestRebuild_RefusesAMemberOfAnotherLength: an embedder that does not say
+// its Dimensions cannot have a vector's length checked as it is embedded, so a
+// rebuild checks that every member has as many entries as the name vector, and
+// fails, naming the member, rather than panicking on a shorter one or reading
+// a longer one in part. The tag is left stale.
+func TestRebuild_RefusesAMemberOfAnotherLength(t *testing.T) {
+	for _, query := range [][]float32{unitVec(1, 0), unitVec(1, 0, 0, 0, 0, 0, 0, 0)} {
+		t.Run(fmt.Sprintf("%d entries", len(query)), func(t *testing.T) {
+			ctx := context.Background()
+			store := NewMemStore()
+			emb := brokenEmbedder{dims: 0, doc: unitVec(1, 0, 0, 0), query: query}
+			space := mustNew(t, emb, store, Config{Model: "broken"}).Scope("1", "10")
+			must(t, space.SetTag(ctx, "1", "rust"))
+			must(t, space.SetItem(ctx, "a", "some text"))
+			err := space.TagByHand(ctx, "a", "1")
+			want := fmt.Sprintf(`item "a" has a vector of %d dimensions and the tag's name one of 4`, len(query))
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("TagByHand = %v, want an error saying %q", err, want)
+			}
+			if rec := mustTag(t, store, "1"); rec.Built == rec.Version {
+				t.Fatal("the tag is built at its Version, though its rebuild failed")
+			}
+		})
+	}
+}
+
 // racingStore links item "b" to tag "1" the first time a rebuild of "1" tries
 // to store its vectors once raced is false, so that rebuild was computed from
 // an older Version.

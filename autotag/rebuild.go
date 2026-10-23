@@ -44,15 +44,19 @@ func (s *Scope) rebuild(ctx context.Context, id string) (err error) {
 		return err // !ok: deleted, or a member left of another model (see above)
 	}
 	store, cfg := s.tg.store, s.tg.cfg
-	var vecs [][]float32
-	for _, m := range members {
-		vecs = append(vecs, m.Vec)
-	}
 	nameVec := rec.NameVec
 	if nameVec == nil || rec.Model != cfg.Model {
 		if nameVec, err = s.tg.embedOne(ctx, semsearch.RoleDocument, rec.Name); err != nil {
 			return err
 		}
+	}
+	// blend and tagCutoff index every member by the name vector's length
+	var vecs [][]float32
+	for _, m := range members {
+		if len(m.Vec) != len(nameVec) {
+			return fmt.Errorf("autotag: item %q has a vector of %d dimensions and the tag's name one of %d", m.ItemID, len(m.Vec), len(nameVec))
+		}
+		vecs = append(vecs, m.Vec)
 	}
 	k := cfg.SmoothingK
 	// false: the tag changed meanwhile, which is no error (see above)
