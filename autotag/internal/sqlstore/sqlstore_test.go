@@ -320,3 +320,130 @@ func TestReads_FailOnATornBlob(t *testing.T) {
 		})
 	}
 }
+
+// seedTagAndItem returns a store on a fresh SQLite database that holds the tag
+// t1 and the item i1 of the index "idx", partition "p", linked to nothing.
+func seedTagAndItem(t *testing.T) (*Store, *sql.DB) {
+	t.Helper()
+	ctx := t.Context()
+	db := openSQLite(t)
+	s, err := New(db, SQLite, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutTag(ctx, "idx", "p", "t1", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutItem(ctx, "idx", "p", autotag.ItemRecord{ID: "i1", Text: "x", Vec: []float32{1}, Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	return s, db
+}
+
+// plantLink adds a link row to the index "idx", partition "p", with SQL, as the
+// store's own writes never leave one: for an item or a tag that is not there.
+// On Postgres, whose statements run at READ COMMITTED, a Link can commit
+// between two statements of another transaction, and the later one then sees
+// its link. SQLite cannot be made to interleave like that, so the tests plant
+// the row the later statement would see.
+func plantLink(t *testing.T, db *sql.DB, itemID, tagID string) {
+	t.Helper()
+	_, err := db.ExecContext(t.Context(),
+		`INSERT INTO `+tableOf(t, "", "idx", "links")+` (partition, item_id, tag_id) VALUES ('p', ?, ?)`, itemID, tagID)
+	if err != nil {
+		t.Fatalf("planting the link %s -> %s: %v", itemID, tagID, err)
+	}
+}
+
+// linkRows counts the rows of the link from the item to the tag.
+func linkRows(t *testing.T, db *sql.DB, itemID, tagID string) int {
+	t.Helper()
+	var n int
+	err := db.QueryRowContext(t.Context(),
+		`SELECT count(*) FROM `+tableOf(t, "", "idx", "links")+` WHERE partition = 'p' AND item_id = ? AND tag_id = ?`, itemID, tagID).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// tagVersion returns the Version of the tag t1.
+func tagVersion(t *testing.T, s *Store) int64 {
+	t.Helper()
+	rec, ok, err := s.Tag(t.Context(), "idx", "p", "t1")
+	if err != nil || !ok {
+		t.Fatalf("Tag(t1) = %+v, %v, %v", rec, ok, err)
+	}
+	return rec.Version
+}
+
+// TestDeleteOfAnAbsentRowChangesNothing: deleting an item or a tag the store
+// does not hold is a no-op, whatever links name it. The delete's first
+// statement found no row, so it locked none: a link that another transaction
+// made a moment later, together with the item or the tag it made it for, is not
+// this delete's to remove, nor are the tags it names this delete's to bump.
+func TestDeleteOfAnAbsentRowChangesNothing(t *testing.T) {
+	ctx := t.Context()
+	s, db := seedTagAndItem(t)
+	plantLink(t, db, "ghost-item", "t1")
+	plantLink(t, db, "i1", "ghost-tag")
+	before := tagVersion(t, s)
+
+	if got, err := s.DeleteItem(ctx, "idx", "p", "ghost-item"); err != nil || len(got) != 0 {
+		t.Errorf("DeleteItem of an absent item = %v, %v; want no tags, nil", got, err)
+	}
+	if err := s.DeleteTag(ctx, "idx", "p", "ghost-tag"); err != nil {
+		t.Errorf("DeleteTag of an absent tag: %v", err)
+	}
+
+	for _, l := range [][2]string{{"ghost-item", "t1"}, {"i1", "ghost-tag"}} {
+		if n := linkRows(t, db, l[0], l[1]); n != 1 {
+			t.Errorf("link %s -> %s has %d rows after the delete of the absent row it names, want it left in place", l[0], l[1], n)
+		}
+	}
+	if got := tagVersion(t, s); got != before {
+		t.Errorf("Version of t1 = %d after the delete of an absent item linked to it, want %d", got, before)
+	}
+}
+
+// TestWritesReturnTheTagsTheyBumped: a write that bumps the tags linked to an
+// item returns exactly the tags it bumped. A link can name a tag that is gone
+// by the time the write reaches it, a DeleteTag having committed since the
+// write read the item's links: that tag is not bumped, so it is not returned.
+func TestWritesReturnTheTagsTheyBumped(t *testing.T) {
+	ctx := t.Context()
+	s, db := seedTagAndItem(t)
+	if _, err := s.Link(ctx, "idx", "p", "i1", "t1"); err != nil {
+		t.Fatal(err)
+	}
+	plantLink(t, db, "i1", "ghost-tag")
+
+	// check expects the write to have bumped t1 once, and to have returned it alone
+	version := tagVersion(t, s)
+	check := func(what string, linked []string, err error) {
+		t.Helper()
+		if err != nil || !slices.Equal(linked, []string{"t1"}) {
+			t.Errorf("%s returned %v, %v; want only t1, nil", what, linked, err)
+		}
+		got := tagVersion(t, s)
+		if got != version+1 {
+			t.Errorf("Version of t1 after %s = %d, want %d", what, got, version+1)
+		}
+		version = got
+	}
+
+	linked, err := s.PutItem(ctx, "idx", "p", autotag.ItemRecord{ID: "i1", Text: "y", Vec: []float32{2}, Model: "m"})
+	check("PutItem", linked, err)
+
+	linked, stored, err := s.SetItemVector(ctx, "idx", "p", "i1", "y", []float32{3}, "m")
+	if !stored {
+		t.Error("SetItemVector with the item's text stored nothing")
+	}
+	check("SetItemVector", linked, err)
+
+	linked, err = s.DeleteItem(ctx, "idx", "p", "i1")
+	check("DeleteItem", linked, err)
+	if n := linkRows(t, db, "i1", "ghost-tag"); n != 0 {
+		t.Errorf("the link of the deleted item to a tag that is gone has %d rows, want it dropped with the item", n)
+	}
+}

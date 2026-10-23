@@ -58,11 +58,13 @@ type tables struct{ tags, items, links string }
 // Store implements autotag.Store on SQL, with one table set per index and
 // generation, created lazily.
 //
-// A write that changes more than one row runs in a transaction. Writes lock
-// their rows in one order, the item, then the tag, then the link, and one that
-// removes a row takes its lock before it touches the rows that depend on it,
-// so that concurrent writes queue up on a database with row locks instead of
-// deadlocking or leaving a link behind for a row that is gone.
+// A write that changes more than one row runs in a transaction. On a database
+// with row locks, writes take their locks in one order: the item row first,
+// then the tag rows, several of them in id order, then the link rows. A write
+// that removes a row takes its lock before it touches the rows that depend on
+// it, and does nothing more if the row was not there. So concurrent writes queue
+// up rather than deadlock, no link is left behind for a row that is gone, and a
+// delete of an absent row never removes a link made meanwhile for a new one.
 type Store struct {
 	db         *sql.DB
 	d          Dialect

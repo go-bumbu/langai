@@ -54,6 +54,7 @@ func Run(t *testing.T, newStore func(t *testing.T) autotag.Store) {
 		{"EmptyIndexIsAnError", emptyIndexIsAnError},
 		{"StoredSlicesAreCopies", storedSlicesAreCopies},
 		{"ConcurrentLinksAllLand", concurrentLinksAllLand},
+		{"ConcurrentWritesSharingTagsAllLand", concurrentWritesSharingTagsAllLand},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.run(t, newStore(t)) })
@@ -596,6 +597,59 @@ func concurrentLinksAllLand(t *testing.T, s autotag.Store) {
 		t.Errorf("ids from Members = %v, want %v", got, itemIDs)
 	}
 	sc.wantVersion("t1", before+links, "after the concurrent Links")
+}
+
+// concurrentWritesSharingTagsAllLand: PutItem on different items that share
+// tags, made at the same time, all land. None fails, as one would if two writers
+// locked the shared tags in opposite orders and each waited for the other. Each
+// reports both tags, ordered, and bumps both, so the tags' Versions count every
+// write.
+func concurrentWritesSharingTagsAllLand(t *testing.T, s autotag.Store) {
+	const writers = 8
+	tagIDs := []string{"t1", "t2"}
+	sc := newScope(t, s, idx, part)
+	for _, id := range tagIDs {
+		sc.putTag(id, "tag "+id)
+	}
+	itemIDs := make([]string, writers)
+	for n := range itemIDs {
+		itemIDs[n] = fmt.Sprintf("i%d", n+1)
+		sc.putItem(newItem(itemIDs[n]))
+		// half of the items are linked to t2 first, so that a store which bumped
+		// the tags in the order of their links would visit them in opposite orders
+		first, second := "t1", "t2"
+		if n%2 == 1 {
+			first, second = second, first
+		}
+		sc.link(itemIDs[n], first)
+		sc.link(itemIDs[n], second)
+	}
+	before := sc.versions(tagIDs...)
+
+	// Only the test's own goroutine may call t.Fatal, so the goroutines just
+	// record what PutItem returns, for the checks below.
+	ctx := t.Context()
+	start := make(chan struct{})
+	linked, errs := make([][]string, writers), make([]error, writers)
+	var wg sync.WaitGroup
+	for n, id := range itemIDs {
+		wg.Go(func() {
+			<-start
+			linked[n], errs[n] = s.PutItem(ctx, idx, part, autotag.ItemRecord{ID: id, Text: "changed " + id, Vec: v2, Model: "m"})
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	for n, id := range itemIDs {
+		if errs[n] != nil || !slices.Equal(linked[n], tagIDs) {
+			t.Errorf("PutItem(%q) = %v, %v; want %v, nil", id, linked[n], errs[n], tagIDs)
+		}
+	}
+	want := []int64{before[0] + writers, before[1] + writers}
+	if got := sc.versions(tagIDs...); !slices.Equal(got, want) {
+		t.Errorf("Versions of t1, t2 after the concurrent PutItems = %v, want %v", got, want)
+	}
 }
 
 // wantStoredVectors checks that the scope still holds v1 as the vector of the

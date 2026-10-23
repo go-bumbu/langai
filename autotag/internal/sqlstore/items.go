@@ -91,11 +91,16 @@ func (s *Store) DeleteItem(ctx context.Context, index, partition, itemID string)
 	var linked []string
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
 		// The item goes first: its row lock keeps a concurrent Link out, and one
-		// that already holds it commits before its link is read here.
-		if err := exec(ctx, tx, s.q(`DELETE FROM %s WHERE partition = ? AND item_id = ?`, t.items), partition, itemID); err != nil {
+		// that already holds it commits before its links are read here. An item
+		// that is not there is a no-op, links and all. It locked nothing, and the
+		// statements after it would see rows committed since: a link made since
+		// belongs to an item made since, and is not this delete's to remove.
+		deleted, err := changed(tx.ExecContext(ctx,
+			s.q(`DELETE FROM %s WHERE partition = ? AND item_id = ?`, t.items),
+			partition, itemID))
+		if err != nil || !deleted {
 			return err
 		}
-		var err error
 		if linked, err = s.bumpLinked(ctx, tx, t, partition, itemID); err != nil {
 			return err
 		}
@@ -137,7 +142,8 @@ func (s *Store) Link(ctx context.Context, index, partition, itemID, tagID string
 		if err != nil || !linked {
 			return err
 		}
-		return s.bump(ctx, tx, t, partition, tagID)
+		_, err = s.bump(ctx, tx, t, partition, tagID)
+		return err
 	})
 	if err != nil {
 		return false, err
@@ -165,7 +171,8 @@ func (s *Store) Unlink(ctx context.Context, index, partition, itemID, tagID stri
 		if err != nil || !unlinked {
 			return err
 		}
-		return s.bump(ctx, tx, t, partition, tagID)
+		_, err = s.bump(ctx, tx, t, partition, tagID)
+		return err
 	})
 	if err != nil {
 		return false, err
@@ -213,28 +220,37 @@ func (s *Store) lockTag(ctx context.Context, tx *sql.Tx, t tables, partition, ta
 		partition, tagID)
 }
 
-// bump adds one to the Version of the tag.
-func (s *Store) bump(ctx context.Context, tx *sql.Tx, t tables, partition, tagID string) error {
-	return exec(ctx, tx,
+// bump adds one to the Version of the tag, and reports whether the tag was
+// there.
+func (s *Store) bump(ctx context.Context, tx *sql.Tx, t tables, partition, tagID string) (bool, error) {
+	return changed(tx.ExecContext(ctx,
 		s.q(`UPDATE %s SET version = version + 1 WHERE partition = ? AND tag_id = ?`, t.tags),
-		partition, tagID)
+		partition, tagID))
 }
 
 // bumpLinked adds one to the Version of every tag linked to the item, and
-// returns their ids, ordered.
+// returns the ids of the tags it bumped, ordered. It bumps them one at a time,
+// in that order, so that writers whose items share tags take the tags' row locks
+// in the same order, whatever order the database would visit them in: a single
+// UPDATE over all of them could lock them in opposite orders in two writers,
+// which would then wait for each other. A tag that is gone by the time it is
+// reached is not bumped, and is not returned.
 func (s *Store) bumpLinked(ctx context.Context, tx *sql.Tx, t tables, partition, itemID string) ([]string, error) {
 	ids, err := queryIDs(ctx, tx,
 		s.q(`SELECT tag_id FROM %s WHERE partition = ? AND item_id = ? ORDER BY tag_id%s`, t.links, s.d.Collate),
 		partition, itemID)
-	if err != nil || len(ids) == 0 {
-		return nil, err
-	}
-	err = exec(ctx, tx,
-		s.q(`UPDATE %s SET version = version + 1
-			WHERE partition = ? AND tag_id IN (SELECT tag_id FROM %s WHERE partition = ? AND item_id = ?)`, t.tags, t.links),
-		partition, partition, itemID)
 	if err != nil {
 		return nil, err
 	}
-	return ids, nil
+	var bumped []string
+	for _, id := range ids {
+		ok, err := s.bump(ctx, tx, t, partition, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			bumped = append(bumped, id)
+		}
+	}
+	return bumped, nil
 }

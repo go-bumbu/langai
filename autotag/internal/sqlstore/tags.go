@@ -113,8 +113,12 @@ func (s *Store) DeleteTag(ctx context.Context, index, partition, tagID string) e
 	}
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		// The tag goes first: its row lock keeps a concurrent Link out, and one
-		// that already holds it commits before the links are deleted.
-		if err := exec(ctx, tx, s.q(`DELETE FROM %s WHERE partition = ? AND tag_id = ?`, t.tags), partition, tagID); err != nil {
+		// that already holds it commits before the links are deleted. A tag that
+		// is not there is a no-op, links and all (see DeleteItem).
+		deleted, err := changed(tx.ExecContext(ctx,
+			s.q(`DELETE FROM %s WHERE partition = ? AND tag_id = ?`, t.tags),
+			partition, tagID))
+		if err != nil || !deleted {
 			return err
 		}
 		return exec(ctx, tx, s.q(`DELETE FROM %s WHERE partition = ? AND tag_id = ?`, t.links), partition, tagID)
