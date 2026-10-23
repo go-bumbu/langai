@@ -296,25 +296,37 @@ func TestSuggest_UnknownItem(t *testing.T) {
 	}
 }
 
-// A cutoff that is not a number is reached by no score. A caller's
-// configuration should refuse one, but a Tagger built any other way must not
-// answer it by suggesting every tag: with a NaN NameMinScore neither "alpha",
-// which scores 0.80 against the item, nor "beta", which scores below zero, is
-// suggested.
-func TestSuggest_NaNNameMinScoreAssignsNoTag(t *testing.T) {
-	const dims = 4
-	ctx := context.Background()
-	stub := stubEmbedder{dims: dims, vecs: map[string][]float32{
-		"alpha": scoreVec(dims, 1, 0.80),
-		"beta":  scoreVec(dims, 2, -0.30),
-		"query": unitVec(1, 0, 0, 0),
-	}}
-	space := mustNew(t, stub, NewMemStore(), Config{Model: "stub", NameMinScore: math.NaN()}).Scope("1", "10")
-	must(t, space.SetTag(ctx, "1", "alpha"))
-	must(t, space.SetTag(ctx, "2", "beta"))
-	must(t, space.SetItem(ctx, "q", "query"))
-	if got := suggest(t, space, "q"); len(got) != 0 {
-		t.Fatalf("Suggest = %v, want none: no score reaches a NaN cutoff", got)
+// TestNew_RejectsNonFiniteSettings: a minimum score that is not a finite
+// number would silently let the tags it weighs in match every item (-Inf) or
+// none (NaN, +Inf), a SmoothingK of +Inf would leave every member out of its
+// tag's vector, and a NaN one would let no tag with members match, so New
+// refuses them, naming the setting. It checks after the defaults are applied:
+// a SmoothingK of -Inf is below zero, and takes DefaultSmoothingK like any
+// other. rank and storedCutoff still fail closed on a NaN, for a Tagger built
+// some other way (see their tests).
+func TestNew_RejectsNonFiniteSettings(t *testing.T) {
+	nan, inf := math.NaN(), math.Inf(1)
+	for _, tc := range []struct {
+		setting string
+		cfg     Config
+	}{
+		{"NameMinScore", Config{Model: "m", NameMinScore: nan}},
+		{"NameMinScore", Config{Model: "m", NameMinScore: inf}},
+		{"NameMinScore", Config{Model: "m", NameMinScore: -inf}},
+		{"MemberMinScore", Config{Model: "m", MemberMinScore: nan}},
+		{"MemberMinScore", Config{Model: "m", MemberMinScore: inf}},
+		{"MemberMinScore", Config{Model: "m", MemberMinScore: -inf}},
+		{"SmoothingK", Config{Model: "m", SmoothingK: nan}},
+		{"SmoothingK", Config{Model: "m", SmoothingK: inf}},
+	} {
+		_, err := New(semsearch.FakeEmbedder{}, NewMemStore(), tc.cfg)
+		if err == nil || !strings.Contains(err.Error(), "Config."+tc.setting) {
+			t.Errorf("New with %+v = %v, want an error naming Config.%s", tc.cfg, err, tc.setting)
+		}
+	}
+	tg := mustNew(t, semsearch.FakeEmbedder{}, NewMemStore(), Config{Model: "m", SmoothingK: -inf})
+	if tg.cfg.SmoothingK != DefaultSmoothingK {
+		t.Errorf("SmoothingK after New with -Inf = %v, want the default %v, as for any value below zero", tg.cfg.SmoothingK, DefaultSmoothingK)
 	}
 }
 

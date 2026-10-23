@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/go-bumbu/langai/semsearch"
@@ -46,10 +47,11 @@ const (
 // minimum cosine scores against a tag's name and against the centroid of its
 // members. The two score on different scales, so each has its own minimum,
 // mixed per tag by the blend weight (see tagCutoff); 0 defaults them to
-// DefaultNameMinScore and DefaultMemberMinScore. SmoothingK is the Bayesian
-// smoothing constant in blend: a tag's members weigh as much as its name at
-// SmoothingK members, and outweigh it beyond that (<=0 defaults to
-// DefaultSmoothingK). There is no limit on how many tags an item gets.
+// DefaultNameMinScore and DefaultMemberMinScore, and New refuses one that is
+// not a finite number. SmoothingK is the Bayesian smoothing constant in blend:
+// a tag's members weigh as much as its name at SmoothingK members, and
+// outweigh it beyond that (<=0 defaults to DefaultSmoothingK; New refuses NaN
+// and +Inf). There is no limit on how many tags an item gets.
 type Config struct {
 	Model          string
 	NameMinScore   float64
@@ -72,7 +74,11 @@ type Tagger struct {
 // New returns a Tagger that embeds text with emb and keeps every scope's
 // tags, items and hand-made links in store. It fails without an embedder, a
 // store or a Model; the zero values of cfg's other fields take the defaults
-// Config documents.
+// Config documents. It also fails, once those defaults are applied, on a
+// scoring setting that is not a finite number: a minimum score of -Inf would
+// let the tags it weighs in match every item, and one of NaN or +Inf would let
+// them match none; a SmoothingK of +Inf would leave every member out of its
+// tag's vector, and one of NaN would let no tag with members match.
 func New(emb semsearch.Embedder, store Store, cfg Config) (*Tagger, error) {
 	switch {
 	case emb == nil:
@@ -90,6 +96,14 @@ func New(emb semsearch.Embedder, store Store, cfg Config) (*Tagger, error) {
 	}
 	if cfg.SmoothingK <= 0 {
 		cfg.SmoothingK = DefaultSmoothingK
+	}
+	for _, s := range []struct {
+		name  string
+		value float64
+	}{{"NameMinScore", cfg.NameMinScore}, {"MemberMinScore", cfg.MemberMinScore}, {"SmoothingK", cfg.SmoothingK}} {
+		if math.IsNaN(s.value) || math.IsInf(s.value, 0) {
+			return nil, fmt.Errorf("autotag: Config.%s is %v, want a finite number", s.name, s.value)
+		}
 	}
 	params := fmt.Sprintf("k=%g name=%g member=%g", cfg.SmoothingK, cfg.NameMinScore, cfg.MemberMinScore)
 	return &Tagger{emb: emb, store: store, cfg: cfg, params: params}, nil
