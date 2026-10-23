@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/go-bumbu/langai/autotag"
@@ -51,14 +52,16 @@ func Run(t *testing.T, newStore func(t *testing.T) autotag.Store) {
 		{"VectorsRoundTrip", vectorsRoundTrip},
 		{"EmptyIndexIsAnError", emptyIndexIsAnError},
 		{"StoredSlicesAreCopies", storedSlicesAreCopies},
+		{"ConcurrentLinksAllLand", concurrentLinksAllLand},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.run(t, newStore(t)) })
 	}
 }
 
-// tagLifecycle: a tag is created at Version 1, a rename bumps it and drops the
-// name vector, and the current name changes nothing.
+// tagLifecycle: a tag is created at Version 1, and the current name changes
+// nothing, built or not. A rename bumps the Version and drops the name vector,
+// and keeps the rest until the next build.
 func tagLifecycle(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 
@@ -77,11 +80,20 @@ func tagLifecycle(t *testing.T, s autotag.Store) {
 	if !sc.setTagVectors("t1", 1, autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m"}) {
 		t.Fatal("SetTagVectors at the tag's Version stored nothing")
 	}
+	built := sc.tag("t1")
+	if sc.putTag("t1", "a") {
+		t.Error("PutTag with the current name of a built tag reported a change")
+	}
+	if got := sc.tag("t1"); !reflect.DeepEqual(got, built) {
+		t.Errorf("built tag after PutTag with its current name = %+v, want it unchanged: %+v", got, built)
+	}
+
 	if !sc.putTag("t1", "b") {
 		t.Error("PutTag with a new name reported no change")
 	}
-	if got := sc.tag("t1"); got.Name != "b" || got.Version != 2 || got.NameVec != nil {
-		t.Errorf("renamed tag = %+v, want Name b, Version 2, NameVec nil", got)
+	renamed := autotag.TagRecord{ID: "t1", Name: "b", NameVec: nil, Vec: v2, Cutoff: 0.5, Model: "m", Version: 2, Built: 1}
+	if got := sc.tag("t1"); !reflect.DeepEqual(got, renamed) {
+		t.Errorf("renamed tag = %+v, want only Name, NameVec (nil) and Version (+1) changed: %+v", got, renamed)
 	}
 
 	if _, ok := sc.lookupTag("unknown"); ok {
@@ -249,9 +261,7 @@ func putItemBumpsItsTags(t *testing.T, s autotag.Store) {
 	if got, want := sc.putItem(replaced), []string{"t1", "t2"}; !slices.Equal(got, want) {
 		t.Errorf("PutItem returned %v, want %v", got, want)
 	}
-	if got, want := sc.versions("t1", "t2", "t3"), []int64{before[0] + 1, before[1] + 1, before[2]}; !slices.Equal(got, want) {
-		t.Errorf("Versions of t1, t2, t3 after PutItem = %v, want %v", got, want)
-	}
+	wantLinkedTagsBumped(sc, before, "PutItem")
 }
 
 // deleteItemBumpsItsTagsAndDropsLinks: deleting an item bumps and reports the
@@ -263,9 +273,7 @@ func deleteItemBumpsItsTagsAndDropsLinks(t *testing.T, s autotag.Store) {
 	if got, want := sc.deleteItem("i1"), []string{"t1", "t2"}; !slices.Equal(got, want) {
 		t.Errorf("DeleteItem returned %v, want %v", got, want)
 	}
-	if got, want := sc.versions("t1", "t2", "t3"), []int64{before[0] + 1, before[1] + 1, before[2]}; !slices.Equal(got, want) {
-		t.Errorf("Versions of t1, t2, t3 after DeleteItem = %v, want %v", got, want)
-	}
+	wantLinkedTagsBumped(sc, before, "DeleteItem")
 	for _, id := range []string{"t1", "t2"} {
 		if got := sc.members(id); len(got) != 0 {
 			t.Errorf("Members of %s after DeleteItem = %+v, want none", id, got)
@@ -297,8 +305,8 @@ func membersAreOrderedByItemID(t *testing.T, s autotag.Store) {
 }
 
 // scopesAreIsolated: the same ids in two partitions of one index, or in one
-// partition of two indexes, are different tags and items, and nothing done in
-// one scope shows in another.
+// partition of two indexes, are different tags and items. What is read in one
+// scope is only its own, and nothing written in one shows in another.
 func scopesAreIsolated(t *testing.T, s autotag.Store) {
 	scopes := []struct {
 		scope
@@ -341,6 +349,61 @@ func scopesAreIsolated(t *testing.T, s autotag.Store) {
 	}
 	if _, err := s.Link(ctx, "tenant", "space", "i2", "t2"); !errors.Is(err, autotag.ErrUnknownTag) {
 		t.Errorf("Link to a tag of tenant/other in tenant/space: err = %v, want %v", err, autotag.ErrUnknownTag)
+	}
+
+	writesStayInTheirScope(t, s)
+}
+
+// writesStayInTheirScope: every write made in one scope leaves the same ids in
+// the other scopes exactly as they were, records, vectors, Versions and links.
+// The three scopes are set up the same way, so the tag stands at the same
+// Version in each: a SetTagVectors that ignored the scope would otherwise find
+// nothing to overwrite elsewhere, since it only stores for the Version it names.
+func writesStayInTheirScope(t *testing.T, s autotag.Store) {
+	writer := newScope(t, s, "writer", "space")
+	others := []scope{newScope(t, s, "writer", "other"), newScope(t, s, "bystander", "space")}
+	for _, sc := range append([]scope{writer}, others...) {
+		sc.seedBuilt()
+	}
+	unchanged := make([]state, len(others))
+	for i, sc := range others {
+		unchanged[i] = sc.state()
+	}
+
+	writes := []struct {
+		name string
+		do   func(sc scope)
+	}{
+		// SetTagVectors comes first, while the writer's tag is still at the others' Version.
+		{"SetTagVectors", func(sc scope) {
+			sc.setVectors("t1", autotag.TagVectors{NameVec: v2, Vec: v1, Cutoff: 0.9, Model: "other"})
+		}},
+		{"PutTag with a new name", func(sc scope) { sc.wantChanged(sc.putTag("t1", "renamed"), "PutTag with a new name") }},
+		{"PutItem", func(sc scope) {
+			sc.wantTags(sc.putItem(autotag.ItemRecord{ID: "i1", Text: "changed", Vec: v2, Model: "m2"}), "PutItem", "t1")
+		}},
+		{"Unlink", func(sc scope) { sc.wantChanged(sc.unlink("i1", "t1"), "Unlink") }},
+		{"Link", func(sc scope) {
+			sc.unlink("i1", "t1")
+			sc.wantChanged(sc.link("i1", "t1"), "Link")
+		}},
+		{"DeleteItem", func(sc scope) { sc.wantTags(sc.deleteItem("i1"), "DeleteItem", "t1") }},
+		{"DeleteTag", func(sc scope) {
+			sc.deleteTag("t1")
+			if _, ok := sc.lookupTag("t1"); ok {
+				sc.t.Fatal("Tag found the tag after DeleteTag")
+			}
+		}},
+	}
+	for _, w := range writes {
+		w.do(writer)
+		for i, sc := range others {
+			if got := sc.state(); !reflect.DeepEqual(got, unchanged[i]) {
+				t.Errorf("after %s in %s/%s, %s/%s holds %+v, want it unchanged: %+v",
+					w.name, writer.index, writer.partition, sc.index, sc.partition, got, unchanged[i])
+			}
+		}
+		writer.seedBuilt() // back to where it started, for the next write
 	}
 }
 
@@ -434,6 +497,45 @@ func storedSlicesAreCopies(t *testing.T, s autotag.Store) {
 	wantStoredVectors(t, sc, "after the slices read were changed")
 }
 
+// concurrentLinksAllLand: links to one tag made at the same time all land, and
+// each one bumps the tag, so none is lost to another Link of the same tag.
+func concurrentLinksAllLand(t *testing.T, s autotag.Store) {
+	const links = 8
+	sc := newScope(t, s, idx, part)
+	sc.putTag("t1", "a")
+	itemIDs := make([]string, links)
+	for n := range itemIDs {
+		itemIDs[n] = fmt.Sprintf("i%d", n+1)
+		sc.putItem(newItem(itemIDs[n]))
+	}
+	before := sc.tag("t1").Version
+
+	// Only the test's own goroutine may call t.Fatal, so the goroutines just
+	// record what Link returns, for the checks below.
+	ctx := t.Context()
+	start := make(chan struct{})
+	changed, errs := make([]bool, links), make([]error, links)
+	var wg sync.WaitGroup
+	for n, id := range itemIDs {
+		wg.Go(func() {
+			<-start
+			changed[n], errs[n] = s.Link(ctx, idx, part, id, "t1")
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	for n, id := range itemIDs {
+		if errs[n] != nil || !changed[n] {
+			t.Errorf("Link(%q, t1) = %v, %v; want true, nil", id, changed[n], errs[n])
+		}
+	}
+	if got := memberIDs(sc.members("t1")); !slices.Equal(got, itemIDs) {
+		t.Errorf("ids from Members = %v, want %v", got, itemIDs)
+	}
+	sc.wantVersion("t1", before+links, "after the concurrent Links")
+}
+
 // wantStoredVectors checks that the scope still holds v1 as the vector of item
 // i1 and as the name vector of tag t1, and v2 as the vector of t1.
 func wantStoredVectors(t *testing.T, sc scope, when string) {
@@ -472,6 +574,14 @@ func tagIDs(tags []autotag.TagRecord) []string {
 	return ids
 }
 
+func memberIDs(members []autotag.Member) []string {
+	ids := make([]string, len(members))
+	for i, m := range members {
+		ids[i] = m.ItemID
+	}
+	return ids
+}
+
 // seedLinked fills the default scope with the tags t1, t2 and t3 and the item
 // i1, linked to t2 and then t1 but not to t3.
 func seedLinked(t *testing.T, s autotag.Store) scope {
@@ -483,6 +593,45 @@ func seedLinked(t *testing.T, s autotag.Store) scope {
 	sc.link("i1", "t2")
 	sc.link("i1", "t1")
 	return sc
+}
+
+// wantLinkedTagsBumped checks, in the scope seedLinked made, that a change to
+// the item i1 bumped the tags linked to it (t1 and t2) once since before, and
+// not t3. when says what the change was.
+func wantLinkedTagsBumped(sc scope, before []int64, when string) {
+	sc.t.Helper()
+	want := []int64{before[0] + 1, before[1] + 1, before[2]}
+	if got := sc.versions("t1", "t2", "t3"); !slices.Equal(got, want) {
+		sc.t.Errorf("Versions of t1, t2, t3 after %s = %v, want %v", when, got, want)
+	}
+}
+
+// seedBuilt puts the tag t1 and the item i1 in the scope, links them and stores
+// vectors for the tag. Run again on a scope that holds some of that, it puts
+// back what is missing or changed.
+func (sc scope) seedBuilt() {
+	sc.putTag("t1", "tag t1")
+	sc.putItem(newItem("i1"))
+	sc.link("i1", "t1")
+	sc.setVectors("t1", autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m"})
+}
+
+// state is what a scope holds for the tag t1 and the item i1.
+type state struct {
+	tag     autotag.TagRecord
+	hasTag  bool
+	item    autotag.ItemRecord
+	hasItem bool
+	members []autotag.Member
+}
+
+func (sc scope) state() state {
+	sc.t.Helper()
+	var st state
+	st.tag, st.hasTag = sc.lookupTag("t1")
+	st.item, st.hasItem = sc.lookupItem("i1")
+	st.members = sc.members("t1")
+	return st
 }
 
 // scope is one (index, partition) of a store. Its methods make the calls a test
@@ -570,6 +719,23 @@ func (sc scope) wantVersion(id string, want int64, when string) {
 	sc.t.Helper()
 	if got := sc.tag(id).Version; got != want {
 		sc.t.Errorf("Version of %s %s = %d, want %d", id, when, got, want)
+	}
+}
+
+// wantChanged stops the test if a write reported no change: a write that did
+// nothing would leave the other scopes alone for the wrong reason.
+func (sc scope) wantChanged(changed bool, what string) {
+	sc.t.Helper()
+	if !changed {
+		sc.t.Fatalf("%s reported no change", what)
+	}
+}
+
+// wantTags stops the test unless a write returned exactly the tag ids want.
+func (sc scope) wantTags(got []string, what string, want ...string) {
+	sc.t.Helper()
+	if !slices.Equal(got, want) {
+		sc.t.Fatalf("%s returned %v, want %v", what, got, want)
 	}
 }
 

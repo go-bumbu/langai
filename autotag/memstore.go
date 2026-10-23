@@ -24,7 +24,8 @@ type memScope struct {
 
 // MemStore is a Store that keeps everything in memory. It suits tests and tiny
 // corpora. It is safe for concurrent use, and it copies every vector it is given
-// and every vector it returns, so no caller shares a slice with it.
+// and every vector it returns, so no caller shares a slice with it. Create it
+// with NewMemStore: the zero value has no maps and panics on its first write.
 type MemStore struct {
 	mu     sync.Mutex
 	scopes map[scopeKey]*memScope

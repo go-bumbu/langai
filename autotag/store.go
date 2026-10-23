@@ -51,7 +51,8 @@ type Member struct {
 // Store persists the tags, items and hand-made links of every scope. index is
 // the hard isolation boundary (a tenant), partition a coordinate within it (a
 // space); no scope ever sees another's data. Every method fails on an empty
-// index. Vectors round-trip exactly; nil stays nil.
+// index. Vectors round-trip exactly; nil stays nil. Slices a Store is given or
+// returns are never shared with what it keeps.
 type Store interface {
 	Tag(ctx context.Context, index, partition, tagID string) (TagRecord, bool, error)
 	Tags(ctx context.Context, index, partition string) ([]TagRecord, error) // ordered by ID
