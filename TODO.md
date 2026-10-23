@@ -30,14 +30,6 @@
   set a new floor; until then 0.75 untagged only bounds that rate from above
   (at most about 1 document in 4 gets a wrong tag).
 
-## semsearch
-
-- [ ] let a Store list the doc ids it holds
-  Assign deletes the ghost tag vectors its search meets, but a vector whose tag
-  was deleted stays until then, and any other search over tag vectors (a
-  semantic tag search) would still meet it. A listing would let a caller sweep
-  the ghosts already stored.
-
 ## upstream
 
 - [ ] jupiterrider/ffi: load libffi lazily

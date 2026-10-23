@@ -6,63 +6,55 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/go-bumbu/langai/semsearch"
 )
 
-// scope is where every test keeps its tags.
-var scope = Scope{Index: "1", Partition: "10"}
-
-// nameVecEntry is a cached name embedding and the name hash it is for.
-type nameVecEntry struct {
-	v    []float32
-	hash string
-}
-
-// fakeTagStore is an in-memory TagStore. An err* field makes the matching
-// method fail with it.
-type fakeTagStore struct {
-	nameVecs map[string]nameVecEntry
-	members  map[string][][]float32
-	// memberHashes must change whenever members does, or the blend hash stays constant.
-	memberHashes map[string][]string
-
-	errNameVector, errSetNameVector, errMembers error
-}
-
-func newFakeTagStore() *fakeTagStore {
-	return &fakeTagStore{nameVecs: map[string]nameVecEntry{}, members: map[string][][]float32{}, memberHashes: map[string][]string{}}
-}
-
-func (f *fakeTagStore) NameVector(_ context.Context, tagID string) ([]float32, string, error) {
-	if f.errNameVector != nil {
-		return nil, "", f.errNameVector
+// mustNew returns a Tagger, failing the test if New does.
+func mustNew(t *testing.T, emb semsearch.Embedder, store Store, cfg Config) *Tagger {
+	t.Helper()
+	tg, err := New(emb, store, cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
-	e, ok := f.nameVecs[tagID]
-	if !ok {
-		return nil, "", nil
-	}
-	return e.v, e.hash, nil
+	return tg
 }
 
-func (f *fakeTagStore) SetNameVector(_ context.Context, tagID string, vec []float32, nameHash string) error {
-	if f.errSetNameVector != nil {
-		return f.errSetNameVector
+// must fails the test on err.
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
 	}
-	f.nameVecs[tagID] = nameVecEntry{v: vec, hash: nameHash}
-	return nil
 }
 
-func (f *fakeTagStore) Members(_ context.Context, tagID string) ([][]float32, []string, error) {
-	if f.errMembers != nil {
-		return nil, nil, f.errMembers
+// suggest returns the tags the scope suggests for the item, failing the test
+// on an error.
+func suggest(t *testing.T, space *Scope, itemID string) []string {
+	t.Helper()
+	ids, err := space.Suggest(context.Background(), itemID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return f.members[tagID], f.memberHashes[tagID], nil
+	return ids
+}
+
+func TestNew_RequiresEmbedderStoreAndModel(t *testing.T) {
+	if _, err := New(nil, NewMemStore(), Config{Model: "m"}); err == nil {
+		t.Error("nil embedder: New must fail")
+	}
+	if _, err := New(semsearch.FakeEmbedder{}, nil, Config{Model: "m"}); err == nil {
+		t.Error("nil store: New must fail")
+	}
+	if _, err := New(semsearch.FakeEmbedder{}, NewMemStore(), Config{}); err == nil {
+		t.Error("no model: New must fail")
+	}
 }
 
 func TestNew_Defaults(t *testing.T) {
-	tg := New(semsearch.FakeEmbedder{}, semsearch.NewMemStore(), Config{Model: "fake"})
+	tg := mustNew(t, semsearch.FakeEmbedder{}, NewMemStore(), Config{Model: "m"})
 	if tg.cfg.NameMinScore != 0.46 {
 		t.Fatalf("NameMinScore = %v, want default 0.46", tg.cfg.NameMinScore)
 	}
@@ -72,80 +64,36 @@ func TestNew_Defaults(t *testing.T) {
 	if tg.cfg.SmoothingK != 3 {
 		t.Fatalf("SmoothingK = %v, want default 3", tg.cfg.SmoothingK)
 	}
-	if tg.cfg.Collection != "tags" {
-		t.Fatalf("Collection = %q, want default tags", tg.cfg.Collection)
-	}
 }
 
-func TestRefresh_ColdStartUsesName(t *testing.T) {
-	store := semsearch.NewMemStore()
-	fake := semsearch.FakeEmbedder{}
-	tg := New(fake, store, Config{Model: "fake", SmoothingK: 3})
-	cut, err := tg.Refresh(context.Background(), scope, newFakeTagStore(), Tag{ID: "7", Name: "dev / rust", NameHash: "nh"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// a member-less tag is judged by its name alone, so its cutoff is the default name minimum
-	if cut != 0.46 {
-		t.Fatalf("cutoff = %v, want the default name minimum 0.46", cut)
-	}
-	// with zero members, the stored tag vector must equal the name embedding
-	want, _ := fake.Embed(context.Background(), semsearch.RoleDocument, []string{"dev / rust"})
-	hits, _ := store.Search(context.Background(), "1", "10", "tags", want[0], 5)
-	if len(hits) != 1 || hits[0].DocID != "7" || hits[0].Score < 0.999 {
-		t.Fatalf("cold-start tag vector should equal the name embedding: %#v", hits)
-	}
-}
-
-// TestRefresh_ReturnsTheTagsCutoff: once a tag has members its cutoff is the
-// mix tagCutoff computes from the name embedding and those members, not the
-// name minimum alone. A second refresh that finds nothing changed skips the
-// blend, and must report that same cutoff.
-func TestRefresh_ReturnsTheTagsCutoff(t *testing.T) {
+// TestSetTagAndSetItem_RejectEmptyIDsAndBlankText: a tag or an item needs an
+// id, and text to embed. A write without them fails and stores nothing.
+func TestSetTagAndSetItem_RejectEmptyIDsAndBlankText(t *testing.T) {
 	ctx := context.Background()
-	fake := semsearch.FakeEmbedder{}
-	// the members are embedded as queries, the way a document is
-	members, err := fake.Embed(ctx, semsearch.RoleQuery,
-		[]string{"rust ownership and borrowing", "cargo crates for rust programs"})
-	if err != nil {
-		t.Fatal(err)
+	store := NewMemStore()
+	space := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "fake"}).Scope("1", "10")
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"SetTag with an empty id", space.SetTag(ctx, "", "rust")},
+		{"SetTag with a blank name", space.SetTag(ctx, "1", " \t\n")},
+		{"SetItem with an empty id", space.SetItem(ctx, "", "rust")},
+		{"SetItem with blank text", space.SetItem(ctx, "a", "  ")},
+	} {
+		if tc.err == nil {
+			t.Errorf("%s succeeded, want an error", tc.name)
+		}
 	}
-	src := newFakeTagStore()
-	src.members["7"] = members
-	tg := New(fake, semsearch.NewMemStore(), Config{Model: "fake", SmoothingK: 3})
-	tag := Tag{ID: "7", Name: "dev / rust", NameHash: "nh"}
-
-	cut, err := tg.Refresh(ctx, scope, src, tag)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// the tag's name is embedded as a document
-	docVecs, err := fake.Embed(ctx, semsearch.RoleDocument, []string{"dev / rust"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	nameVec := docVecs[0]
-	if want := tagCutoff(nameVec, members, 3, 0.46, 0.70); cut != want {
-		t.Fatalf("cutoff = %v, want %v", cut, want)
-	}
-	// guard: were the cutoff just the name minimum, the skipped refresh below
-	// could not be told apart from one that reports only the name minimum
-	if cut == 0.46 {
-		t.Fatalf("cutoff %v is the name minimum: the fixture's members had no effect", cut)
-	}
-
-	// nothing changed, so this refresh skips the blend; it must still report the
-	// cutoff the members give the tag
-	skipped, err := tg.Refresh(ctx, scope, src, tag)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if skipped != cut {
-		t.Fatalf("skipped refresh returned cutoff %v, want the first call's %v", skipped, cut)
+	tags, _ := store.Tags(ctx, "1", "10")
+	_, foundEmpty, _ := store.Item(ctx, "1", "10", "")
+	_, foundA, _ := store.Item(ctx, "1", "10", "a")
+	if len(tags) != 0 || foundEmpty || foundA {
+		t.Fatalf("a refused write stored something: tags %+v, item \"\" found %v, item a found %v", tags, foundEmpty, foundA)
 	}
 }
 
-// rustCooking is a document that shares several words with tag "rust" and
+// rustCooking is an item text that shares several words with tag "rust" and
 // one with tag "cooking": under FakeEmbedder it scores ~0.61 against "rust"
 // and ~0.20 against "cooking", so a NameMinScore of 0.15 clears both.
 const rustCooking = "The Rust Programming Language\nA systems programming language focused on safety and speed\nrust-lang.org\n" +
@@ -153,22 +101,16 @@ const rustCooking = "The Rust Programming Language\nA systems programming langua
 	"without garbage collection. Learn Rust by building real projects in Rust. " +
 	"I also enjoy cooking on weekends."
 
-// TestAssign_ColdStartTagsByName: tags without members are assigned by their
-// names alone, and every one whose score clears the name minimum is.
-func TestAssign_ColdStartTagsByName(t *testing.T) {
+// TestSuggest_ColdStartTagsByName: tags without members are suggested by their
+// names alone, every one whose score clears the name minimum, best first.
+func TestSuggest_ColdStartTagsByName(t *testing.T) {
 	ctx := context.Background()
-	tg := New(semsearch.FakeEmbedder{}, semsearch.NewMemStore(), Config{Model: "fake", NameMinScore: 0.15, SmoothingK: 3})
-	vec, err := tg.Embed(ctx, rustCooking)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tags := []Tag{{ID: "1", Name: "rust", NameHash: "hash-rust"}, {ID: "2", Name: "cooking", NameHash: "hash-cooking"}}
-	got, err := tg.Assign(ctx, scope, newFakeTagStore(), tags, vec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(got, []string{"1", "2"}) {
-		t.Fatalf("Assign = %v, want [1 2]: rust first, it scores higher", got)
+	space := mustNew(t, semsearch.FakeEmbedder{}, NewMemStore(), Config{Model: "fake", NameMinScore: 0.15}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	must(t, space.SetTag(ctx, "2", "cooking"))
+	must(t, space.SetItem(ctx, "doc", rustCooking))
+	if got := suggest(t, space, "doc"); !slices.Equal(got, []string{"1", "2"}) {
+		t.Fatalf("Suggest = %v, want [1 2]: rust first, it scores higher", got)
 	}
 }
 
@@ -189,24 +131,24 @@ func (c *countingEmbedder) Embed(ctx context.Context, role semsearch.Role, texts
 	return c.inner.Embed(ctx, role, texts)
 }
 
-// TestEmbed_DocumentsAreQueriesAndNamesAreDocuments: a document is searched
-// against the tag vectors, so it is embedded as a query, and a tag's name as
-// a document. An asymmetric model prefixes the two differently.
-func TestEmbed_DocumentsAreQueriesAndNamesAreDocuments(t *testing.T) {
+// TestEmbedRoles_ItemsAreQueriesAndNamesAreDocuments: an item is scored
+// against the tag vectors, so its text is embedded as a query, and a tag's
+// name as a document. An asymmetric model prefixes the two differently.
+// Suggest finds both embedded already, and embeds nothing more.
+func TestEmbedRoles_ItemsAreQueriesAndNamesAreDocuments(t *testing.T) {
 	ctx := context.Background()
 	emb := &countingEmbedder{inner: semsearch.FakeEmbedder{}}
-	tg := New(emb, semsearch.NewMemStore(), Config{Model: "fake", NameMinScore: 0.15})
-	vec, err := tg.Embed(ctx, rustCooking)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tags := []Tag{{ID: "1", Name: "rust", NameHash: "hash-rust"}, {ID: "2", Name: "cooking", NameHash: "hash-cooking"}}
-	if _, err := tg.Assign(ctx, scope, newFakeTagStore(), tags, vec); err != nil {
-		t.Fatal(err)
-	}
-	want := []semsearch.Role{semsearch.RoleQuery, semsearch.RoleDocument, semsearch.RoleDocument}
+	space := mustNew(t, emb, NewMemStore(), Config{Model: "fake", NameMinScore: 0.15}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	must(t, space.SetTag(ctx, "2", "cooking"))
+	must(t, space.SetItem(ctx, "doc", rustCooking))
+	suggest(t, space, "doc")
+	want := []semsearch.Role{semsearch.RoleDocument, semsearch.RoleDocument, semsearch.RoleQuery}
 	if !slices.Equal(emb.roles, want) {
-		t.Fatalf("embed roles = %v, want %v (the document as a query, then one document per tag)", emb.roles, want)
+		t.Fatalf("embed roles = %v, want %v (one document per tag name, then the item as a query)", emb.roles, want)
+	}
+	if emb.calls != 3 {
+		t.Fatalf("embedded %d times, want 3: Suggest must embed nothing more", emb.calls)
 	}
 }
 
@@ -231,38 +173,45 @@ func (s stubEmbedder) Embed(_ context.Context, _ semsearch.Role, texts []string)
 	return out, nil
 }
 
-// taughtAndPlain is the fixture of the per-tag cutoff tests: a document
-// embedded as q and a scope of two tags. "taught" has three members and
-// blends to a score of 0.705 against the document: its name scores 0.55 and
-// its members' centroid 0.60. "plain" has no members and scores 0.50 by its
-// name.
-func taughtAndPlain() (stub stubEmbedder, src *fakeTagStore, tags []Tag, q []float32) {
-	q = unitVec(1, 0, 0, 0)
-	m := unitVec(0.60, 0, 0.80, 0)
-	stub = stubEmbedder{dims: 4, vecs: map[string][]float32{
+// taughtAndPlain is the embedder of the per-tag cutoff tests (see
+// suggestTaughtAndPlain). The text "query" embeds as q and "member" as m. The
+// name "taught" scores 0.55 against q and m scores 0.60, so a tag "taught"
+// with three members of text "member" blends to a score of 0.705 against q.
+// The name "plain" scores 0.50.
+func taughtAndPlain() stubEmbedder {
+	return stubEmbedder{dims: 4, vecs: map[string][]float32{
 		"taught": unitVec(0.55, math.Sqrt(1-0.55*0.55), 0, 0),
 		"plain":  unitVec(0.50, 0, 0, math.Sqrt(0.75)),
+		"member": unitVec(0.60, 0, 0.80, 0),
+		"query":  unitVec(1, 0, 0, 0),
 	}}
-	src = newFakeTagStore()
-	src.members["1"] = [][]float32{m, m, m}
-	tags = []Tag{{ID: "1", Name: "taught", NameHash: "t"}, {ID: "2", Name: "plain", NameHash: "p"}}
-	return stub, src, tags, q
+}
+
+// suggestTaughtAndPlain returns the tags suggested for the item "q" (text
+// "query") in a scope of two tags: "1", named "taught", whose members are the
+// items m1, m2 and m3 (text "member"), and "2", named "plain", with no members.
+func suggestTaughtAndPlain(t *testing.T, cfg Config) []string {
+	t.Helper()
+	ctx := context.Background()
+	space := mustNew(t, taughtAndPlain(), NewMemStore(), cfg).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "taught"))
+	must(t, space.SetTag(ctx, "2", "plain"))
+	for _, id := range []string{"m1", "m2", "m3"} {
+		must(t, space.SetItem(ctx, id, "member"))
+		must(t, space.TagByHand(ctx, id, "1"))
+	}
+	must(t, space.SetItem(ctx, "q", "query"))
+	return suggest(t, space, "q")
 }
 
 // With the default minimums "taught" blends to 0.705, which clears a global
 // 0.46 but not its own cutoff (0.711), since its name scores 0.55 against 0.46
 // and its members 0.60 against 0.70. "plain" scores 0.50 against 0.46.
-// "taught" ranks first, so an implementation that stops at the first refused
-// hit never reaches "plain".
-func TestAssign_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
-	stub, src, tags, q := taughtAndPlain()
-	tg := New(stub, semsearch.NewMemStore(), Config{Model: "stub"})
-	got, err := tg.Assign(context.Background(), scope, src, tags, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(got, []string{"2"}) {
-		t.Fatalf("Assign = %v, want [plain] only", got)
+// "taught" comes first, so an implementation that stops at the first refused
+// tag never reaches "plain".
+func TestSuggest_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
+	if got := suggestTaughtAndPlain(t, Config{Model: "stub"}); !slices.Equal(got, []string{"2"}) {
+		t.Fatalf("Suggest = %v, want [plain] only", got)
 	}
 }
 
@@ -270,354 +219,256 @@ func TestAssign_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
 // members. The default of 0.70 hides it: a Tagger that used 0.70 whatever it
 // was given would pass every other test. Lowered to 0.5, the cutoff of "taught"
 // (3 members, so a blend weight of 0.5) drops from 0.711 to about 0.589, below
-// its score of 0.705, so it is assigned along with "plain".
-func TestAssign_MemberMinScoreSetsTheCutoffOfATaughtTag(t *testing.T) {
-	stub, src, tags, q := taughtAndPlain()
-	tg := New(stub, semsearch.NewMemStore(), Config{Model: "stub", MemberMinScore: 0.5})
-	got, err := tg.Assign(context.Background(), scope, src, tags, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(got, []string{"1", "2"}) {
-		t.Fatalf("Assign = %v, want [taught plain]", got)
+// its score of 0.705, so it is suggested along with "plain", and first.
+func TestSuggest_MemberMinScoreSetsTheCutoffOfATaughtTag(t *testing.T) {
+	if got := suggestTaughtAndPlain(t, Config{Model: "stub", MemberMinScore: 0.5}); !slices.Equal(got, []string{"1", "2"}) {
+		t.Fatalf("Suggest = %v, want [taught plain]", got)
 	}
 }
 
-func TestAssign_AssignsEveryTagThatClearsItsCutoff(t *testing.T) {
+func TestSuggest_AssignsEveryTagThatClearsItsCutoff(t *testing.T) {
 	const n = 7 // more than any cap a tagger might be tempted to have
+	ctx := context.Background()
 	q := make([]float64, n+1)
 	q[0] = 1
-	vecs := map[string][]float32{}
-	var tags []Tag
+	vecs := map[string][]float32{"query": unitVec(q...)}
 	var want []string
 	for i := 1; i <= n; i++ {
 		v := make([]float64, n+1)
 		v[0], v[i] = 0.5, math.Sqrt(0.75) // each name scores 0.50
-		name := fmt.Sprintf("tag-%d", i)
-		vecs[name] = unitVec(v...)
-		tags = append(tags, Tag{ID: fmt.Sprint(i), Name: name, NameHash: name})
+		vecs[fmt.Sprintf("tag-%d", i)] = unitVec(v...)
 		want = append(want, fmt.Sprint(i))
 	}
-	tg := New(stubEmbedder{dims: n + 1, vecs: vecs}, semsearch.NewMemStore(), Config{Model: "stub"})
-	got, err := tg.Assign(context.Background(), scope, newFakeTagStore(), tags, unitVec(q...))
-	if err != nil {
-		t.Fatal(err)
+	space := mustNew(t, stubEmbedder{dims: n + 1, vecs: vecs}, NewMemStore(), Config{Model: "stub"}).Scope("1", "10")
+	for i := 1; i <= n; i++ {
+		must(t, space.SetTag(ctx, fmt.Sprint(i), fmt.Sprintf("tag-%d", i)))
 	}
+	must(t, space.SetItem(ctx, "q", "query"))
+	got := suggest(t, space, "q")
 	slices.Sort(got)
 	if !slices.Equal(got, want) {
-		t.Fatalf("Assign = %v, want all seven", got)
+		t.Fatalf("Suggest = %v, want all seven", got)
 	}
 }
 
-// TestAssign_NoTagsSearchesNothing: a scope without tags has nothing to
-// assign, so Assign answers without touching the store.
-func TestAssign_NoTagsSearchesNothing(t *testing.T) {
-	store := &noDeleteStore{MemStore: semsearch.NewMemStore()}
-	tg := New(semsearch.FakeEmbedder{}, store, Config{Model: "fake"})
-	got, err := tg.Assign(context.Background(), scope, newFakeTagStore(), nil, unitVec(1, 0))
-	if err != nil || got != nil {
-		t.Fatalf("Assign = %v, %v; want no ids and no error", got, err)
-	}
-	if store.searches != 0 {
-		t.Fatalf("Assign searched %d times with no tags", store.searches)
-	}
-}
-
-// TestAssign_KeepsToItsScopeAndCollection: the tag vectors live under the
-// configured collection in the scope's coordinates, and vectors elsewhere,
-// another partition's tags or another collection's documents, are neither
-// assigned nor deleted as ghosts.
-func TestAssign_KeepsToItsScopeAndCollection(t *testing.T) {
+// TestSuggest_NoTagsReturnsNothing: a scope without tags has nothing to
+// suggest, and that is no error.
+func TestSuggest_NoTagsReturnsNothing(t *testing.T) {
 	ctx := context.Background()
-	const dims = 4
-	store := semsearch.NewMemStore()
-	elsewhere := semsearch.Chunk{Vector: scoreVec(dims, 3, 0.90)}
-	for _, at := range []struct{ partition, collection string }{{"20", "labels"}, {"10", "docs"}} {
-		if err := store.Upsert(ctx, "1", at.partition, at.collection, "999", "h", []semsearch.Chunk{elsewhere}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	stub := stubEmbedder{dims: dims, vecs: map[string][]float32{"alpha": scoreVec(dims, 1, 0.80)}}
-	tg := New(stub, store, Config{Model: "stub", Collection: "labels"})
-	got, err := tg.Assign(ctx, scope, newFakeTagStore(), []Tag{{ID: "1", Name: "alpha", NameHash: "a"}}, unitVec(1, 0, 0, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(got, []string{"1"}) {
-		t.Fatalf("Assign = %v, want [1]", got)
-	}
-	if h, _ := store.ContentHash(ctx, "1", "10", "labels", "1"); h == "" {
-		t.Fatal("the tag vector was not stored under the configured collection")
-	}
-	for _, at := range []struct{ partition, collection string }{{"20", "labels"}, {"10", "docs"}} {
-		if h, _ := store.ContentHash(ctx, "1", at.partition, at.collection, "999"); h == "" {
-			t.Errorf("the vector in partition %s, collection %s was deleted", at.partition, at.collection)
-		}
+	space := mustNew(t, semsearch.FakeEmbedder{}, NewMemStore(), Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetItem(ctx, "doc", rustCooking))
+	got, err := space.Suggest(ctx, "doc")
+	if err != nil || got != nil {
+		t.Fatalf("Suggest = %#v, %v; want no ids and no error", got, err)
 	}
 }
 
-// pickTags judges each hit against its own tag's cutoff: a hit below its cutoff
-// does not end the picking, a score equal to the cutoff qualifies, a hit that is
-// not a current tag is skipped (it has no cutoff), and nothing limits how many
-// tags are picked. The picks come in hit order. It fails closed: a NaN score, or
-// a NaN cutoff, picks nothing, though every comparison with a NaN is false.
-func TestPickTags_JudgesEachHitAgainstItsOwnTagsCutoff(t *testing.T) {
-	cuts := map[string]float64{
-		"1": 0.70,
-		"2": 0.50,
-		"3": 0.46,
-		"4": 0.46,
-		"5": 0.46,
-		"6": 0.46,
-		"7": 0.46,
-		"8": math.NaN(),
-	}
-	hit := func(docID string, score float64) semsearch.Match {
-		return semsearch.Match{DocID: docID, Score: score}
-	}
-	for _, tc := range []struct {
-		name string
-		hits []semsearch.Match
-		want []string
-	}{
-		{"no hits", nil, nil},
-		{"a hit below its cutoff does not hide the ones after it",
-			[]semsearch.Match{hit("1", 0.65), hit("2", 0.55)}, []string{"2"}},
-		{"a score equal to the cutoff qualifies",
-			[]semsearch.Match{hit("2", 0.50)}, []string{"2"}},
-		{"a hit that is not a current tag is skipped",
-			[]semsearch.Match{hit("999", 0.90), hit("2", 0.55)}, []string{"2"}},
-		{"a NaN score is not picked, and does not hide the hits after it",
-			[]semsearch.Match{hit("2", math.NaN()), hit("3", 0.60)}, []string{"3"}},
-		{"no score reaches a NaN cutoff",
-			[]semsearch.Match{hit("8", 1), hit("8", math.Inf(1))}, nil},
-		{"every tag that clears its cutoff is picked, in hit order",
-			[]semsearch.Match{hit("7", 0.9), hit("6", 0.8), hit("5", 0.7), hit("4", 0.6), hit("3", 0.5), hit("2", 0.55), hit("1", 0.75)},
-			[]string{"7", "6", "5", "4", "3", "2", "1"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := pickTags(tc.hits, cuts); !slices.Equal(got, tc.want) {
-				t.Fatalf("pickTags = %v, want %v", got, tc.want)
-			}
-		})
+func TestSuggest_UnknownItem(t *testing.T) {
+	ctx := context.Background()
+	space := mustNew(t, semsearch.FakeEmbedder{}, NewMemStore(), Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	if _, err := space.Suggest(ctx, "missing"); !errors.Is(err, ErrUnknownItem) {
+		t.Fatalf("Suggest of an item never set: err = %v, want ErrUnknownItem", err)
 	}
 }
 
 // A cutoff that is not a number is reached by no score. A caller's
 // configuration should refuse one, but a Tagger built any other way must not
-// answer it by assigning every tag: with a NaN NameMinScore neither "alpha",
-// which scores 0.80 against the document, nor "beta", which scores below
-// zero, is assigned.
-func TestAssign_NaNCutoffAssignsNoTag(t *testing.T) {
+// answer it by suggesting every tag: with a NaN NameMinScore neither "alpha",
+// which scores 0.80 against the item, nor "beta", which scores below zero, is
+// suggested.
+func TestSuggest_NaNNameMinScoreAssignsNoTag(t *testing.T) {
 	const dims = 4
+	ctx := context.Background()
 	stub := stubEmbedder{dims: dims, vecs: map[string][]float32{
 		"alpha": scoreVec(dims, 1, 0.80),
 		"beta":  scoreVec(dims, 2, -0.30),
+		"query": unitVec(1, 0, 0, 0),
 	}}
-	tags := []Tag{{ID: "1", Name: "alpha", NameHash: "a"}, {ID: "2", Name: "beta", NameHash: "b"}}
-	tg := New(stub, semsearch.NewMemStore(), Config{Model: "stub", NameMinScore: math.NaN()})
-	got, err := tg.Assign(context.Background(), scope, newFakeTagStore(), tags, unitVec(1, 0, 0, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("Assign = %v, want none: no score reaches a NaN cutoff", got)
+	space := mustNew(t, stub, NewMemStore(), Config{Model: "stub", NameMinScore: math.NaN()}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "alpha"))
+	must(t, space.SetTag(ctx, "2", "beta"))
+	must(t, space.SetItem(ctx, "q", "query"))
+	if got := suggest(t, space, "q"); len(got) != 0 {
+		t.Fatalf("Suggest = %v, want none: no score reaches a NaN cutoff", got)
 	}
 }
 
-// A ghost is the vector a deleted tag left behind, and it can outscore current
-// tags. The search has one slot per current tag, so each ghost it shows takes a
-// slot from a tag. In every case the ghosts are stored beforehand, each
-// outscoring a current tag so that a search meets it, and the current tags
-// (listed by the score their names get against the document) all clear the
-// default name minimum of 0.46: one Assign must return every current tag and
-// leave no ghost in the store.
-func TestAssign_DeletesGhostVectorsAndAssignsEveryQualifyingTag(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		tags   []float64
-		ghosts []float64
-	}{
-		{"one ghost above the only tag", []float64{0.5}, []float64{1}},
-		{"two ghosts above the only tag", []float64{0.5}, []float64{0.9, 0.7}},
-		{"two ghosts, one above and one between two tags", []float64{0.8, 0.5}, []float64{0.9, 0.7}},
-		{"six ghosts above two tags", []float64{0.8, 0.5}, []float64{0.99, 0.98, 0.97, 0.96, 0.95, 0.9}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			dims := 1 + len(tc.tags) + len(tc.ghosts)
-			doc := make([]float64, dims)
-			doc[0] = 1
-			vecs := map[string][]float32{}
-			store := semsearch.NewMemStore()
-			var tags []Tag
-			var want []string
-			for i, score := range tc.tags {
-				id, name := fmt.Sprint(i+1), fmt.Sprintf("tag-%d", i+1)
-				vecs[name] = scoreVec(dims, 1+i, score)
-				tags = append(tags, Tag{ID: id, Name: name, NameHash: name})
-				want = append(want, id)
-			}
-			var ghostIDs []string
-			for i, score := range tc.ghosts {
-				id := fmt.Sprint(900 + i)
-				ghostIDs = append(ghostIDs, id)
-				chunk := semsearch.Chunk{Vector: scoreVec(dims, 1+len(tc.tags)+i, score)}
-				if err := store.Upsert(ctx, "1", "10", "tags", id, "ghost", []semsearch.Chunk{chunk}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			tg := New(stubEmbedder{dims: dims, vecs: vecs}, store, Config{Model: "stub"})
-			got, err := tg.Assign(ctx, scope, newFakeTagStore(), tags, unitVec(doc...))
-			if err != nil {
-				t.Fatal(err)
-			}
-			slices.Sort(got)
-			if !slices.Equal(got, want) {
-				t.Fatalf("Assign = %v, want %v", got, want)
-			}
-			for _, id := range ghostIDs {
-				if h, _ := store.ContentHash(ctx, "1", "10", "tags", id); h != "" {
-					t.Errorf("ghost %s was not deleted", id)
-				}
-			}
-		})
-	}
-}
-
-// maxSearches bounds the searches noDeleteStore answers.
-const maxSearches = 20
-
-// noDeleteStore is a MemStore whose Delete takes no effect, as a backend's would
-// if its delete silently failed. It records the ids Delete was asked for, and
-// fails a search past maxSearches, so a search loop that never ends is an error
-// here and not a hung test run.
-type noDeleteStore struct {
-	*semsearch.MemStore
-	deletes  []string
-	searches int
-}
-
-func (s *noDeleteStore) Search(ctx context.Context, index, partition, collection string, vector []float32, limit int) ([]semsearch.Match, error) {
-	s.searches++
-	if s.searches > maxSearches {
-		return nil, fmt.Errorf("noDeleteStore: more than %d searches, the search loop does not end", maxSearches)
-	}
-	return s.MemStore.Search(ctx, index, partition, collection, vector, limit)
-}
-
-func (s *noDeleteStore) Delete(_ context.Context, _, _, _, docID string) error {
-	s.deletes = append(s.deletes, docID)
-	return nil
-}
-
-// A ghost whose Delete takes no effect stays in the results however often it is
-// deleted. The search must still end, after one attempt at deleting it, and the
-// ghost, which is not a tag, must never be assigned. The ghost holds one of the
-// two slots, so beta, which scores below it, does not make the hits and the
-// test says nothing about it; alpha does, and must be assigned.
-func TestAssign_NeverAssignsAGhostItCannotDelete(t *testing.T) {
+func TestTagByHand_UnknownItemOrTag(t *testing.T) {
 	ctx := context.Background()
-	const dims = 4
-	store := &noDeleteStore{MemStore: semsearch.NewMemStore()}
-	chunk := semsearch.Chunk{Vector: scoreVec(dims, 3, 0.70)}
-	if err := store.Upsert(ctx, "1", "10", "tags", "999", "ghost", []semsearch.Chunk{chunk}); err != nil {
-		t.Fatal(err)
-	}
-	stub := stubEmbedder{dims: dims, vecs: map[string][]float32{
-		"alpha": scoreVec(dims, 1, 0.80),
-		"beta":  scoreVec(dims, 2, 0.50),
-	}}
-	tags := []Tag{{ID: "1", Name: "alpha", NameHash: "a"}, {ID: "2", Name: "beta", NameHash: "b"}}
-	tg := New(stub, store, Config{Model: "stub"})
-	got, err := tg.Assign(ctx, scope, newFakeTagStore(), tags, unitVec(1, 0, 0, 0))
-	if err != nil {
-		t.Fatal(err) // this is also what a search loop that never ends turns into
-	}
-	if slices.Contains(got, "999") {
-		t.Fatalf("Assign = %v: the ghost was assigned", got)
-	}
-	if !slices.Contains(got, "1") {
-		t.Fatalf("Assign = %v, want alpha (1) among them", got)
-	}
-	if len(store.deletes) != 1 || store.deletes[0] != "999" {
-		t.Fatalf("Delete was asked for %v, want one attempt at the ghost (999)", store.deletes)
-	}
-}
-
-// errStoreDown is what the failing stores below answer with.
-var errStoreDown = errors.New("store is down")
-
-// failingSearchStore is a MemStore whose Search fails, as a backend's would when
-// its database cannot be reached.
-type failingSearchStore struct{ *semsearch.MemStore }
-
-func (failingSearchStore) Search(context.Context, string, string, string, []float32, int) ([]semsearch.Match, error) {
-	return nil, errStoreDown
-}
-
-// failingDeleteStore is a MemStore whose Delete fails.
-type failingDeleteStore struct{ *semsearch.MemStore }
-
-func (failingDeleteStore) Delete(context.Context, string, string, string, string) error {
-	return errStoreDown
-}
-
-// A vector store that fails while the tags are being searched must fail the
-// assignment: answering with no tags instead would read as "this document fits
-// no tag", and a caller that replaces a document's tags with the answer would
-// drop every tag it holds. The ghost outscores the only current tag, so it
-// takes the search's only slot and the search has to delete it.
-func TestAssign_VectorStoreErrorsFailTheAssignment(t *testing.T) {
-	const dims = 3
+	space := mustNew(t, semsearch.FakeEmbedder{}, NewMemStore(), Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	must(t, space.SetItem(ctx, "a", "rust ownership"))
 	for _, tc := range []struct {
-		name  string
-		store func(*semsearch.MemStore) semsearch.Store
+		itemID, tagID string
+		want          error
 	}{
-		{"Search fails", func(m *semsearch.MemStore) semsearch.Store { return failingSearchStore{m} }},
-		{"Delete of a ghost fails", func(m *semsearch.MemStore) semsearch.Store { return failingDeleteStore{m} }},
+		{"missing", "1", ErrUnknownItem},
+		{"a", "missing", ErrUnknownTag},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			mem := semsearch.NewMemStore()
-			ghost := semsearch.Chunk{Vector: scoreVec(dims, 2, 0.90)}
-			if err := mem.Upsert(ctx, "1", "10", "tags", "999", "ghost", []semsearch.Chunk{ghost}); err != nil {
-				t.Fatal(err)
-			}
-			stub := stubEmbedder{dims: dims, vecs: map[string][]float32{"alpha": scoreVec(dims, 1, 0.50)}}
-			tg := New(stub, tc.store(mem), Config{Model: "stub"})
-			got, err := tg.Assign(ctx, scope, newFakeTagStore(), []Tag{{ID: "1", Name: "alpha", NameHash: "a"}}, unitVec(1, 0, 0))
-			if !errors.Is(err, errStoreDown) || got != nil {
-				t.Fatalf("Assign = %v, %v; want no ids and the store's error", got, err)
-			}
-		})
+		if err := space.TagByHand(ctx, tc.itemID, tc.tagID); !errors.Is(err, tc.want) {
+			t.Errorf("TagByHand(%q, %q) = %v, want %v", tc.itemID, tc.tagID, err, tc.want)
+		}
 	}
 }
 
-// TestRefresh_TagStoreErrorsFailTheRefresh: the caller's storage failing at
-// any step fails the refresh, and a name vector that could not be cached is
-// still not blended into a stored tag vector the next refresh would skip.
-func TestRefresh_TagStoreErrorsFailTheRefresh(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		break_ func(*fakeTagStore)
-	}{
-		{"NameVector", func(f *fakeTagStore) { f.errNameVector = errStoreDown }},
-		{"SetNameVector", func(f *fakeTagStore) { f.errSetNameVector = errStoreDown }},
-		{"Members", func(f *fakeTagStore) { f.errMembers = errStoreDown }},
+// TestTagByHand_TeachesTheTagAndUntagForgets: items tagged by hand teach a tag
+// their words, so it fits an item its name alone did not, and untagging them
+// takes the lesson back.
+func TestTagByHand_TeachesTheTagAndUntagForgets(t *testing.T) {
+	ctx := context.Background()
+	space := mustNew(t, semsearch.FakeEmbedder{}, NewMemStore(),
+		Config{Model: "fake", NameMinScore: 0.3, MemberMinScore: 0.5}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "bread", "cooking / bread"))
+	must(t, space.SetTag(ctx, "japan", "travel / japan"))
+	must(t, space.SetItem(ctx, "doc", "Croissant dough with cold butter"))
+	if got := suggest(t, space, "doc"); len(got) != 0 {
+		t.Fatalf("before any tag by hand, Suggest = %v, want none", got)
+	}
+	recipes := []string{"recipe-1", "recipe-2", "recipe-3"}
+	for i, text := range []string{
+		"Croissant dough: folding cold butter into layers",
+		"Butter croissant dough, step by step",
+		"Shaping croissant dough with butter",
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := semsearch.NewMemStore()
-			src := newFakeTagStore()
-			tc.break_(src)
-			tg := New(semsearch.FakeEmbedder{}, store, Config{Model: "fake"})
-			if _, err := tg.Refresh(context.Background(), scope, src, Tag{ID: "7", Name: "dev / rust", NameHash: "nh"}); !errors.Is(err, errStoreDown) {
-				t.Fatalf("err = %v, want the TagStore's error", err)
-			}
-			if h, _ := store.ContentHash(context.Background(), "1", "10", "tags", "7"); h != "" {
-				t.Fatal("a tag vector was stored although the refresh failed")
-			}
-		})
+		must(t, space.SetItem(ctx, recipes[i], text))
+		must(t, space.TagByHand(ctx, recipes[i], "bread"))
+	}
+	if got := suggest(t, space, "doc"); !slices.Equal(got, []string{"bread"}) {
+		t.Fatalf("with three recipes tagged by hand, Suggest = %v, want [bread]", got)
+	}
+	for _, id := range recipes {
+		must(t, space.UntagByHand(ctx, id, "bread"))
+	}
+	if got := suggest(t, space, "doc"); len(got) != 0 {
+		t.Fatalf("with the recipes untagged, Suggest = %v, want none", got)
+	}
+}
+
+// TestSetItem_UnchangedTextEmbedsNothing: setting an item to the text it has
+// keeps the embedding it has.
+func TestSetItem_UnchangedTextEmbedsNothing(t *testing.T) {
+	ctx := context.Background()
+	emb := &countingEmbedder{inner: semsearch.FakeEmbedder{}}
+	space := mustNew(t, emb, NewMemStore(), Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetItem(ctx, "a", rustCooking))
+	must(t, space.SetItem(ctx, "a", rustCooking))
+	if emb.calls != 1 {
+		t.Fatalf("embedded %d times, want 1", emb.calls)
+	}
+}
+
+// TestSetItem_EditRebuildsItsHandTags: an item's new text moves the vectors
+// of the tags it is tagged with by hand, before SetItem returns.
+func TestSetItem_EditRebuildsItsHandTags(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	space := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	must(t, space.SetItem(ctx, "a", "rust ownership"))
+	must(t, space.TagByHand(ctx, "a", "1"))
+	before, _, _ := store.Tag(ctx, "1", "10", "1")
+	must(t, space.SetItem(ctx, "a", "cooking bread at home"))
+	after, _, _ := store.Tag(ctx, "1", "10", "1")
+	if after.Built != after.Version {
+		t.Fatalf("the tag was left stale: Built %d, Version %d", after.Built, after.Version)
+	}
+	if slices.Equal(after.Vec, before.Vec) {
+		t.Fatal("the tag's vector did not move with its member's new text")
+	}
+}
+
+// TestSetTag_RenameReembedsTheName: a tag's name is embedded when the tag is
+// created and when it is renamed, never when it is set to the name it has,
+// and a rename changes which items the tag fits.
+func TestSetTag_RenameReembedsTheName(t *testing.T) {
+	ctx := context.Background()
+	emb := &countingEmbedder{inner: semsearch.FakeEmbedder{}}
+	space := mustNew(t, emb, NewMemStore(), Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetItem(ctx, "doc", "go"))
+	setTag := func(name string, wantCalls int) {
+		t.Helper()
+		before := emb.calls
+		must(t, space.SetTag(ctx, "1", name))
+		if got := emb.calls - before; got != wantCalls {
+			t.Fatalf("SetTag(%q) embedded %d times, want %d", name, got, wantCalls)
+		}
+	}
+	setTag("rust", 1)
+	setTag("rust", 0)
+	if got := suggest(t, space, "doc"); len(got) != 0 {
+		t.Fatalf("before the rename, Suggest = %v, want none", got)
+	}
+	setTag("go", 1)
+	if got := suggest(t, space, "doc"); !slices.Equal(got, []string{"1"}) {
+		t.Fatalf("after the rename, Suggest = %v, want [1]", got)
+	}
+}
+
+// TestDeleteItem_RebuildsItsTags: a deleted member leaves its tags' vectors
+// before DeleteItem returns.
+func TestDeleteItem_RebuildsItsTags(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	space := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	must(t, space.SetItem(ctx, "a", "rust ownership and borrowing"))
+	must(t, space.SetItem(ctx, "b", "cargo crates for rust programs"))
+	must(t, space.TagByHand(ctx, "a", "1"))
+	must(t, space.TagByHand(ctx, "b", "1"))
+	must(t, space.DeleteItem(ctx, "a"))
+	rec, _, _ := store.Tag(ctx, "1", "10", "1")
+	ms, _ := store.Members(ctx, "1", "10", "1")
+	if len(ms) != 1 || ms[0].ItemID != "b" {
+		t.Fatalf("members = %+v, want b alone", ms)
+	}
+	if rec.Built != rec.Version {
+		t.Fatalf("the tag was left stale: Built %d, Version %d", rec.Built, rec.Version)
+	}
+	if !slices.Equal(rec.Vec, blend(rec.NameVec, [][]float32{ms[0].Vec}, 3)) {
+		t.Fatal("the tag's vector is not the blend of its name and its one member left")
+	}
+}
+
+// TestDeleteTag_DropsItAndForgetsItsLinks: a deleted tag is suggested no
+// more, and a tag created later under its id starts without its members.
+func TestDeleteTag_DropsItAndForgetsItsLinks(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	space := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	must(t, space.SetTag(ctx, "2", "programming"))
+	must(t, space.SetItem(ctx, "doc", "rust programming"))
+	must(t, space.TagByHand(ctx, "doc", "1"))
+	if got := suggest(t, space, "doc"); !slices.Contains(got, "1") {
+		t.Fatalf("before the delete, Suggest = %v, want 1 among them", got)
+	}
+	must(t, space.DeleteTag(ctx, "1"))
+	if got := suggest(t, space, "doc"); !slices.Equal(got, []string{"2"}) {
+		t.Fatalf("after the delete, Suggest = %v, want [2]", got)
+	}
+	must(t, space.SetTag(ctx, "1", "rust"))
+	if ms, _ := store.Members(ctx, "1", "10", "1"); len(ms) != 0 {
+		t.Fatalf("the tag created again under the deleted one's id has members %+v, want none", ms)
+	}
+}
+
+// TestScopes_AreIsolated: the same ids in two partitions of one index name
+// different tags and different items.
+func TestScopes_AreIsolated(t *testing.T) {
+	ctx := context.Background()
+	tg := mustNew(t, semsearch.FakeEmbedder{}, NewMemStore(), Config{Model: "fake"})
+	rust, cooking := tg.Scope("1", "10"), tg.Scope("1", "11")
+	must(t, rust.SetTag(ctx, "1", "rust"))
+	must(t, cooking.SetTag(ctx, "1", "cooking"))
+	for _, space := range []*Scope{rust, cooking} {
+		must(t, space.SetItem(ctx, "doc", "rust programming language"))
+	}
+	if got := suggest(t, rust, "doc"); !slices.Equal(got, []string{"1"}) {
+		t.Errorf("in scope (1, 10), Suggest = %v, want [1]", got)
+	}
+	if got := suggest(t, cooking, "doc"); len(got) != 0 {
+		t.Errorf("in scope (1, 11), Suggest = %v, want none", got)
 	}
 }
 
@@ -631,154 +482,211 @@ func (vectorlessEmbedder) Embed(context.Context, semsearch.Role, []string) ([][]
 	return nil, nil
 }
 
-// TestRefresh_VectorlessEmbedderIsAnError: a name embedding that succeeds
-// without a vector must fail the refresh, not panic the caller.
-func TestRefresh_VectorlessEmbedderIsAnError(t *testing.T) {
-	src := newFakeTagStore()
-	tg := New(vectorlessEmbedder{}, semsearch.NewMemStore(), Config{Model: "fake"})
-	if _, err := tg.Refresh(context.Background(), scope, src, Tag{ID: "7", Name: "dev / rust", NameHash: "nh"}); err == nil {
-		t.Fatal("Refresh succeeded without a name vector")
-	}
-	if _, ok := src.nameVecs["7"]; ok {
-		t.Fatal("a name vector was cached although none was embedded")
-	}
-}
-
-// TestEmbed_VectorlessEmbedderIsAnError: a document embedding that succeeds
-// without a vector must be an error, not a nil vector to search with.
-func TestEmbed_VectorlessEmbedderIsAnError(t *testing.T) {
-	tg := New(vectorlessEmbedder{}, semsearch.NewMemStore(), Config{Model: "fake"})
-	if vec, err := tg.Embed(context.Background(), "some text"); err == nil {
-		t.Fatalf("Embed = %v, want an error for an embedder that returned no vector", vec)
-	}
-}
-
-// TestRefresh_SecondCallSkipsUnchangedWork covers the two caches the doc
-// comment promises: an unchanged name is not re-embedded, and an unchanged
-// blendHash short-circuits before the blend/Upsert.
-func TestRefresh_SecondCallSkipsUnchangedWork(t *testing.T) {
-	store := semsearch.NewMemStore()
-	emb := &countingEmbedder{inner: semsearch.FakeEmbedder{}}
-	src := newFakeTagStore()
-	tg := New(emb, store, Config{Model: "fake", SmoothingK: 3})
-
+// TestEmbedderErrors_FailTheWrite: an embedding that succeeds without a
+// vector fails the write that needed it, and does not panic the caller.
+func TestEmbedderErrors_FailTheWrite(t *testing.T) {
 	ctx := context.Background()
-	tag := Tag{ID: "7", Name: "dev / rust", NameHash: "nh"}
-	first, err := tg.Refresh(ctx, scope, src, tag)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if emb.calls != 1 {
-		t.Fatalf("first refresh embedded %d times, want 1", emb.calls)
-	}
-	second, err := tg.Refresh(ctx, scope, src, tag)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if emb.calls != 1 {
-		t.Fatalf("unchanged name was re-embedded: %d calls, want 1", emb.calls)
-	}
-	// a skipped refresh still reports the tag's cutoff
-	if second != first {
-		t.Fatalf("skipped refresh returned cutoff %v, want the first call's %v", second, first)
-	}
-
-	// a renamed tag (new hash) must re-embed and re-store
-	if _, err := tg.Refresh(ctx, scope, src, Tag{ID: "7", Name: "dev / go", NameHash: "nh2"}); err != nil {
-		t.Fatal(err)
-	}
-	if emb.calls != 2 {
-		t.Fatalf("renamed tag embedded %d times, want 2", emb.calls)
-	}
-	want, _ := emb.inner.Embed(ctx, semsearch.RoleDocument, []string{"dev / go"})
-	hits, _ := store.Search(ctx, "1", "10", "tags", want[0], 5)
-	if len(hits) != 1 || hits[0].DocID != "7" || hits[0].Score < 0.999 {
-		t.Fatalf("renamed tag vector was not re-stored: %#v", hits)
-	}
-}
-
-// TestRefresh_FollowsTheMemberSet: a tag's vector moves with its members. A
-// refresh is skipped when nothing it depends on changed, and the members'
-// content hashes are how it tells that they did, so a changed member set must
-// be blended in even though the tag's name and the settings stayed the same.
-// The name leans along axis 0, the first member along axis 1 and the second
-// along axis 2, so a query along axis 2 scores 0 against the first vector and
-// about 0.32 against the second.
-func TestRefresh_FollowsTheMemberSet(t *testing.T) {
-	ctx := context.Background()
-	stub := stubEmbedder{dims: 3, vecs: map[string][]float32{"tag": unitVec(1, 0, 0)}}
-	store := semsearch.NewMemStore()
-	src := newFakeTagStore()
-	tg := New(stub, store, Config{Model: "stub"})
-	query := unitVec(0, 0, 1)
-
-	// refresh gives the tag one member, and returns the blend hash and the score
-	// of the query that the store ends up with
-	refresh := func(member []float32, memberHash string) (string, float64) {
-		t.Helper()
-		src.members["7"], src.memberHashes["7"] = [][]float32{member}, []string{memberHash}
-		if _, err := tg.Refresh(ctx, scope, src, Tag{ID: "7", Name: "tag", NameHash: "nh"}); err != nil {
-			t.Fatal(err)
-		}
-		stored, err := store.ContentHash(ctx, "1", "10", "tags", "7")
-		if err != nil {
-			t.Fatal(err)
-		}
-		hits, err := store.Search(ctx, "1", "10", "tags", query, 1)
-		if err != nil || len(hits) != 1 {
-			t.Fatalf("search = %v, %v, want the tag's one vector", hits, err)
-		}
-		return stored, hits[0].Score
-	}
-	hashA, scoreA := refresh(unitVec(0, 1, 0), "hash-a")
-	hashB, scoreB := refresh(unitVec(0, 0, 1), "hash-b")
-	if hashB == hashA {
-		t.Fatal("the stored blend hash did not change with the member set")
-	}
-	if !(scoreB > scoreA) {
-		t.Fatalf("the query scores %.4f against the vector of the new member set and %.4f against the old: the stored vector did not move", scoreB, scoreA)
-	}
-}
-
-// TestHashInputs_StableAcrossMemberOrderAndSensitiveToInputs is the guard
-// behind Refresh's "unchanged" short-circuit: the fingerprint must ignore the
-// store's member ordering, but change when anything the blend actually
-// depends on changes. It sorts a copy: the caller's slice, parallel to its
-// member embeddings, keeps its order.
-func TestHashInputs_StableAcrossMemberOrderAndSensitiveToInputs(t *testing.T) {
-	base := hashInputs("dev / rust", []string{"h1", "h2"}, "m", 3)
-	reversed := []string{"h2", "h1"}
-	if got := hashInputs("dev / rust", reversed, "m", 3); got != base {
-		t.Fatal("fingerprint must not depend on member order")
-	}
-	if !slices.Equal(reversed, []string{"h2", "h1"}) {
-		t.Fatalf("hashInputs reordered the caller's member hashes: %v", reversed)
-	}
+	space := mustNew(t, vectorlessEmbedder{}, NewMemStore(), Config{Model: "fake"}).Scope("1", "10")
 	for _, tc := range []struct {
 		name string
-		got  string
+		err  error
 	}{
-		{"name", hashInputs("dev / go", []string{"h1", "h2"}, "m", 3)},
-		{"members", hashInputs("dev / rust", []string{"h1"}, "m", 3)},
-		{"model", hashInputs("dev / rust", []string{"h1", "h2"}, "m2", 3)},
-		{"smoothing", hashInputs("dev / rust", []string{"h1", "h2"}, "m", 4)},
+		{"SetItem", space.SetItem(ctx, "a", "some text")},
+		{"SetTag", space.SetTag(ctx, "1", "rust")},
 	} {
-		if tc.got == base {
-			t.Errorf("changing the %s must change the fingerprint", tc.name)
+		if tc.err == nil || !strings.Contains(tc.err.Error(), "returned 0 vectors") {
+			t.Errorf("%s = %v, want the error of an embedder that returned 0 vectors", tc.name, tc.err)
 		}
 	}
 }
 
-// TestHashInputs_IsStable pins the fingerprint of a known input: a tag
-// vector stored under it is skipped by every later refresh, so a changed
-// derivation would silently recompute every stored tag vector once. The
-// value is what the derivation computed before it moved into this package.
-func TestHashInputs_IsStable(t *testing.T) {
-	const want = "bfbd28f1e6e17731ff94f0e2f2ff0a64fa38ff0b0a95efbaedb5bc8d539ab7cf"
-	if got := hashInputs("dev / rust", []string{"h2", "h1"}, "m", 3); got != want {
-		t.Fatalf("hashInputs = %s, want %s", got, want)
+// racingStore links item "b" to tag "1" the first time a rebuild of "1" tries
+// to store its vectors once raced is false, so that rebuild was computed from
+// an older Version.
+type racingStore struct {
+	*MemStore
+	raced bool
+}
+
+func (r *racingStore) SetTagVectors(ctx context.Context, i, p, id string, v int64, tv TagVectors) (bool, error) {
+	if !r.raced && id == "1" {
+		r.raced = true
+		if _, err := r.Link(ctx, i, p, "b", "1"); err != nil {
+			return false, err
+		}
+	}
+	return r.MemStore.SetTagVectors(ctx, i, p, id, v, tv)
+}
+
+// TestRebuild_KeepsAChangeThatLandsMidRebuild: a hand tag that lands while its
+// tag is being rebuilt is not overwritten by that rebuild, which never saw it,
+// and the next Suggest rebuilds the tag with it.
+func TestRebuild_KeepsAChangeThatLandsMidRebuild(t *testing.T) {
+	ctx := context.Background()
+	store := &racingStore{MemStore: NewMemStore(), raced: true}
+	space := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	must(t, space.SetItem(ctx, "a", "rust ownership and borrowing"))
+	must(t, space.SetItem(ctx, "b", "cargo crates for rust programs"))
+	store.raced = false
+
+	if err := space.TagByHand(ctx, "a", "1"); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, _ := store.Tag(ctx, "1", "10", "1")
+	if rec.Built == rec.Version {
+		t.Fatal("the rebuild that missed b must not have been stored")
+	}
+	if _, err := space.Suggest(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, _ = store.Tag(ctx, "1", "10", "1")
+	ms, _ := store.Members(ctx, "1", "10", "1")
+	if rec.Built != rec.Version || len(ms) != 2 ||
+		!slices.Equal(rec.Vec, blend(rec.NameVec, [][]float32{ms[0].Vec, ms[1].Vec}, 3)) {
+		t.Fatalf("Suggest must rebuild the tag from both members: %+v", rec)
 	}
 }
 
-// verify the fake actually satisfies the interface
-var _ TagStore = (*fakeTagStore)(nil)
+// linkOnReadStore links item "b" to tag "1" just before the first read of tag
+// "1" once armed, so the link lands between the two reads of a rebuild.
+type linkOnReadStore struct {
+	*MemStore
+	armed bool
+}
+
+func (r *linkOnReadStore) Tag(ctx context.Context, i, p, id string) (TagRecord, bool, error) {
+	if r.armed && id == "1" {
+		r.armed = false
+		if _, err := r.Link(ctx, i, p, "b", "1"); err != nil {
+			return TagRecord{}, false, err
+		}
+	}
+	return r.MemStore.Tag(ctx, i, p, id)
+}
+
+// TestRebuild_ReadsTheMembersAfterTheTag: a rebuild reads the tag before its
+// members. A change that lands before the members are read is then among
+// them; one that lands after bumps the tag past the Version the rebuild read,
+// and SetTagVectors refuses its vectors. A rebuild that read the members first
+// would store vectors missing b at the Version b's link set.
+func TestRebuild_ReadsTheMembersAfterTheTag(t *testing.T) {
+	ctx := context.Background()
+	store := &linkOnReadStore{MemStore: NewMemStore()}
+	space := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	must(t, space.SetItem(ctx, "a", "rust ownership and borrowing"))
+	must(t, space.SetItem(ctx, "b", "cargo crates for rust programs"))
+	store.armed = true
+
+	must(t, space.TagByHand(ctx, "a", "1"))
+	rec, _, _ := store.Tag(ctx, "1", "10", "1")
+	ms, _ := store.Members(ctx, "1", "10", "1")
+	if rec.Built != rec.Version || len(ms) != 2 ||
+		!slices.Equal(rec.Vec, blend(rec.NameVec, [][]float32{ms[0].Vec, ms[1].Vec}, 3)) {
+		t.Fatalf("TagByHand must build the tag from both members: %+v", rec)
+	}
+}
+
+// TestModelSwitch_ReembedsEverythingAndMixesNothing: a Tagger of another model
+// over a filled store re-embeds what it needs from the texts the store keeps,
+// each one once, and builds every tag from vectors of its own model alone.
+// FakeEmbedder stands in for both models, so the suggestions stay the same.
+func TestModelSwitch_ReembedsEverythingAndMixesNothing(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	before := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "a"}).Scope("1", "10")
+	must(t, before.SetTag(ctx, "t1", "programming / rust"))
+	must(t, before.SetTag(ctx, "t2", "programming / go"))
+	must(t, before.SetItem(ctx, "doc", "the rust programming language"))
+	must(t, before.SetItem(ctx, "x", "rust and go programming"))
+	must(t, before.SetItem(ctx, "y", "rust ownership and borrowing"))
+	must(t, before.TagByHand(ctx, "x", "t1"))
+	must(t, before.TagByHand(ctx, "x", "t2"))
+	must(t, before.TagByHand(ctx, "y", "t1"))
+	want := suggest(t, before, "doc")
+	if len(want) == 0 {
+		t.Fatal("the fixture suggests no tag for doc under model a: there is nothing to compare")
+	}
+
+	emb := &countingEmbedder{inner: semsearch.FakeEmbedder{}}
+	space := mustNew(t, emb, store, Config{Model: "b"}).Scope("1", "10")
+	if got := suggest(t, space, "doc"); !slices.Equal(got, want) {
+		t.Fatalf("under model b, Suggest = %v, want %v as under model a", got, want)
+	}
+	tags, _ := store.Tags(ctx, "1", "10")
+	if len(tags) != 2 {
+		t.Fatalf("tags = %+v, want t1 and t2", tags)
+	}
+	for _, tag := range tags {
+		if tag.Model != "b" || tag.Built != tag.Version {
+			t.Errorf("tag %s: Model %q, Built %d, Version %d; want model b, built at its Version", tag.ID, tag.Model, tag.Built, tag.Version)
+		}
+	}
+	for _, id := range []string{"doc", "x", "y"} {
+		if item, _, _ := store.Item(ctx, "1", "10", id); item.Model != "b" {
+			t.Errorf("item %s: Model %q, want b", id, item.Model)
+		}
+	}
+	if emb.calls != 5 {
+		t.Fatalf("embedded %d times, want 5: doc, x, y and the two names, each once", emb.calls)
+	}
+	must(t, space.Rebuild(ctx))
+	if emb.calls != 5 {
+		t.Fatalf("Rebuild embedded %d more times, want none: everything is of model b already", emb.calls-5)
+	}
+}
+
+// errStoreDown is what failingStore answers with.
+var errStoreDown = errors.New("store is down")
+
+// failingStore is a MemStore whose SetTagVectors fails while fail is set, as a
+// backend's would while its database cannot be reached.
+type failingStore struct {
+	*MemStore
+	fail bool
+}
+
+func (f *failingStore) SetTagVectors(ctx context.Context, i, p, id string, v int64, tv TagVectors) (bool, error) {
+	if f.fail {
+		return false, errStoreDown
+	}
+	return f.MemStore.SetTagVectors(ctx, i, p, id, v, tv)
+}
+
+// TestRebuildFailure_KeepsTheChangeAndHealsOnSuggest: a write whose rebuild
+// fails stays written and returns the rebuild's error, naming the tag, and the
+// next Suggest rebuilds the tag it left stale.
+func TestRebuildFailure_KeepsTheChangeAndHealsOnSuggest(t *testing.T) {
+	ctx := context.Background()
+	store := &failingStore{MemStore: NewMemStore()}
+	space := mustNew(t, semsearch.FakeEmbedder{}, store,
+		Config{Model: "fake", NameMinScore: 0.3, MemberMinScore: 0.5}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "cooking / bread"))
+	must(t, space.SetItem(ctx, "a", "Baking bread at home: a cooking guide"))
+
+	store.fail = true
+	err := space.TagByHand(ctx, "a", "1")
+	if !errors.Is(err, errStoreDown) {
+		t.Fatalf("TagByHand = %v, want the store's error", err)
+	}
+	if want := `autotag: rebuild tag "1": `; !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("TagByHand = %q, want it to start with %q", err, want)
+	}
+	ms, _ := store.Members(ctx, "1", "10", "1")
+	if len(ms) != 1 || ms[0].ItemID != "a" {
+		t.Fatalf("members = %+v, want a: the link stays although its rebuild failed", ms)
+	}
+	if rec, _, _ := store.Tag(ctx, "1", "10", "1"); rec.Built == rec.Version {
+		t.Fatal("the tag is built at its Version although its rebuild failed")
+	}
+
+	store.fail = false
+	got := suggest(t, space, "a")
+	if rec, _, _ := store.Tag(ctx, "1", "10", "1"); rec.Built != rec.Version {
+		t.Fatalf("Suggest left the tag stale: Built %d, Version %d", rec.Built, rec.Version)
+	}
+	if !slices.Contains(got, "1") {
+		t.Fatalf("Suggest = %v, want 1 among them", got)
+	}
+}
