@@ -13,18 +13,21 @@ const rebuildPasses = 3
 
 // stale reports whether the tag needs a rebuild: something its vectors depend
 // on changed since they were built (a tag never built has Built 0), or they
-// were built under another model than the Tagger's.
+// were built under another model or with other scoring settings than the
+// Tagger's.
 func (t *Tagger) stale(tag TagRecord) bool {
-	return tag.Built != tag.Version || tag.Model != t.cfg.Model
+	return tag.Built != tag.Version || tag.Model != t.cfg.Model || tag.Params != t.params
 }
 
-// rebuild computes the tag's vectors from its name and its members, and stores
-// them only while the tag is at the Version they were computed from. Members
-// embedded under another model are re-embedded first (see refreshMembers), and
-// the name is embedded, as a document, when the tag has no name vector of the
-// Tagger's model. A tag deleted meanwhile is no error, and neither is one
-// changed meanwhile: the change left it stale, for its writer or the next
-// Suggest to rebuild. An error comes back wrapped, naming the tag.
+// rebuild computes the tag's vectors from its name and its members, with the
+// Tagger's scoring settings, and stores them only while the tag is at the
+// Version they were computed from. Members embedded under another model are
+// re-embedded first (see refreshMembers), and the name is embedded, as a
+// document, when the tag has no name vector of the Tagger's model; other
+// scoring settings alone embed nothing. A tag deleted meanwhile is no error,
+// and neither is one changed meanwhile: the change left it stale, for its
+// writer or the next Suggest to rebuild. An error comes back wrapped, naming
+// the tag.
 func (s *Scope) rebuild(ctx context.Context, id string) (err error) {
 	defer func() {
 		if err != nil {
@@ -67,15 +70,16 @@ func (s *Scope) rebuild(ctx context.Context, id string) (err error) {
 		Vec:     blend(nameVec, vecs, k),
 		Cutoff:  storedCutoff(tagCutoff(nameVec, vecs, k, cfg.NameMinScore, cfg.MemberMinScore)),
 		Model:   cfg.Model,
+		Params:  s.tg.params,
 	})
 	return err
 }
 
 // refreshMembers re-embeds, from the text the store keeps, the tag's members
 // whose vectors come from another model than the Tagger's, so that rebuild can
-// blend them in. Each item it re-embeds bumps the Version of every tag linked
-// to it: rebuild reads this tag after that, and the others are left stale, for
-// their own rebuilds.
+// blend them in (see reembedItem). Each item it re-embeds bumps the Version of
+// every tag linked to it: rebuild reads this tag after that, and the others are
+// left stale, for their own rebuilds.
 func (s *Scope) refreshMembers(ctx context.Context, id string) error {
 	members, err := s.tg.store.Members(ctx, s.index, s.partition, id)
 	if err != nil {
@@ -92,7 +96,9 @@ func (s *Scope) refreshMembers(ctx context.Context, id string) error {
 		if !ok || item.Model == s.tg.cfg.Model {
 			continue // deleted or re-embedded meanwhile
 		}
-		if _, _, err := s.putItem(ctx, item.ID, item.Text); err != nil {
+		// not stored: the item was edited or deleted meanwhile by a writer that
+		// bumped this tag, and rebuild reads what that writer left
+		if _, _, err := s.reembedItem(ctx, item); err != nil {
 			return err
 		}
 	}

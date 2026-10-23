@@ -20,16 +20,18 @@ type TagRecord struct {
 	Vec     []float32 // the blended vector; nil until built
 	Cutoff  float64
 	Model   string // the model NameVec and Vec come from
+	Params  string // a fingerprint of the scoring settings Vec and Cutoff were computed with
 	Version int64  // 1 when created; +1 on every change to what Vec depends on
 	Built   int64  // the Version Vec was built from; 0 until built
 }
 
-// TagVectors are the vectors SetTagVectors stores for a tag, with the cutoff
-// and the model they were built for.
+// TagVectors are the vectors SetTagVectors stores for a tag, with the cutoff,
+// the model and the scoring settings they were built for.
 type TagVectors struct {
 	NameVec, Vec []float32
 	Cutoff       float64
 	Model        string
+	Params       string // a fingerprint of the scoring settings Vec and Cutoff were computed with
 }
 
 // ItemRecord is an item as a Store holds it: its text and the embedding of
@@ -68,6 +70,11 @@ type Store interface {
 	// PutItem creates or replaces the item, bumps the Version of every tag
 	// linked to it and returns those tags' ids, ordered.
 	PutItem(ctx context.Context, index, partition string, item ItemRecord) ([]string, error)
+	// SetItemVector stores vec under model for the item, but only while its
+	// Text is still text; it then bumps the Version of every tag linked to the
+	// item and returns their ids, ordered. When the item is gone or its text
+	// has changed, it stores nothing and reports false.
+	SetItemVector(ctx context.Context, index, partition, itemID, text string, vec []float32, model string) (linked []string, stored bool, err error)
 	// DeleteItem deletes the item and its links, bumps the Version of every tag
 	// it was linked to and returns those ids, ordered; unknown: no-op.
 	DeleteItem(ctx context.Context, index, partition, itemID string) ([]string, error)

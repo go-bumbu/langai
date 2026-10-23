@@ -151,7 +151,7 @@ func (s *MemStore) SetTagVectors(_ context.Context, index, partition, tagID stri
 		return false, nil
 	}
 	rec.NameVec, rec.Vec = slices.Clone(v.NameVec), slices.Clone(v.Vec)
-	rec.Cutoff, rec.Model, rec.Built = v.Cutoff, v.Model, version
+	rec.Cutoff, rec.Model, rec.Params, rec.Built = v.Cutoff, v.Model, v.Params, version
 	sc.tags[tagID] = rec
 	return true, nil
 }
@@ -189,6 +189,24 @@ func (s *MemStore) PutItem(_ context.Context, index, partition string, item Item
 	linked := sc.linkedTags(item.ID)
 	sc.bump(linked)
 	return linked, nil
+}
+
+func (s *MemStore) SetItemVector(_ context.Context, index, partition, itemID, text string, vec []float32, model string) ([]string, bool, error) {
+	if index == "" {
+		return nil, false, errEmptyIndex
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sc := s.existing(index, partition)
+	item, ok := sc.items[itemID]
+	if !ok || item.Text != text {
+		return nil, false, nil
+	}
+	item.Vec, item.Model = slices.Clone(vec), model
+	sc.items[itemID] = item
+	linked := sc.linkedTags(itemID)
+	sc.bump(linked)
+	return linked, true, nil
 }
 
 func (s *MemStore) DeleteItem(_ context.Context, index, partition, itemID string) ([]string, error) {

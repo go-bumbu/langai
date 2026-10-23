@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -345,6 +346,44 @@ func TestTagByHand_TeachesTheTagAndUntagForgets(t *testing.T) {
 	}
 }
 
+// TestTagByHand_ReusesTheNameVector: a hand tag rebuilds its tag from the name
+// vector the tag holds and the vector the item holds, so it embeds nothing.
+func TestTagByHand_ReusesTheNameVector(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	emb := &countingEmbedder{inner: semsearch.FakeEmbedder{}}
+	space := mustNew(t, emb, store, Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	must(t, space.SetItem(ctx, "a", "rust ownership and borrowing"))
+	calls := emb.calls
+	must(t, space.TagByHand(ctx, "a", "1"))
+	if emb.calls != calls {
+		t.Fatalf("TagByHand embedded %d times, want none", emb.calls-calls)
+	}
+	if rec, _, _ := store.Tag(ctx, "1", "10", "1"); rec.Built != rec.Version {
+		t.Fatalf("TagByHand left the tag stale: Built %d, Version %d", rec.Built, rec.Version)
+	}
+}
+
+// TestUntagByHand_RebuildsTheTagAtOnce: removing a hand tag rebuilds the tag
+// before UntagByHand returns, with no Suggest to do it.
+func TestUntagByHand_RebuildsTheTagAtOnce(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	space := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "fake"}).Scope("1", "10")
+	must(t, space.SetTag(ctx, "1", "rust"))
+	must(t, space.SetItem(ctx, "a", "rust ownership and borrowing"))
+	must(t, space.TagByHand(ctx, "a", "1"))
+	must(t, space.UntagByHand(ctx, "a", "1"))
+	rec, _, _ := store.Tag(ctx, "1", "10", "1")
+	if rec.Built != rec.Version {
+		t.Fatalf("UntagByHand left the tag stale: Built %d, Version %d", rec.Built, rec.Version)
+	}
+	if !slices.Equal(rec.Vec, blend(rec.NameVec, nil, 3)) {
+		t.Fatal("the tag's vector is not its name's alone, with its one member untagged")
+	}
+}
+
 // TestSetItem_UnchangedTextEmbedsNothing: setting an item to the text it has
 // keeps the embedding it has.
 func TestSetItem_UnchangedTextEmbedsNothing(t *testing.T) {
@@ -634,6 +673,110 @@ func TestModelSwitch_ReembedsEverythingAndMixesNothing(t *testing.T) {
 	must(t, space.Rebuild(ctx))
 	if emb.calls != 5 {
 		t.Fatalf("Rebuild embedded %d more times, want none: everything is of model b already", emb.calls-5)
+	}
+}
+
+// editingStore puts edit through PutItem just before the first SetItemVector
+// of edit's item, as a SetItem would that lands between a re-embed's read of
+// the item and its write. It clears edit once it is in.
+type editingStore struct {
+	*MemStore
+	edit *ItemRecord
+}
+
+func (e *editingStore) SetItemVector(ctx context.Context, i, p, id, text string, vec []float32, model string) ([]string, bool, error) {
+	if e.edit != nil && e.edit.ID == id {
+		edit := *e.edit
+		e.edit = nil
+		if _, err := e.PutItem(ctx, i, p, edit); err != nil {
+			return nil, false, err
+		}
+	}
+	return e.MemStore.SetItemVector(ctx, i, p, id, text, vec, model)
+}
+
+// TestModelSwitch_ReembedKeepsAConcurrentEdit: re-embedding an item of the old
+// model never overwrites an edit that lands between the read of its text and
+// the write of its new vector, be the item the one Suggest was asked about or
+// a member of a tag Suggest rebuilds. The edit's text is what Suggest then
+// scores the item by: with the vector its writer stored if that is of the new
+// model, and otherwise with one embedded for that call alone.
+func TestModelSwitch_ReembedKeepsAConcurrentEdit(t *testing.T) {
+	fake := semsearch.FakeEmbedder{}
+	edited, err := fake.Embed(context.Background(), semsearch.RoleQuery, []string{"cooking bread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		edit ItemRecord
+		// the embeddings under model b: doc's and m's stored texts and the two
+		// tag names, plus the edit's text when Suggest needs a vector for it
+		wantCalls int
+	}{
+		{"the item asked about, edited under the new model",
+			ItemRecord{ID: "doc", Text: "cooking bread", Vec: edited[0], Model: "b"}, 4},
+		{"the item asked about, edited under the old model",
+			ItemRecord{ID: "doc", Text: "cooking bread", Vec: edited[0], Model: "a"}, 5},
+		{"a member of a tag rebuilt",
+			ItemRecord{ID: "m", Text: "cooking bread", Vec: edited[0], Model: "b"}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &editingStore{MemStore: NewMemStore()}
+			before := mustNew(t, fake, store, Config{Model: "a"}).Scope("1", "10")
+			must(t, before.SetTag(ctx, "rust", "rust"))
+			must(t, before.SetTag(ctx, "cooking", "cooking"))
+			must(t, before.SetItem(ctx, "doc", "rust programming"))
+			must(t, before.SetItem(ctx, "m", "rust ownership"))
+			must(t, before.TagByHand(ctx, "m", "rust"))
+			store.edit = &tc.edit
+
+			emb := &countingEmbedder{inner: fake}
+			got := suggest(t, mustNew(t, emb, store, Config{Model: "b"}).Scope("1", "10"), "doc")
+			if store.edit != nil {
+				t.Fatalf("no re-embed wrote item %s, so the edit never landed", tc.edit.ID)
+			}
+			if item, _, _ := store.Item(ctx, "1", "10", tc.edit.ID); !reflect.DeepEqual(item, tc.edit) {
+				t.Fatalf("item %s = %+v, want the edit as its writer stored it: %+v", tc.edit.ID, item, tc.edit)
+			}
+			if tc.edit.ID == "doc" && !slices.Equal(got, []string{"cooking"}) {
+				t.Fatalf("Suggest = %v, want [cooking], from the edit's text", got)
+			}
+			if emb.calls != tc.wantCalls {
+				t.Fatalf("embedded %d times, want %d", emb.calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// TestSettingsChange_RebuildsWithoutReembedding: a Tagger whose scoring
+// settings differ from those a tag was built with rebuilds the tag before it
+// suggests anything, from the vectors the store holds, so the new cutoff
+// applies at once and nothing is embedded again.
+func TestSettingsChange_RebuildsWithoutReembedding(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	before := mustNew(t, semsearch.FakeEmbedder{}, store, Config{Model: "fake"}).Scope("1", "10")
+	must(t, before.SetTag(ctx, "1", "rust"))
+	must(t, before.SetItem(ctx, "doc", "rust programming")) // scores 0.71 against the name
+	if got := suggest(t, before, "doc"); !slices.Equal(got, []string{"1"}) {
+		t.Fatalf("under the default NameMinScore, Suggest = %v, want [1]", got)
+	}
+	built, _, _ := store.Tag(ctx, "1", "10", "1")
+
+	emb := &countingEmbedder{inner: semsearch.FakeEmbedder{}}
+	space := mustNew(t, emb, store, Config{Model: "fake", NameMinScore: 0.8}).Scope("1", "10")
+	if got := suggest(t, space, "doc"); len(got) != 0 {
+		t.Fatalf("with a NameMinScore of 0.8, above the tag's score, Suggest = %v, want none", got)
+	}
+	rec, _, _ := store.Tag(ctx, "1", "10", "1")
+	if rec.Params == built.Params || rec.Built != rec.Version {
+		t.Fatalf("tag after the new settings' Suggest: Params %q (was %q), Built %d, Version %d; want new Params, built at its Version",
+			rec.Params, built.Params, rec.Built, rec.Version)
+	}
+	if emb.calls != 0 {
+		t.Fatalf("embedded %d times, want none: the name and the item are embedded under this model already", emb.calls)
 	}
 }
 

@@ -16,8 +16,8 @@
 // vectors depend on, and a rebuild stores its result only while the tag is at
 // the Version it read, so a rebuild never overwrites a change that landed
 // meanwhile. A tag left stale that way, by a rebuild that failed, or by a
-// switch to another embedding model is rebuilt by the next Suggest, or by
-// Rebuild.
+// switch to another embedding model or to other scoring settings (see Config)
+// is rebuilt by the next Suggest, or by Rebuild.
 package autotag
 
 import (
@@ -49,10 +49,7 @@ const (
 // DefaultNameMinScore and DefaultMemberMinScore. SmoothingK is the Bayesian
 // smoothing constant in blend: a tag's members weigh as much as its name at
 // SmoothingK members, and outweigh it beyond that (<=0 defaults to
-// DefaultSmoothingK). A tag's vector and cutoff are computed when it is
-// rebuilt, so other minimums or another SmoothingK reach a stored tag at its
-// next change, while another Model reaches every tag at the next Suggest or
-// Rebuild. There is no limit on how many tags an item gets.
+// DefaultSmoothingK). There is no limit on how many tags an item gets.
 type Config struct {
 	Model          string
 	NameMinScore   float64
@@ -67,6 +64,9 @@ type Tagger struct {
 	emb   semsearch.Embedder
 	store Store
 	cfg   Config
+	// params fingerprints cfg's scoring settings, for TagVectors.Params: a tag
+	// built with others is stale (see stale)
+	params string
 }
 
 // New returns a Tagger that embeds text with emb and keeps every scope's
@@ -91,7 +91,8 @@ func New(emb semsearch.Embedder, store Store, cfg Config) (*Tagger, error) {
 	if cfg.SmoothingK <= 0 {
 		cfg.SmoothingK = DefaultSmoothingK
 	}
-	return &Tagger{emb: emb, store: store, cfg: cfg}, nil
+	params := fmt.Sprintf("k=%g name=%g member=%g", cfg.SmoothingK, cfg.NameMinScore, cfg.MemberMinScore)
+	return &Tagger{emb: emb, store: store, cfg: cfg, params: params}, nil
 }
 
 // Scope is a handle on one set of tags and items: its index is the store's
@@ -216,15 +217,11 @@ func (s *Scope) Suggest(ctx context.Context, itemID string) ([]string, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("%w %q", ErrUnknownItem, itemID)
+		return nil, unknownItem(itemID)
 	}
-	vec := item.Vec
-	if item.Model != s.tg.cfg.Model {
-		// the tags it is linked to go stale, and rebuildStale rebuilds them
-		vec, _, err = s.putItem(ctx, itemID, item.Text)
-		if err != nil {
-			return nil, err
-		}
+	vec, err := s.itemVector(ctx, item)
+	if err != nil {
+		return nil, err
 	}
 	tags, err := s.rebuildStale(ctx)
 	if err != nil {
@@ -235,8 +232,9 @@ func (s *Scope) Suggest(ctx context.Context, itemID string) ([]string, error) {
 
 // Rebuild rebuilds every stale tag of the scope now, rather than at the next
 // Suggest: a tag whose rebuild failed or was overtaken, or one built under
-// another model. It warms a scope up, after a switch of models say; an item
-// that no tag is linked to is still re-embedded only at its next Suggest.
+// another model or with other scoring settings. It warms a scope up, after a
+// switch of models say; an item that no tag is linked to is still re-embedded
+// only at its next Suggest.
 func (s *Scope) Rebuild(ctx context.Context) error {
 	_, err := s.rebuildStale(ctx)
 	return err
@@ -271,4 +269,56 @@ func (s *Scope) putItem(ctx context.Context, itemID, text string) (vec []float32
 		return nil, nil, err
 	}
 	return vec, linked, nil
+}
+
+// reembedItem embeds the item's stored text again under the Tagger's model,
+// and stores the vector only while the item still has that text (see
+// Store.SetItemVector), so it never overwrites an edit that landed after the
+// item was read. stored is false when the item is gone or its text changed;
+// the store then bumped no tag, and its writer bumped them instead.
+func (s *Scope) reembedItem(ctx context.Context, item ItemRecord) (vec []float32, stored bool, err error) {
+	vec, err = s.tg.embedOne(ctx, semsearch.RoleQuery, item.Text)
+	if err != nil {
+		return nil, false, err
+	}
+	_, stored, err = s.tg.store.SetItemVector(ctx, s.index, s.partition, item.ID, item.Text, vec, s.tg.cfg.Model)
+	if err != nil {
+		return nil, false, err
+	}
+	return vec, stored, nil
+}
+
+// itemVector returns the vector Suggest scores the item with: the stored one
+// when it is of the Tagger's model. Otherwise the item is re-embedded (see
+// reembedItem), which leaves the tags it is linked to stale, for rebuildStale.
+// If an edit landed meanwhile, the item is read again: its writer's vector
+// serves when it is of the Tagger's model, and otherwise the new text is
+// embedded for this call alone and not stored, so the edit stays as its writer
+// stored it.
+func (s *Scope) itemVector(ctx context.Context, item ItemRecord) ([]float32, error) {
+	if item.Model == s.tg.cfg.Model {
+		return item.Vec, nil
+	}
+	vec, stored, err := s.reembedItem(ctx, item)
+	if err != nil {
+		return nil, err
+	}
+	if stored {
+		return vec, nil
+	}
+	edited, ok, err := s.tg.store.Item(ctx, s.index, s.partition, item.ID)
+	switch {
+	case err != nil:
+		return nil, err
+	case !ok:
+		return nil, unknownItem(item.ID)
+	case edited.Model == s.tg.cfg.Model:
+		return edited.Vec, nil
+	}
+	return s.tg.embedOne(ctx, semsearch.RoleQuery, edited.Text)
+}
+
+// unknownItem is the error for an item the scope does not hold.
+func unknownItem(itemID string) error {
+	return fmt.Errorf("%w %q", ErrUnknownItem, itemID)
 }

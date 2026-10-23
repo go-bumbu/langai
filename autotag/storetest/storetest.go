@@ -46,6 +46,7 @@ func Run(t *testing.T, newStore func(t *testing.T) autotag.Store) {
 		{"LinkBumpsTheTagOnce", linkBumpsTheTagOnce},
 		{"LinkRejectsUnknownIDs", linkRejectsUnknownIDs},
 		{"PutItemBumpsItsTags", putItemBumpsItsTags},
+		{"SetItemVectorChecksTheText", setItemVectorChecksTheText},
 		{"DeleteItemBumpsItsTagsAndDropsLinks", deleteItemBumpsItsTagsAndDropsLinks},
 		{"MembersAreOrderedByItemID", membersAreOrderedByItemID},
 		{"ScopesAreIsolated", scopesAreIsolated},
@@ -77,7 +78,7 @@ func tagLifecycle(t *testing.T, s autotag.Store) {
 	}
 	sc.wantVersion("t1", 1, "after PutTag with the current name")
 
-	if !sc.setTagVectors("t1", 1, autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m"}) {
+	if !sc.setTagVectors("t1", 1, autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p"}) {
 		t.Fatal("SetTagVectors at the tag's Version stored nothing")
 	}
 	built := sc.tag("t1")
@@ -91,7 +92,7 @@ func tagLifecycle(t *testing.T, s autotag.Store) {
 	if !sc.putTag("t1", "b") {
 		t.Error("PutTag with a new name reported no change")
 	}
-	renamed := autotag.TagRecord{ID: "t1", Name: "b", NameVec: nil, Vec: v2, Cutoff: 0.5, Model: "m", Version: 2, Built: 1}
+	renamed := autotag.TagRecord{ID: "t1", Name: "b", NameVec: nil, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p", Version: 2, Built: 1}
 	if got := sc.tag("t1"); !reflect.DeepEqual(got, renamed) {
 		t.Errorf("renamed tag = %+v, want only Name, NameVec (nil) and Version (+1) changed: %+v", got, renamed)
 	}
@@ -107,16 +108,16 @@ func setTagVectorsChecksTheVersion(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 	sc.putTag("t1", "a")
 
-	if !sc.setTagVectors("t1", 1, autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m"}) {
+	if !sc.setTagVectors("t1", 1, autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p"}) {
 		t.Fatal("SetTagVectors at the tag's Version stored nothing")
 	}
-	want := autotag.TagRecord{ID: "t1", Name: "a", NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Version: 1, Built: 1}
+	want := autotag.TagRecord{ID: "t1", Name: "a", NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p", Version: 1, Built: 1}
 	if got := sc.tag("t1"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("tag after SetTagVectors = %+v, want %+v", got, want)
 	}
 
 	for _, stale := range []int64{0, 2} {
-		if sc.setTagVectors("t1", stale, autotag.TagVectors{NameVec: v2, Vec: v1, Cutoff: 0.9, Model: "other"}) {
+		if sc.setTagVectors("t1", stale, autotag.TagVectors{NameVec: v2, Vec: v1, Cutoff: 0.9, Model: "other", Params: "q"}) {
 			t.Errorf("SetTagVectors at Version %d of a tag at Version 1 stored its vectors", stale)
 		}
 	}
@@ -264,6 +265,51 @@ func putItemBumpsItsTags(t *testing.T, s autotag.Store) {
 	wantLinkedTagsBumped(sc, before, "PutItem")
 }
 
+// setItemVectorChecksTheText: SetItemVector stores an item's new vector and
+// model only while the item still has the text they were computed from, and
+// then bumps and reports the tags linked to it, as PutItem does. For an item
+// whose text changed, or one that is not there, it changes nothing.
+func setItemVectorChecksTheText(t *testing.T, s autotag.Store) {
+	sc := newScope(t, s, idx, part)
+	sc.putTag("t1", "a")
+	sc.putTag("t2", "b")
+	sc.putItem(autotag.ItemRecord{ID: "i1", Text: "x", Vec: v1, Model: "m"})
+	sc.link("i1", "t1")
+	before := sc.versions("t1", "t2")
+
+	if linked, stored := sc.setItemVector("i1", "x", v2, "m2"); !stored || !slices.Equal(linked, []string{"t1"}) {
+		t.Errorf("SetItemVector with the item's text = %v, %v; want [t1], true", linked, stored)
+	}
+	if got, want := sc.versions("t1", "t2"), []int64{before[0] + 1, before[1]}; !slices.Equal(got, want) {
+		t.Errorf("Versions of t1, t2 after SetItemVector = %v, want %v: only the linked t1 bumped", got, want)
+	}
+	want := autotag.ItemRecord{ID: "i1", Text: "x", Vec: v2, Model: "m2"}
+	if got := sc.item("i1"); !reflect.DeepEqual(got, want) {
+		t.Errorf("Item after SetItemVector = %+v, want %+v", got, want)
+	}
+	if got, want := sc.members("t1"), []autotag.Member{{ItemID: "i1", Vec: v2, Model: "m2"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Members after SetItemVector = %+v, want %+v", got, want)
+	}
+
+	before = sc.versions("t1", "t2")
+	if linked, stored := sc.setItemVector("i1", "y", v1, "m3"); stored || len(linked) != 0 {
+		t.Errorf("SetItemVector with another text = %v, %v; want nothing, false", linked, stored)
+	}
+	if got := sc.item("i1"); !reflect.DeepEqual(got, want) {
+		t.Errorf("Item after SetItemVector with another text = %+v, want it unchanged: %+v", got, want)
+	}
+	if got := sc.versions("t1", "t2"); !slices.Equal(got, before) {
+		t.Errorf("Versions of t1, t2 after SetItemVector with another text = %v, want them unchanged: %v", got, before)
+	}
+
+	if linked, stored := sc.setItemVector("unknown", "x", v1, "m"); stored || len(linked) != 0 {
+		t.Errorf("SetItemVector of an unknown item = %v, %v; want nothing, false", linked, stored)
+	}
+	if _, ok := sc.lookupItem("unknown"); ok {
+		t.Error("SetItemVector of an unknown item created it")
+	}
+}
+
 // deleteItemBumpsItsTagsAndDropsLinks: deleting an item bumps and reports the
 // tags that were linked to it, and removes it from their members.
 func deleteItemBumpsItsTagsAndDropsLinks(t *testing.T, s autotag.Store) {
@@ -376,11 +422,18 @@ func writesStayInTheirScope(t *testing.T, s autotag.Store) {
 	}{
 		// SetTagVectors comes first, while the writer's tag is still at the others' Version.
 		{"SetTagVectors", func(sc scope) {
-			sc.setVectors("t1", autotag.TagVectors{NameVec: v2, Vec: v1, Cutoff: 0.9, Model: "other"})
+			sc.setVectors("t1", autotag.TagVectors{NameVec: v2, Vec: v1, Cutoff: 0.9, Model: "other", Params: "q"})
 		}},
 		{"PutTag with a new name", func(sc scope) { sc.wantChanged(sc.putTag("t1", "renamed"), "PutTag with a new name") }},
 		{"PutItem", func(sc scope) {
 			sc.wantTags(sc.putItem(autotag.ItemRecord{ID: "i1", Text: "changed", Vec: v2, Model: "m2"}), "PutItem", "t1")
+		}},
+		// the item has the same text in every scope, so the text check alone
+		// would not keep this write to its own
+		{"SetItemVector", func(sc scope) {
+			linked, stored := sc.setItemVector("i1", newItem("i1").Text, v2, "m2")
+			sc.wantChanged(stored, "SetItemVector")
+			sc.wantTags(linked, "SetItemVector", "t1")
 		}},
 		{"Unlink", func(sc scope) { sc.wantChanged(sc.unlink("i1", "t1"), "Unlink") }},
 		{"Link", func(sc scope) {
@@ -455,6 +508,7 @@ func emptyIndexIsAnError(t *testing.T, s autotag.Store) {
 		{"DeleteTag", func() error { return s.DeleteTag(ctx, "", part, "t1") }},
 		{"Item", func() error { _, _, err := s.Item(ctx, "", part, "i1"); return err }},
 		{"PutItem", func() error { _, err := s.PutItem(ctx, "", part, newItem("i1")); return err }},
+		{"SetItemVector", func() error { _, _, err := s.SetItemVector(ctx, "", part, "i1", "x", v1, "m"); return err }},
 		{"DeleteItem", func() error { _, err := s.DeleteItem(ctx, "", part, "i1"); return err }},
 		{"Link", func() error { _, err := s.Link(ctx, "", part, "i1", "t1"); return err }},
 		{"Unlink", func() error { _, err := s.Unlink(ctx, "", part, "i1", "t1"); return err }},
@@ -476,16 +530,21 @@ func emptyIndexIsAnError(t *testing.T, s autotag.Store) {
 func storedSlicesAreCopies(t *testing.T, s autotag.Store) {
 	sc := newScope(t, s, idx, part)
 	item := autotag.ItemRecord{ID: "i1", Text: "x", Vec: slices.Clone(v1), Model: "m"}
-	vecs := autotag.TagVectors{NameVec: slices.Clone(v1), Vec: slices.Clone(v2), Cutoff: 0.5, Model: "m"}
+	itemVec := slices.Clone(v1) // i2's vector, given through SetItemVector
+	vecs := autotag.TagVectors{NameVec: slices.Clone(v1), Vec: slices.Clone(v2), Cutoff: 0.5, Model: "m", Params: "p"}
 	sc.putTag("t1", "a")
 	sc.putItem(item)
+	sc.putItem(autotag.ItemRecord{ID: "i2", Text: "y", Vec: v2, Model: "m"})
+	if _, stored := sc.setItemVector("i2", "y", itemVec, "m"); !stored {
+		t.Fatal("SetItemVector with the item's text stored nothing")
+	}
 	sc.link("i1", "t1")
 	sc.setVectors("t1", vecs)
 
-	scribble(item.Vec, vecs.NameVec, vecs.Vec)
+	scribble(item.Vec, itemVec, vecs.NameVec, vecs.Vec)
 	wantStoredVectors(t, sc, "after the slices passed in were changed")
 
-	scribble(sc.item("i1").Vec)
+	scribble(sc.item("i1").Vec, sc.item("i2").Vec)
 	rec := sc.tag("t1")
 	scribble(rec.NameVec, rec.Vec)
 	for _, r := range sc.tags() {
@@ -536,12 +595,14 @@ func concurrentLinksAllLand(t *testing.T, s autotag.Store) {
 	sc.wantVersion("t1", before+links, "after the concurrent Links")
 }
 
-// wantStoredVectors checks that the scope still holds v1 as the vector of item
-// i1 and as the name vector of tag t1, and v2 as the vector of t1.
+// wantStoredVectors checks that the scope still holds v1 as the vector of the
+// items i1 and i2 and as the name vector of tag t1, and v2 as the vector of t1.
 func wantStoredVectors(t *testing.T, sc scope, when string) {
 	t.Helper()
-	if got := sc.item("i1").Vec; !slices.Equal(got, v1) {
-		t.Errorf("Item vector %s = %v, want %v", when, got, v1)
+	for _, id := range []string{"i1", "i2"} {
+		if got := sc.item(id).Vec; !slices.Equal(got, v1) {
+			t.Errorf("vector of item %s %s = %v, want %v", id, when, got, v1)
+		}
 	}
 	if got := sc.tag("t1"); !slices.Equal(got.NameVec, v1) || !slices.Equal(got.Vec, v2) {
 		t.Errorf("tag vectors %s = %v and %v, want %v and %v", when, got.NameVec, got.Vec, v1, v2)
@@ -613,7 +674,7 @@ func (sc scope) seedBuilt() {
 	sc.putTag("t1", "tag t1")
 	sc.putItem(newItem("i1"))
 	sc.link("i1", "t1")
-	sc.setVectors("t1", autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m"})
+	sc.setVectors("t1", autotag.TagVectors{NameVec: v1, Vec: v2, Cutoff: 0.5, Model: "m", Params: "p"})
 }
 
 // state is what a scope holds for the tag t1 and the item i1.
@@ -773,6 +834,15 @@ func (sc scope) putItem(item autotag.ItemRecord) []string {
 		sc.t.Fatalf("PutItem(%q): %v", item.ID, err)
 	}
 	return linked
+}
+
+func (sc scope) setItemVector(id, text string, vec []float32, model string) ([]string, bool) {
+	sc.t.Helper()
+	linked, stored, err := sc.store.SetItemVector(sc.t.Context(), sc.index, sc.partition, id, text, vec, model)
+	if err != nil {
+		sc.t.Fatalf("SetItemVector(%q, %q): %v", id, text, err)
+	}
+	return linked, stored
 }
 
 func (sc scope) deleteItem(id string) []string {
