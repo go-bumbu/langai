@@ -13,8 +13,8 @@ import (
 
 	"github.com/pgvector/pgvector-go"
 
+	"github.com/go-bumbu/langai/internal/tablename"
 	"github.com/go-bumbu/langai/semsearch"
-	"github.com/go-bumbu/langai/semsearch/internal/tablename"
 )
 
 // Store implements semsearch.Store on Postgres + pgvector, with one physical

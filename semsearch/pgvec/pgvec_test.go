@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-bumbu/testdbs"
 
+	"github.com/go-bumbu/langai/internal/tablename"
 	"github.com/go-bumbu/langai/semsearch"
-	"github.com/go-bumbu/langai/semsearch/internal/tablename"
 )
 
 // TestMain registers a pgvector container as a testdbs slow DB. A plain

@@ -15,8 +15,8 @@ import (
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 
+	"github.com/go-bumbu/langai/internal/tablename"
 	"github.com/go-bumbu/langai/semsearch"
-	"github.com/go-bumbu/langai/semsearch/internal/tablename"
 )
 
 func init() { sqlite_vec.Auto() }

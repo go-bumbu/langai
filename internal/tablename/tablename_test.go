@@ -100,3 +100,20 @@ func TestFor_EmptyIndexIsAnError(t *testing.T) {
 		t.Fatalf("For(%q, %q, %q) = %q, want an error", "", "", "docs", got)
 	}
 }
+
+func TestForPrefix_NamesAnotherLibrarysTables(t *testing.T) {
+	got, err := ForPrefix("autotag", "", "tenant-1", "tags")
+	if err != nil || !strings.HasPrefix(got, "autotag_") || !strings.HasSuffix(got, "_tags") {
+		t.Fatalf("ForPrefix = %q, %v", got, err)
+	}
+	ss, _ := For("", "tenant-1", "tags")
+	if strings.TrimPrefix(got, "autotag_") != strings.TrimPrefix(ss, "ss_") {
+		t.Fatalf("same index, same token: %q vs %q", got, ss)
+	}
+	if g, _ := ForPrefix("autotag", "g2", "tenant-1", "links"); !strings.HasPrefix(g, "autotag_g2_") {
+		t.Fatalf("generation not after the prefix: %q", g)
+	}
+	if _, err := ForPrefix("autotag", "", "", "tags"); err == nil {
+		t.Fatal("empty index must be an error")
+	}
+}

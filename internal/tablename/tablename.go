@@ -1,16 +1,19 @@
 // Package tablename derives the physical table names of the SQL stores
-// (sqlitevec, pgvec), which keep one table set per semsearch index (e.g. a
-// tenant) and generation. SQL identifiers are case-insensitive, so
-// interpolating index directly would collide "A" and "a" into the same tables
-// (a leak across indexes) and would reject indexes with characters unsafe in a
-// bare identifier (e.g. a hyphenated UUID). Hashing index into a fixed-width
-// hex token avoids both problems: distinct index strings always map to
-// distinct tables, and the token is injection-safe.
+// (semsearch's sqlitevec and pgvec, and autotag's SQL stores), which keep one
+// table set per index (e.g. a tenant) and generation. SQL identifiers are
+// case-insensitive, so interpolating index directly would collide "A" and "a"
+// into the same tables (a leak across indexes) and would reject indexes with
+// characters unsafe in a bare identifier (e.g. a hyphenated UUID). Hashing
+// index into a fixed-width hex token avoids both problems: distinct index
+// strings always map to distinct tables, and the token is injection-safe.
 //
 // A generation gives every index a further table set, so the vectors of a
 // second embedding model can be built next to the first's before an
 // application switches over. The empty generation is the table set indexes
 // had before generations existed.
+//
+// Each library names its tables under its own prefix: For uses "ss", and
+// ForPrefix takes the prefix of another library, such as autotag's.
 package tablename
 
 import (
@@ -44,6 +47,14 @@ func CheckGeneration(generation string) error {
 // under, so its derivation must not change; any other generation puts its
 // token ahead of the index hash: ss_<generation>_<hash>_<suffix>.
 func For(generation, index, suffix string) (string, error) {
+	return ForPrefix("ss", generation, index, suffix)
+}
+
+// ForPrefix is For for another library's tables. The name starts with prefix
+// rather than "ss", so it reads prefix_<hash>_<suffix>, or
+// prefix_<generation>_<hash>_<suffix> in a generation. Like suffix, prefix is
+// written into SQL unchecked, so callers pass constants.
+func ForPrefix(prefix, generation, index, suffix string) (string, error) {
 	if err := CheckGeneration(generation); err != nil {
 		return "", err
 	}
@@ -53,7 +64,7 @@ func For(generation, index, suffix string) (string, error) {
 	sum := sha256.Sum256([]byte(index))
 	token := hex.EncodeToString(sum[:])[:16]
 	if generation == "" {
-		return "ss_" + token + "_" + suffix, nil
+		return prefix + "_" + token + "_" + suffix, nil
 	}
-	return "ss_" + generation + "_" + token + "_" + suffix, nil
+	return prefix + "_" + generation + "_" + token + "_" + suffix, nil
 }
