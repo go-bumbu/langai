@@ -1,0 +1,95 @@
+name: GO
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+      ## sqlite-vec (semsearch/sqlitevec) is CGO and needs the system sqlite3.h
+      ## to compile; agreement_test.go pulls it into the core package's test
+      ## binary too, so both `make test` and `make coverage` need it.
+      - name: Install libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      ## Setup GO
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+      - name: go test
+        run: make test
+      ## make coverage sets TESTDBS_ALL, so go-bumbu/testdbs starts a pgvector
+      ## container on the runner's Docker and semsearch/pgvec's tests count
+      - name: go coverage
+        run: make coverage
+
+  benchmark:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      ## Setup GO
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+      - name: go benchmark
+        run: make benchmark
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      ## the linter type-checks semsearch/sqlitevec, which needs sqlite3.h
+      - name: Install libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
+
+  license-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+      - name: Install go-licence-detector
+        run: go install go.elastic.co/go-licence-detector@v0.10.0
+      - name: License check
+        run: make license-check
+
+  embeddings-real:
+    # Runs the real llama.cpp + GGUF embedding tests: the smoke test and the
+    # golden-set quality floors (semsearch/yzma), and autotag's golden tagging
+    # test, which replays the golden set through a Tagger with simulated
+    # hand-tagging. They cover the only code path that can abort the process.
+    # The downloads are keyed by fetch.go, where the pins live, so a pin change
+    # refreshes the cache. make test-models runs the packages one at a time so
+    # they never install the llama.cpp libraries into that shared cache at once.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install runtime libraries for llama.cpp
+        run: sudo apt-get update && sudo apt-get install -y libffi8 libgomp1 libstdc++6
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+      - name: Cache the llama.cpp libraries and the model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/semsearch-yzma
+          key: semsearch-yzma-${{ runner.os }}-${{ hashFiles('semsearch/yzma/fetch.go') }}
+      - name: Run the real-model embedding and golden tagging tests
+        run: make test-models

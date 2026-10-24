@@ -1,0 +1,31 @@
+# The models make semeval (TestCompareModels) compares on the golden set. Each
+# entry is a GGUF with the pooling and prefixes its authors trained it for;
+# pooling defaults to mean, max_tokens to min(window, 512). An entry with a url
+# but no sha256 is downloaded once unverified and the digest printed for
+# pasting here.
+- name: google/embeddinggemma-300m # the default model, yzma.DefaultModel (768 dims, multilingual, task prompts per role)
+  url: https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf
+  sha256: a0f7b4e13c397a6e1b32c2de75b1f65a14c92ec524d5f674d94a4290a1c4969b
+  pooling: mean
+  query_prefix: "task: search result | query: "
+  document_prefix: "title: none | text: "
+- name: sentence-transformers/all-MiniLM-L6-v2 # the earlier default (English-only, 384 dims)
+  url: https://huggingface.co/leliuga/all-MiniLM-L6-v2-GGUF/resolve/main/all-MiniLM-L6-v2.F16.gguf
+  sha256: 797b70c4edf85907fe0a49eb85811256f65fa0f7bf52166b147fd16be2be4662
+  pooling: mean
+- name: intfloat/multilingual-e5-small # 384 dims, 100+ languages, prefixes per role
+  url: https://huggingface.co/TwinSunsLLC/multilingual-e5-small-gguf/resolve/main/multilingual-e5-small-q8_0.gguf
+  sha256: e011debc1208e31bf7b6aebee2d9fc8bd2ca11694a77ed66ac9d0c9d0a877c93
+  pooling: mean
+  query_prefix: "query: "
+  document_prefix: "passage: "
+- name: BAAI/bge-m3 # 1024 dims, multilingual, CLS pooling, 8192-token window capped at 512
+  url: https://huggingface.co/smarttasks/bge-m3-GGUF/resolve/main/bge-m3-Q8_0.gguf
+  sha256: aa473d51f451a22f0fcf39ba3330c14bed38a385712b1113440f69df4047a173
+  pooling: cls
+- name: nomic-ai/nomic-embed-text-v2-moe # 768 dims, multilingual mixture of experts, prefixes per role
+  url: https://huggingface.co/ggml-org/Nomic-Embed-Text-V2-GGUF/resolve/main/nomic-embed-text-v2-moe-q8_0.gguf
+  sha256: 36c5817bc25f379e62021f49efde05b10ed3b0c93ab8059c43173a7a5de73565
+  pooling: mean
+  query_prefix: "search_query: "
+  document_prefix: "search_document: "
