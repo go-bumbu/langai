@@ -12,9 +12,8 @@ Nothing leaves the process: the embedding model runs in-process through llama.cp
 | `semsearch/sqlitevec` | `Store` on SQLite with the sqlite-vec extension (CGO). |
 | `semsearch/pgvec` | `Store` on Postgres with pgvector. |
 | `semsearch/yzma` | `Embedder` that runs a GGUF sentence-embedding model through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Downloads and verifies the pinned llama.cpp build and model on first use. |
-| `semsearch/eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. |
-| `autotag` | Assigns tags to documents: each tag's vector blends its name with the documents tagged with it by hand, and each tag is judged against its own cutoff. |
-| `cmd/semeval` | Compares embedding models side by side on the golden set. |
+| `semsearch/eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. `make semeval` compares embedding models side by side on it. |
+| `autotag` | Suggests tags for items and learns from the tags people put on them by hand: each tag's vector blends its name with the items tagged with it, and each tag is judged against its own cutoff. It keeps the tags, items and hand-made links in a `Store`: `MemStore` (in memory), `autotag/sqlitestore` (SQLite) or `autotag/pgstore` (Postgres), the last two over plain tables with no extension. |
 
 Every package stands alone and you only compile the dependencies of the packages you
 import: CGO and sqlite-vec come in only with `semsearch/sqlitevec`, pgvector only with
@@ -88,19 +87,43 @@ a health endpoint.
 ### Automatic tagging
 
 ```go
-tagger := autotag.New(emb, store, autotag.Config{Model: yzma.DefaultModel})
-
-vec, err := tagger.Embed(ctx, essence) // the document, embedded as a query
-ids, err := tagger.Assign(ctx, autotag.Scope{Index: "tenant-1", Partition: "space-7"},
-    space, // autotag.TagStore: your storage behind this scope's tags
-    tags,  // []autotag.Tag: every current tag of the scope, {ID, Name, NameHash}
-    vec)
+tagger, err := autotag.New(emb, store, autotag.Config{Model: yzma.DefaultModel})
+space := tagger.Scope("tenant-1", "space-7")
+space.SetTag(ctx, "bread", "cooking / bread")   // create or rename
+space.SetItem(ctx, "item-42", essence)          // create or edit; embeds only when text or model changed
+space.TagByHand(ctx, "item-42", "bread")        // a person tagged it: teaches the tag
+space.UntagByHand(ctx, "item-42", "bread")
+ids, err := space.Suggest(ctx, "item-42")       // auto tags, best first; never stored as links
+space.DeleteItem(ctx, "item-42"); space.DeleteTag(ctx, "bread")
+space.Rebuild(ctx)                              // optional warm-up, e.g. after switching models
 ```
 
-`TagStore` is three methods: a cache of each tag's name embedding, and its *members*,
-the embeddings of the documents tagged with it by hand (embedded with `tagger.Embed`;
-cache them with the model name, since vectors of two models must never mix). Use a
-tag's full path as its `Name` (`colors / warm / red` says more than `red`).
+autotag owns what it learns from: your application reports its tags and its items
+(bookmarks, notes, pages) by id and text, plus the tags people put on items by hand, and
+asks for suggestions. As in semsearch, the first argument of `Scope` is the hard isolation
+boundary (a tenant) and the second a space within it; scopes never see each other's tags,
+items or links. Use a tag's full path as its name (`colors / warm / red` says more than
+`red`). `Config.Model` names the embedding model, and every stored vector is kept with the
+model it came from.
+
+**Storage.** A `Store` keeps the tags, the items with their embeddings and the hand-made
+links. `autotag.NewMemStore()` keeps them in memory, for tests and tiny corpora.
+`autotag/sqlitestore` and `autotag/pgstore` keep them in a SQLite or Postgres database
+that you open and pass to `New(ctx, db)`; your application imports the driver. Both use
+plain tables and need no extension: a space has few tags, so the Tagger scores them in
+Go. Each index gets a table set of its own, and a store opened with `WithGeneration`
+keeps further table sets of its own, so a migration can build a second model's tags and
+vectors next to the current ones before switching over. SQLite allows one writer at a
+time: when several goroutines write, open it with `?_busy_timeout=5000&_txlock=immediate`
+(for `go-sqlite3`: `sql.Open("sqlite3", "autotag.db?_busy_timeout=5000&_txlock=immediate")`),
+so a writer waits for its turn instead of failing with "database is locked". Postgres
+needs no such setup: concurrent writes queue on row locks. That locking relies on READ
+COMMITTED, Postgres's default isolation level. `autotag/pgstore` begins its own
+transactions at that level, but its single-statement writes run at the session's
+default, so keep `default_transaction_isolation` at `read committed` for its
+connections: under `repeatable read` or `serializable` they can fail with serialization
+errors, which the store does not retry. `autotag/storetest` is the conformance suite for
+a `Store` of your own.
 
 How a tag is judged:
 
@@ -113,12 +136,34 @@ How a tag is judged:
   far more than they resemble a short tag path, so each part is judged on its own scale:
   scoring the blended vector against the cutoff is exactly
   `(1-w)·(cos(name) - NameMinScore) + w·(cos(centroid) - MemberMinScore) >= 0`.
-- **Every tag that clears its own cutoff is assigned**, with no limit on how many.
-- **Ghosts:** the search has one slot per current tag, so a vector left behind by a
-  deleted tag could take a current tag's place. `Assign` deletes every such vector its
-  search meets and searches again until none is new. Deleting a tag's vector when the
-  tag itself is deleted is still the caller's job (`Store.Delete` under the scope's
-  coordinates and `Config.Collection`).
+- **Every tag that clears its own cutoff is suggested**, best score first, with no limit
+  on how many. A suggestion is never stored as a link: only `TagByHand` teaches a tag.
+- **Changes rebuild the affected tags right away.** Every change to what a tag's vectors
+  depend on bumps the tag's version, and a rebuild stores its result only while the tag
+  is still at the version it read, so a hand tag that lands mid-rebuild is never
+  overwritten. A write whose rebuild fails stays stored and returns an error wrapping
+  `autotag.ErrNotRebuilt`: retrying it is a safe no-op, and the next `Suggest` or
+  `Rebuild` rebuilds the tag, as it does one whose rebuild was overtaken. A `Suggest`
+  that cannot rebuild a tag still ranks the others and returns their ids with that
+  error, leaving the tag out or scoring it with its previous vectors. A change to
+  `NameMinScore`, `MemberMinScore` or `SmoothingK` leaves tags stale the same way and
+  they are rebuilt lazily, without re-embedding anything.
+- **Bulk writes rebuild as they go:** every hand tag rebuilds its tag at once, from all
+  of its members, so importing n hand tags of one tag reads its members n times (about
+  n²/2 rows), and every edit of an item rebuilds each tag it carries.
+- **One model and one set of scoring settings per store:** every Tagger that shares a
+  `Store` must use the same `Config.Model`, `NameMinScore`, `MemberMinScore` and
+  `SmoothingK`. A Tagger takes tags built under another model or with other settings for
+  stale and rebuilds them, re-embedding their members when the model differs, so two
+  Taggers that differ rebuild each other's tags at every `Suggest` and never settle.
+- **Switching models:** autotag stores each item's text next to its embedding, so after
+  you change `Config.Model` it re-embeds the stored texts it needs, lazily, and never
+  mixes the vectors of two models: a tag's members when the tag is rebuilt, an item at
+  its next `Suggest`. To switch in place, stop every instance together, start them with
+  the new model, and call `Scope.Rebuild` on every scope. To switch without stopping,
+  open a new generation of the store with `WithGeneration`: its tables start empty, so
+  replay every tag, item and hand-made link into it, and write to both stores until the
+  cutover.
 - **Rejected alternatives:** kNN voting on its own (it never abstains); a kNN agreement
   check (it blocks second tags on two-topic pages); one global cutoff (it fits only one
   stage, names or examples); examples only with one cutoff (closeness to examples
@@ -127,8 +172,8 @@ How a tag is judged:
 
 The golden numbers below measure tagging over *essences*: a page's title, excerpt and
 site name followed by the first 2 KB of its text, one per line
-(`eval.Document.Essence`). Hand the tagger your documents built the same way to get
-what the numbers say.
+(`eval.Document.Essence`). Pass `SetItem` your documents built the same way to get what
+the numbers say.
 
 ### Known limitations
 
@@ -164,14 +209,15 @@ and two-topic pages. Both need the runtime libraries above and cache the downloa
 # (semsearch/yzma/golden_test.go and autotag/golden_test.go)
 make test-models
 
-# every candidate in cmd/semeval/models.yaml, side by side
+# every candidate in semsearch/eval/testdata/models.yaml, side by side
 make semeval
 ```
 
-Add a candidate to `cmd/semeval/models.yaml` with its pooling and prefixes; run the
-command once without a digest and paste the one it prints. The dataset format is plain
-YAML, so an export of your own documents can be scored the same way
-(`go run ./cmd/semeval -dataset export.yaml`).
+Add a candidate to `semsearch/eval/testdata/models.yaml` with its pooling and prefixes;
+run `make semeval SEMEVAL_ONLY=<its name>` once without a digest and paste the one it
+prints. The dataset format is plain YAML, so an export of your own documents can be
+scored the same way (`make semeval SEMEVAL_DATASET=export.yaml`); `SEMEVAL_JSON=out.json`
+keeps every metric, and the Makefile lists the other settings.
 
 ## Development
 

@@ -1,7 +1,8 @@
-# Models cmd/semeval compares on the golden set. Each entry is a GGUF with
-# the pooling and prefixes its authors trained it for; pooling defaults to
-# mean, max_tokens to min(window, 512). An entry with a url but no sha256 is
-# downloaded once unverified and the digest printed for pasting here.
+# The models make semeval (TestCompareModels) compares on the golden set. Each
+# entry is a GGUF with the pooling and prefixes its authors trained it for;
+# pooling defaults to mean, max_tokens to min(window, 512). An entry with a url
+# but no sha256 is downloaded once unverified and the digest printed for
+# pasting here.
 - name: google/embeddinggemma-300m # the default model, yzma.DefaultModel (768 dims, multilingual, task prompts per role)
   url: https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf
   sha256: a0f7b4e13c397a6e1b32c2de75b1f65a14c92ec524d5f674d94a4290a1c4969b

@@ -34,7 +34,7 @@ func (loopbackOnly) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // TestNew_RunsTheSelectedModel: Config.Model selects one of the pinned
 // models, which New loads from its file in ModelsDir (named after its
-// download, as cmd/semeval names it, so the two can share the directory)
+// download, as make semeval names it, so the two can share the directory)
 // and runs with its authors' prefixes.
 func TestNew_RunsTheSelectedModel(t *testing.T) {
 	tmp := t.TempDir()
@@ -76,7 +76,7 @@ func TestNew_RunsTheSelectedModel(t *testing.T) {
 // wrong pooling or prefixes still returns vectors, only meaningless ones, and
 // a wrong size mis-sizes the store a caller builds from the spec; nothing
 // downstream would notice either. The expected values are the ones
-// cmd/semeval evaluated each model with.
+// make semeval evaluated each model with.
 func TestSpec_DescribesEachModelAsItsAuthorsTrainedIt(t *testing.T) {
 	cases := []struct {
 		name            string

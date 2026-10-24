@@ -24,8 +24,9 @@
 // composition rules). Three callers drive this package: the gated
 // TestGoldenSetWithDefaultModel in semsearch/yzma, which asserts floors for
 // the default model, the gated TestGoldenTagging in autotag, which replays
-// the set through a Tagger with hand-tagged examples, and cmd/semeval, which
-// compares several models and prints a table. The dataset format is plain
-// YAML so an export of an application's own documents can be evaluated the
-// same way.
+// the set through a Tagger with hand-tagged examples, and the gated
+// TestCompareModels in this package's own tests (make semeval), which
+// compares the models of testdata/models.yaml and prints a table. The
+// dataset format is plain YAML so an export of an application's own
+// documents can be evaluated the same way.
 package eval

@@ -20,12 +20,12 @@ type pinnedModel struct {
 }
 
 // pinnedModels lists the embedding models Config.Model selects from,
-// DefaultModel first. Each is run with the settings cmd/semeval evaluates it
-// with (see cmd/semeval/models.yaml), and its digest pins the GGUF that was
-// evaluated. A model's file name in ModelsDir is fixed here rather than taken
-// from its URL, since operators pre-seed it for offline installs; it is the
-// name cmd/semeval downloads the model under, so the two can share the
-// directory. The list is built per call so it reads defaultModelAsset as it
+// DefaultModel first. Each is run with the settings make semeval evaluates
+// it with (see semsearch/eval/testdata/models.yaml), and its digest pins the
+// GGUF that was evaluated. A model's file name in ModelsDir is fixed here
+// rather than taken from its URL, since operators pre-seed it for offline
+// installs; it is the name make semeval downloads the model under, so the
+// two can share the directory. The list is built per call so it reads defaultModelAsset as it
 // is (tests point it at a local server).
 func pinnedModels() []pinnedModel {
 	return []pinnedModel{
