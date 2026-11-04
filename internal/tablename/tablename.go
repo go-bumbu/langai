@@ -1,5 +1,5 @@
 // Package tablename derives the physical table names of the SQL stores
-// (semsearch's sqlitevec and pgvec, and autotag's SQL stores), which keep one
+// (vector/sqlitevec and vector/pgvec, and tagging's SQL stores), which keep one
 // table set per index (e.g. a tenant) and generation. SQL identifiers are
 // case-insensitive, so interpolating index directly would collide "A" and "a"
 // into the same tables (a leak across indexes) and would reject indexes with
@@ -13,7 +13,9 @@
 // had before generations existed.
 //
 // Each library names its tables under its own prefix: For uses "ss", and
-// ForPrefix takes the prefix of another library, such as autotag's.
+// ForPrefix takes the prefix of another library, such as tagging's SQL stores'
+// ("autotag", kept from the package's old name so existing tables still
+// match).
 package tablename
 
 import (

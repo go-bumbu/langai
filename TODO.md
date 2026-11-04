@@ -1,6 +1,32 @@
+<!-- todo:guide — managed by todo; this block is rewritten on save. Docs: https://github.com/candy-tools/todo
+This file is a todo list managed by "todo", a terminal TODO app:
+https://github.com/candy-tools/todo
+
+todo watches this file and reloads it automatically when it changes on disk, so
+you — human or agent — can edit it directly in any editor. Keep to this format
+so todo can parse what you write:
+
+  # Heading           Headings ("#" to "######") are categories; they nest by
+                      heading level.
+  - [ ] Open task     A "- [ ]" line is an open task; "- [x]" marks it done.
+  - [/] In progress   "- [/]" flags a task in progress, "- [>]" defers it.
+  - [x] Done task     Tasks must live under a category heading.
+    - [ ] Subtask     Indent by two spaces to nest a subtask under a task.
+    Description text  An indented, non-checkbox line is the task's description.
+
+Notes for editors:
+- Text above the first heading (this block included) is preserved on save.
+- todo rewrites the file into the canonical form above on every change, so any
+  other free-form markdown placed between items is not kept.
+
+Prefer the CLI over editing by hand: it writes this file in the exact format
+above. `todo add`, `todo done|progress|defer|reopen`, `todo edit`, `todo rm`
+and `todo list --json` cover the common actions — run `todo --help`.
+-->
+
 # TODO
 
-## autotag
+## tagging
 
 - [ ] judge tags against parts of a page
   A page is one blended embedding of its first ~2 KB, so a second or side topic
@@ -34,11 +60,131 @@
 
 - [ ] jupiterrider/ffi: load libffi lazily
   ffi opens libffi.so.8 in init() and panics if it is missing, which makes
-  libffi8 a startup requirement of every binary that imports semsearch/yzma,
+  libffi8 a startup requirement of every binary that imports provider/yzma,
   even one that never embeds anything. Ask for a lazy load that returns an
   error on first use instead.
 - [ ] yzma: bind ggml_set_abort_callback
   llama.cpp aborts the process on a failed assertion (e.g. a batch larger than
   n_ubatch); the symbol exists in build b11429, and a binding would let
-  semsearch/yzma turn such asserts into errors. Until then the package
+  provider/yzma turn such asserts into errors. Until then the package
   validates every batch itself.
+
+## image/vide
+
+- [ ] image to image proximity search
+  Embed the images themselves, no captions: the vectors go into the existing
+  Store and are ranked by cosine. langai.Embedder only takes text, so this
+  needs an image-input embedder next to it.
+  DINOv2 base (facebook/dinov2-base): Apache-2.0, 86.6M params, 768-d, 518 px
+  input, vision only. ONNX export: onnx-community/dinov2-base-ONNX.
+  SigLIP 2 base (google/siglip2-base-patch16-224): Apache-2.0, 0.4B with its
+  text half, so the same vectors also match text. ONNX export:
+  onnx-community/siglip2-base-patch16-224-ONNX.
+  Qwen3-VL-Embedding 2B also embeds images, see "text to image / video".
+  Image-only embedding output is not confirmed in llama.cpp, so yzma is not a
+  known route; the Go route is yalue/onnxruntime_go (MIT, needs cgo and the
+  onnxruntime shared library).
+  Not for a commercial app: OpenAI CLIP (card puts deployed use out of scope),
+  DINOv3 (custom license, needs legal review).
+- [ ] video to vide proximiuty search
+  Same index as the text queries: embed the query clip, take the nearest video
+  vectors, drop the clip itself. Store has no get-vector-by-docID, so keep the
+  vector or embed the clip again. No video-to-video numbers found for
+  Qwen3-VL-Embedding; the video retrieval results found (its paper, the
+  Mixpeek blog) all use text queries.
+  Qwen3-VL-Embedding 2B: Apache-2.0, text, image and video in one space, video
+  sampled at 1 FPS up to 64 frames. Details under "text to image / video".
+  V-JEPA 2 ViT-L (facebook/vjepa2-vitl-fpc64-256): MIT, 0.3B, 64 frames, video
+  features only, no text side.
+  X-CLIP base (microsoft/xclip-base-patch32): MIT, ~0.2B, 8 frames at 224x224,
+  512-d, also matches text.
+  InternVideo2 (OpenGVLab/InternVideo2-Stage2_1B-224p-f4): Apache-2.0, slow.
+  Go runtime for V-JEPA 2, X-CLIP and InternVideo2 was not checked.
+  Cheapest start: sample frames and embed each with the image model (one Chunk
+  per frame, Seq = position). For exact near-duplicates, frame-level DINOv2 or
+  a perceptual hash fits better than a semantic model.
+  Not for a commercial app: VideoMAE v2 (CC-BY-NC-4.0).
+- [ ] text to image / video proximity search
+  Qwen3-VL-Embedding 2B (Qwen/Qwen3-VL-Embedding-2B, arXiv 2601.04720):
+  Apache-2.0, text, image, video and mixes in one space, so a text query ranks
+  images and videos directly. 2048-d, can be cut down to 64..2048 (Matryoshka),
+  cosine. The instruction goes in the system message (default "Represent the
+  user's input."), the vector is the last hidden state of the appended
+  `<|endoftext|>` token. Video is sampled at 1 FPS, up to 64 frames.
+  MMEB-V2 overall: 2B 73.2 (image 75.0, video 61.9, visdoc 79.2), 8B 77.8.
+  About 4 GB of weights in bf16 (derived, no official VRAM figure). A
+  Qwen3-VL-Reranker (2B / 8B) exists as the second stage.
+  Runs on transformers >= 4.57.0, vLLM >= 0.14.0 and SGLang. The card does not
+  mention llama.cpp; community GGUFs exist (ifire, batiai, VesNFF) but image
+  and video embedding through them is unconfirmed, so yzma is an open question.
+  Adult content: neither the paper nor the card mentions NSFW or filtering, the
+  Apache-2.0 text has no content restriction, and quality on explicit material
+  is untested. Try it on own samples first.
+  Smaller, one modality each: SigLIP 2 base (images), X-CLIP base (video). The
+  only text-to-video comparison found is the Mixpeek blog (vendor-run, 20
+  videos, NDCG@10): X-CLIP 0.470, SigLIP 2 SO400M 0.325, InternVideo2 6B 0.302.
+- [ ] iamge Auto Tagging
+  Two routes. Caption then tag: a captioner writes text and the existing Tagger
+  takes that text. That needs libmtmd, which wantLib (provider/yzma/fetch.go)
+  skips today; the pinned llama.cpp build is b11429.
+  Moondream 2 (vikhyatk/moondream2): 1.9B, Apache-2.0 on the HF card. The
+  vendor page says Moondream model license 1.0: commercial use allowed, no
+  general-purpose hosted model service. ggml-org/moondream2-20250414-GGUF is
+  F16 only, 2.84 GB + 910 MB mmproj. Likely works on yzma, untested.
+  Moondream 2 0.5B: 375 / 479 MiB download and 816 / 996 MiB RAM (int4 / int8),
+  license 1.0 (HF card fetch failed, so taken from the vendor page). yzma
+  support unknown.
+  Qwen3-VL-2B-Instruct (Qwen/Qwen3-VL-2B-Instruct): Apache-2.0, 2B, takes image
+  and video. It is the VLM yzma's README benchmarks (its CLI example uses
+  Qwen2.5-VL-3B), so the safest fit on yzma. Quantized sizes not checked.
+  Florence-2 base / large (microsoft/Florence-2-base, -large): MIT, 0.23B /
+  0.77B, three caption lengths plus detection and OCR. Not supported by
+  llama.cpp: ONNX or PyTorch only.
+  Fixed tag lists skip the text step but return their own vocabulary, not the
+  app's tags, so they need a mapping. RAM++ (4,585 tags, Apache-2.0, 873 MB
+  INT8 ONNX, ~1.8 GB RAM). WD v3 SwinV2 98M / EVA02-L 315M (Apache-2.0, ONNX
+  467 MB / 1.26 GB, trained on Danbooru art, so it fits anime-style images).
+  Both need onnxruntime, not yzma.
+  Not for a commercial app: Moondream 3 Preview (BSL 1.1, bars selling hosted
+  or embedded access), LLaVA 1.6 (card says research use, OpenAI-policy caveat
+  on its training data).
+- [ ] video auto tagging
+  Dedicated video taggers were not researched. These reuse the models above.
+  Frames: sample frames (1 FPS or scene cuts), run the image route on each and
+  keep the tags that show up in enough frames (RAM++, WD v3, or a caption plus
+  the Tagger).
+  Whole clip: Qwen3-VL-2B-Instruct takes video (card), and yzma's pkg/mtmd has a
+  video path that needs ffmpeg and ffprobe on PATH (read in its source, not
+  run). That gives one caption per clip to feed the Tagger.
+  Embedding route (untested): embed the clip with Qwen3-VL-Embedding 2B and
+  compare it with tag texts or tag centroids built in the same space. X-CLIP
+  base can also score a clip against tag texts (its card lists zero-shot video
+  classification), but it only sees 8 frames at 224x224.
+  Not for a commercial app: VideoMAE v2 (CC-BY-NC-4.0).
+
+## API
+
+- [ ] move towards an api service that can run stuff
+- [ ] move to kronk sdk as provider
+- [ ] make it possible to use local models or remote subscriptions
+
+# expected fetaures
+
+- [ ] text => existing tags
+  - kronk + embedding model (EmbeddingGemma 300M)
+  - optional: kronk + reranker model to check the shortlist
+- [ ] text => new tags
+  - kronk + LLM (Qwen3 4B Instruct) writes candidate tags
+  - kronk + embedding model drops candidates too close to existing tags
+- [ ] image / video => proximity image / vide
+  - onnxruntime (cgo) + SigLIP 2 base; kronk can't embed images
+  - video: ffmpeg samples frames, each embedded as an image; best frame wins
+- [ ] image / video => description
+  - kronk + vision LLM + mmproj (Qwen3-VL-2B-Instruct)
+  - video: ffmpeg pulls keyframes, sent as images (kronk doesn't decode video)
+- [ ] image / video => tags
+  - describe it (kronk vision LLM), then reuse the text => tags stacks
+  - optional, skip the caption: SigLIP 2 scores the image against tag names
+- [ ] text => similar image video
+  - onnxruntime + SigLIP 2: the query text lands in the image/frame space
+  - kronk only: embedding model over the descriptions (meaning, not looks)

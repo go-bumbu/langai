@@ -7,9 +7,8 @@ jobs:
       CGO_ENABLED: 1
     steps:
       - uses: actions/checkout@v4
-      ## sqlite-vec (semsearch/sqlitevec) is CGO and needs the system sqlite3.h
-      ## to compile; agreement_test.go pulls it into the core package's test
-      ## binary too, so both `make test` and `make coverage` need it.
+      ## sqlite-vec (vector/sqlitevec) is CGO and needs the system sqlite3.h
+      ## to compile, so both `make test` and `make coverage` need it.
       - name: Install libsqlite3-dev
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
       ## Setup GO
@@ -20,7 +19,7 @@ jobs:
       - name: go test
         run: make test
       ## make coverage sets TESTDBS_ALL, so go-bumbu/testdbs starts a pgvector
-      ## container on the runner's Docker and semsearch/pgvec's tests count
+      ## container on the runner's Docker and vector/pgvec's tests count
       - name: go coverage
         run: make coverage
 
@@ -44,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      ## the linter type-checks semsearch/sqlitevec, which needs sqlite3.h
+      ## the linter type-checks vector/sqlitevec, which needs sqlite3.h
       - name: Install libsqlite3-dev
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
       - name: Setup Go
@@ -71,7 +70,7 @@ jobs:
 
   embeddings-real:
     # Runs the real llama.cpp + GGUF embedding tests: the smoke test and the
-    # golden-set quality floors (semsearch/yzma), and autotag's golden tagging
+    # golden-set quality floors (provider/yzma), and tagging's golden tagging
     # test, which replays the golden set through a Tagger with simulated
     # hand-tagging. They cover the only code path that can abort the process.
     # The downloads are keyed by fetch.go, where the pins live, so a pin change
@@ -90,6 +89,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/semsearch-yzma
-          key: semsearch-yzma-${{ runner.os }}-${{ hashFiles('semsearch/yzma/fetch.go') }}
+          key: semsearch-yzma-${{ runner.os }}-${{ hashFiles('provider/yzma/fetch.go') }}
       - name: Run the real-model embedding and golden tagging tests
         run: make test-models
