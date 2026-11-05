@@ -1,22 +1,20 @@
 package yzma
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/go-bumbu/langai/internal/fetch"
 )
 
 // Pinned artifacts. They belong to one yzma release: yzma's Go structs mirror
@@ -54,14 +52,12 @@ const (
 	// whole: the pinned one is 2.5 GB, which takes longer than downloadTimeout
 	// on a slow link.
 	completerDownloadTimeout = time.Hour
+	// userAgent names this package's downloads.
+	userAgent = "langai-semsearch"
 )
 
 // asset is one downloadable file with its expected digest.
-type asset struct {
-	URL    string
-	SHA256 string
-	Size   int64 // exact size when known, 0 to skip the check
-}
+type asset = fetch.Asset
 
 // defaultModelAsset is unsloth's Q8_0 GGUF conversion of DefaultModel, which
 // Google publishes under the Gemma Terms of Use.
@@ -217,30 +213,13 @@ func checkInstallRecord(libDir string) error {
 }
 
 // fetchFile downloads a to dest, verifying size and SHA-256 before the file
-// appears under its final name: the bytes go to a temp file in the same
-// directory and are renamed into place only once they check out. Since a
-// download can take minutes, it is logged (what names it) before it starts.
-// The download is capped at maxDownloadBytes, or at the asset's exact size when
-// that is larger.
+// appears under its final name (see fetch.File). Since a download can take
+// minutes, it is logged (what names it) before it starts. The download is
+// capped at maxDownloadBytes, or at the asset's exact size when that is
+// larger.
 func fetchFile(ctx context.Context, what string, a asset, dest string, logger *slog.Logger) error {
 	logger.Info("downloading "+what, logComponent, slog.String("url", a.URL), slog.Int64("size", a.Size), slog.String("sha256", a.SHA256), slog.String("dest", dest))
-	tmp, sum, n, err := downloadTemp(ctx, a.URL, dest, max(maxDownloadBytes, a.Size))
-	if err != nil {
-		return err
-	}
-	if a.Size != 0 && n != a.Size {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("%s: got %d bytes, expected %d", a.URL, n, a.Size)
-	}
-	if sum != a.SHA256 {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("%s: sha256 %s, expected %s", a.URL, sum, a.SHA256)
-	}
-	if err = os.Rename(tmp, dest); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return fetch.File(ctx, httpClient, userAgent, a, dest, maxDownloadBytes)
 }
 
 // Download fetches url into dest with nothing to verify it against and
@@ -251,61 +230,8 @@ func Download(ctx context.Context, url, dest string, logger *slog.Logger) (strin
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
-		return "", 0, err
-	}
 	logger.Info("downloading unpinned file", logComponent, slog.String("url", url), slog.String("dest", dest))
-	tmp, sum, n, err := downloadTemp(ctx, url, dest, maxDownloadBytes)
-	if err != nil {
-		return "", 0, err
-	}
-	if err := os.Rename(tmp, dest); err != nil {
-		_ = os.Remove(tmp)
-		return "", 0, err
-	}
-	return sum, n, nil
-}
-
-// downloadTemp streams url into a closed temp file next to dest, capped at
-// limit bytes, and returns the temp path with the SHA-256 and size of its
-// content. On any error nothing is left behind.
-func downloadTemp(ctx context.Context, url, dest string, limit int64) (tmpPath, sum string, n int64, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", "", 0, err
-	}
-	req.Header.Set("User-Agent", "langai-semsearch")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", "", 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", "", 0, fmt.Errorf("GET %s: %s", url, resp.Status)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".download-*")
-	if err != nil {
-		return "", "", 0, err
-	}
-	defer func() {
-		_ = tmp.Close()
-		if err != nil {
-			_ = os.Remove(tmp.Name())
-		}
-	}()
-	h := sha256.New()
-	n, err = io.Copy(io.MultiWriter(tmp, h), io.LimitReader(resp.Body, limit+1))
-	if err != nil {
-		return "", "", 0, err
-	}
-	if n > limit {
-		err = fmt.Errorf("%s exceeds the %d byte download cap", url, limit)
-		return "", "", 0, err
-	}
-	if err = tmp.Close(); err != nil {
-		return "", "", 0, err
-	}
-	return tmp.Name(), hex.EncodeToString(h.Sum(nil)), n, nil
+	return fetch.Unpinned(ctx, httpClient, userAgent, url, dest, maxDownloadBytes)
 }
 
 // wantLib reports whether an archive entry (by base name) is one of the
@@ -324,76 +250,14 @@ func wantLib(name string) bool {
 
 // extractLibs copies the runtime libraries out of a llama.cpp release
 // tarball into dir, flattened (release archives nest them under a
-// version-named directory). Symlinks are recreated only when they point at a
-// bare library name in the same directory; anything else is rejected rather
-// than written.
+// version-named directory), see fetch.ExtractTarGz.
 func extractLibs(archive, dir string) error {
-	f, err := os.Open(archive) //nolint:gosec // archive is the download this package just verified in its own staging directory, not a path taken from archive content
+	found, err := fetch.ExtractTarGz(archive, dir, func(p string) bool { return wantLib(path.Base(p)) }, maxDownloadBytes)
 	if err != nil {
 		return err
-	}
-	defer func() { _ = f.Close() }()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = gz.Close() }()
-	tr := tar.NewReader(gz)
-	found := 0
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		name := filepath.Base(hdr.Name)
-		if !wantLib(name) {
-			continue
-		}
-		dest := filepath.Join(dir, name)
-		switch hdr.Typeflag {
-		case tar.TypeReg:
-			if err := writeLibrary(dest, tr); err != nil {
-				return err
-			}
-		case tar.TypeSymlink:
-			target := hdr.Linkname
-			if target != filepath.Base(target) || !wantLib(target) {
-				return fmt.Errorf("refusing symlink %s -> %s", name, target)
-			}
-			if err := os.Symlink(target, dest); err != nil {
-				return err
-			}
-		default:
-			continue
-		}
-		found++
 	}
 	if found == 0 {
 		return fmt.Errorf("no llama.cpp libraries found in %s", archive)
-	}
-	return nil
-}
-
-// writeLibrary writes one extracted library, bounded by maxDownloadBytes.
-func writeLibrary(dest string, r io.Reader) (err error) {
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec // dest is a wantLib-filtered base name inside this package's staging directory, writes are capped by maxDownloadBytes, and shared libraries must be executable
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if cerr := out.Close(); err == nil {
-			err = cerr
-		}
-	}()
-	n, err := io.Copy(out, io.LimitReader(r, maxDownloadBytes+1))
-	if err != nil {
-		return err
-	}
-	if n > maxDownloadBytes {
-		return fmt.Errorf("%s exceeds the %d byte cap", dest, maxDownloadBytes)
 	}
 	return nil
 }
