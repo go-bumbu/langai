@@ -102,29 +102,35 @@ and `todo list --json` cover the common actions — run `todo --help`.
   A 64-bit dHash/pHash as a second, model-free ImageEmbedder (±1 per bit, so
   cosine = 1 - 2·hamming/64 and the same Store works) for de-duplication
   jobs that should not pay for a model.
-- [ ] text to image / video proximity search
-  Cheapest now: the SigLIP 2 text tower (text_model.onnx in the same
-  onnx-community repo, 1.1 GB fp32 / 283 MB int8) as a langai.Embedder in
-  provider/onnx, so a text query lands in the space MediaIndex already
-  stores; it needs the SentencePiece tokenizer (tokenizer.model, 4 MB) in Go.
-  Qwen3-VL-Embedding 2B (Qwen/Qwen3-VL-Embedding-2B, arXiv 2601.04720):
-  Apache-2.0, text, image, video and mixes in one space, so a text query ranks
-  images and videos directly. 2048-d, can be cut down to 64..2048 (Matryoshka),
-  cosine. The instruction goes in the system message (default "Represent the
-  user's input."), the vector is the last hidden state of the appended
-  `<|endoftext|>` token. Video is sampled at 1 FPS, up to 64 frames.
-  MMEB-V2 overall: 2B 73.2 (image 75.0, video 61.9, visdoc 79.2), 8B 77.8.
-  About 4 GB of weights in bf16 (derived, no official VRAM figure). A
-  Qwen3-VL-Reranker (2B / 8B) exists as the second stage.
-  Runs on transformers >= 4.57.0, vLLM >= 0.14.0 and SGLang. The card does not
-  mention llama.cpp; community GGUFs exist (ifire, batiai, VesNFF) but image
-  and video embedding through them is unconfirmed, so yzma is an open question.
-  Adult content: neither the paper nor the card mentions NSFW or filtering, the
-  Apache-2.0 text has no content restriction, and quality on explicit material
-  is untested. Try it on own samples first.
-  Smaller, one modality each: SigLIP 2 base (images), X-CLIP base (video). The
-  only text-to-video comparison found is the Mixpeek blog (vendor-run, 20
-  videos, NDCG@10): X-CLIP 0.470, SigLIP 2 SO400M 0.325, InternVideo2 6B 0.302.
+- [x] text to image / video proximity search
+  Done with Qwen3-VL-Embedding-2B (Qwen/Qwen3-VL-Embedding-2B, Apache-2.0,
+  2048-d) as yzma.Vision over llama.cpp's libmtmd: text, images and video
+  segments in one space, MediaIndex.SearchText and WithVideoEmbedder. The
+  pinned GGUF is DevQuasar's Q8_0 with the f16 projector (no official GGUF).
+  Upstream llama.cpp's Qwen3-VL vision path sits at about 0.97 cosine to the
+  Hugging Face reference (a community fork claims 0.9999 with extra patches);
+  fine within one index, not for vectors made elsewhere. The SigLIP 2 text
+  tower (text_model.onnx, SentencePiece tokenizer in Go) stays an option for a
+  lighter text-to-image route on the ONNX side. Adult content: neither the
+  paper nor the card mentions filtering; quality on explicit material is
+  untested.
+- [ ] vision model follow-ups
+  Matryoshka: the model's vectors can be cut to 64..2048 and re-normalized;
+  a VisionConfig.Dims would shrink the store. The 8B model (MMEB-V2 77.8 vs
+  73.2) and the Qwen3-VL-Reranker as a second stage are untried. The
+  instruction is one per Vision; per-call instructions (a query instruction
+  that differs from the document one) would need a second prompt path.
+  ImageMaxTokens did not change the token count in the spike (484 for
+  800x600, 1,437 for 1080x1350): check what the projector's bounds do.
+- [ ] run provider/yzma on CUDA and on macOS
+  Accel auto picks the build from the hardware and offloads to the GPU that
+  registers; Vulkan on an AMD 890M iGPU was run (1.5 s per photo vs 7 s on
+  the CPU). The CUDA 13.4 build (needs the CUDA runtime on the host) and the
+  Metal build are pinned and chosen but were not run. ROCm is detected but
+  has no pinned build (AMD cards go through Vulkan); Windows has none.
+- [ ] CI for the vision model
+  make test-vision downloads 2.7 GB and needs ffmpeg; it is not in
+  validate.yml. A cached job like embeddings-real would cover it.
 - [ ] iamge Auto Tagging
   Two routes. Caption then tag: a captioner writes text and the existing Tagger
   takes that text. That needs libmtmd, which wantLib (provider/yzma/fetch.go)

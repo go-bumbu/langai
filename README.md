@@ -10,14 +10,14 @@ models run in-process through llama.cpp and ONNX Runtime.
 | Package | What it does |
 |---|---|
 | `langai` | The ports: `Embedder` (text embedding models), `ImageEmbedder` (image embedding models), `Completer` (chat models) and the `Role` a text is embedded as. `LazyEmbedder` defers loading a model to its first use. |
-| `search` | Turns documents into embedding vectors and answers free-text queries with the closest ones: `Index` and the markdown-aware chunker. `MediaIndex` does the same for pictures: it embeds images and the sampled frames of videos and answers an image or a video with the items that look most like it, across both kinds. |
-| `media` | The port for video input: `Sampler` turns a video file into the `Frame`s that stand for it. |
-| `media/ffmpeg` | `Sampler` over the ffmpeg and ffprobe binaries: the first frame, every scene cut and one frame per interval, scaled down, capped per video; or the keyframes only, for long videos. |
+| `search` | Turns documents into embedding vectors and answers free-text queries with the closest ones: `Index` and the markdown-aware chunker. `MediaIndex` does the same for pictures: it embeds images and videos (as sampled frames through an image model, or as whole segments through a video model) and answers an image, a video or, with a model that has a text side, a text with the items that look most like it, across both kinds. |
+| `media` | The ports for video input: `Sampler` turns a video file into the `Frame`s that stand for it, `VideoEmbedder` embeds it as whole `Segment`s, `Cutter` measures and cuts it. |
+| `media/ffmpeg` | `Sampler` and `Cutter` over the ffmpeg and ffprobe binaries: the first frame, every scene cut and one frame per interval, scaled down, capped per video, or the keyframes only, for long videos; stream-copy cuts for the segment embedder. |
 | `tagging` | Tags for a text. `Tagger` suggests tags among the ones an application already has and learns from the tags people put on items by hand: each tag's vector blends its name with the items tagged with it, and each tag is judged against its own cutoff. It keeps the tags, items and hand-made links in a `Store`: `MemStore` (in memory), `tagging/sqlitestore` (SQLite) or `tagging/pgstore` (Postgres), the last two over plain tables with no extension. `Generator` writes tags with no list to start from: a chat model proposes them and the embedding model scores each against the text, so one cutoff means the same on every text. |
 | `vector` | The `Store` interface for search vectors, and `MemStore` (exact, in memory, for tests and evaluation). |
 | `vector/sqlitevec` | `Store` on SQLite with the sqlite-vec extension (CGO). |
 | `vector/pgvec` | `Store` on Postgres with pgvector. |
-| `provider/yzma` | `Embedder` that runs a GGUF sentence-embedding model, and `Completer` that runs a GGUF chat model (the one the `Generator` writes tags with), through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Downloads and verifies the pinned llama.cpp build and models on first use. |
+| `provider/yzma` | `Embedder` that runs a GGUF sentence-embedding model, `Completer` that runs a GGUF chat model (the one the `Generator` writes tags with), and `Vision`, which runs Qwen3-VL-Embedding as a text, image and video embedder in one space, through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Downloads and verifies the pinned llama.cpp build and models on first use, and picks the build and the GPU offload from the hardware (`Config.Accel`). |
 | `provider/onnx` | `ImageEmbedder` that runs an ONNX vision model through [ONNX Runtime](https://onnxruntime.ai) (CGO, via [onnxruntime_go](https://github.com/yalue/onnxruntime_go)): SigLIP 2 base by default, DINOv2 base as the other pinned model, any other through a `ModelSpec`. CPU by default, CUDA or CoreML by configuration. Downloads and verifies the pinned runtime build and model on first use. |
 | `eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. `make semeval` compares embedding models side by side on it. |
 | `langaitest` | `FakeEmbedder` and `FakeImageEmbedder`, deterministic, for tests. |
@@ -98,6 +98,18 @@ go get github.com/go-bumbu/langai
   `sudo apt-get install -y libffi8 libgomp1 libstdc++6`.
 - **The chat model** (`yzma.NewCompleter`, for the tag `Generator`) is a 2.5 GB download on first use,
   and a process with it and the embedding model loaded holds about 5 GB of RAM.
+- **GPUs with `provider/yzma`.** `Config.Accel` left empty picks from the hardware: a
+  managed `LibDir` gets the pinned llama.cpp build that carries the backend the machine
+  has (CUDA 13.4 on linux/amd64 with the CUDA runtime installed, Vulkan on linux/amd64
+  and linux/arm64, Metal on macOS, the CPU build otherwise; `internal/hw` looks for the
+  driver), the model is offloaded to the GPU that registers, and the load log line says
+  which. `AccelCPU` stays on the CPU, `AccelVulkan`, `AccelCUDA` and `AccelMetal`
+  require their backend. An operator-supplied `LibDir` is used as it is: whatever
+  backends it holds register. Vulkan was run on an AMD iGPU for this release; the CUDA
+  build is pinned but was not run.
+- **The vision model** (`yzma.NewVision`) is a 2.7 GB download on first use (the Q8_0
+  GGUF and its f16 projector) and needs `ffmpeg` and `ffprobe` on PATH for videos; a
+  loaded process holds about 3 GB.
 - **Keep yzma where langai pins it.** The llama.cpp build `provider/yzma` downloads
   (`yzma.LibTag`) matches the yzma version in this module's `go.mod`, whose Go
   bindings mirror exactly that build's ABI. A module that imports `provider/yzma` must
@@ -209,9 +221,52 @@ through `image.RegisterFormat`.
   hash of a video all run per call; the background job that indexes decides how many run
   at once.
 - **Limits.** Pictures are embedded as decoded: a JPEG whose EXIF orientation says to
-  rotate it is seen unrotated. There is no text-to-image search yet (the SigLIP 2 text
-  tower is a later provider). The CUDA and CoreML paths are wired but were not run on a
+  rotate it is seen unrotated. The SigLIP 2 text tower is not wired, so text queries
+  need the vision model below. The CUDA and CoreML paths are wired but were not run on a
   GPU in this release; the CPU path is what the real-model tests cover.
+
+### Text, images and videos in one space
+
+```go
+v, err := yzma.NewVision(ctx, yzma.VisionConfig{
+    Config: yzma.Config{ModelsDir: "data/models", LibDir: filepath.Join("data", "llama-cpp", yzma.LibTag), ManagedLibDir: true},
+    Cutter: frames, // the ffmpeg Sampler cuts videos into segments too
+})
+ix, err := search.NewMediaIndex(v, store, "tenant-1", "space-7", "media",
+    search.WithVideoEmbedder(v), search.WithTextEmbedder(v))
+err = ix.IndexImage(ctx, "photo-42", file)              // as above
+err = ix.IndexVideo(ctx, "clip-7", "/media/clip-7.mp4") // one vector per 20 s segment
+hits, err := ix.SearchText(ctx, "a walrus on a beach", 10) // []search.MediaMatch, At = the segment's start
+vecs, err := v.Embed(ctx, langai.RoleQuery, []string{"..."})  // the same object is the text Embedder
+```
+
+`yzma.Vision` runs `Qwen/Qwen3-VL-Embedding-2B` (Apache-2.0, 2048 dimensions) through
+llama.cpp and its libmtmd: the model's chat template wraps every input in an
+instruction (`Represent the user's input.` unless `VisionConfig.Instruction` says
+otherwise), the projector turns pictures and frames into tokens, and the vector is the
+last token's hidden state. Texts, images and videos land in one space, so a text finds
+pictures and clips, and an image finds the stretch of a video it appears in.
+
+- **Videos as segments.** A video goes through the model in segments of
+  `SegmentLength` (20 s), each sampled at `FPS` (1) and embedded as one input: about 190
+  tokens per second of video, so a segment is a few thousand tokens and a feature film
+  never overflows the context (`ContextTokens`, 16384). The `Cutter` (the ffmpeg
+  `Sampler`) cuts by stream copy, so a segment starts at the last keyframe before its
+  time. `MaxSegments` caps the work per video. A segment is one vector: the model sees
+  the whole stretch, which is what makes a clip match a description, and what loses the
+  "matched at 4.00 s" precision of the frame route.
+- **Scores.** Copies of a photo score 0.97 to 0.98, a pug against another pug about
+  0.8, unrelated photos about 0.1, a short description against the photo it describes
+  0.6 to 0.7: a floor of 0.4 keeps related things and drops the rest.
+- **Cost.** A 800×600 photo is about 480 tokens, a 1080×1350 one about 1,400;
+  `ImageMaxTokens` lowers that (the projector scales the picture down). On this
+  module's test laptop (AMD Ryzen AI 9 HX PRO 370 with its Radeon 890M iGPU through
+  Vulkan) a photo takes 1.5 s and an 8 s clip 4.5 s; on the CPU alone, 7 s and 22 s. A
+  text takes 0.1 s. The model and projector are 2.7 GB on disk and the process holds
+  about 3 GB.
+- **One model per collection.** A `MediaIndex` built on the vision model must not
+  share a collection with one built on SigLIP 2 frames: different vectors for the same
+  files.
 
 ### Automatic tagging
 
