@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	// the image formats IndexImage and SearchImage decode; an application
@@ -51,6 +52,8 @@ const maxImagePixels = 256 << 20
 type MediaIndex struct {
 	embedder   langai.ImageEmbedder
 	sampler    media.Sampler
+	video      media.VideoEmbedder // whole segments instead of sampled frames, when set
+	text       langai.Embedder     // text queries, when set
 	store      vector.Store
 	minScore   float64
 	index      string
@@ -62,10 +65,28 @@ type MediaIndex struct {
 type MediaOption func(*MediaIndex)
 
 // WithSampler sets the Sampler that turns a video file into frames; without
-// one, IndexVideo and SearchVideo fail. media/ffmpeg has the implementation
-// over the ffmpeg binary.
+// one (or a VideoEmbedder), IndexVideo and SearchVideo fail. media/ffmpeg
+// has the implementation over the ffmpeg binary.
 func WithSampler(s media.Sampler) MediaOption {
 	return func(ix *MediaIndex) { ix.sampler = s }
+}
+
+// WithVideoEmbedder makes IndexVideo and SearchVideo embed a video as whole
+// segments through v, a model that takes video, instead of sampling frames
+// for the image embedder: each segment is one chunk whose Seq is the
+// segment's start, so a match says which stretch of the video it is in. v
+// must share the image embedder's space (the same model behind both) and
+// its dimensions. An index built this way must not share a collection with
+// one built on frames: the same video gets different vectors.
+func WithVideoEmbedder(v media.VideoEmbedder) MediaOption {
+	return func(ix *MediaIndex) { ix.video = v }
+}
+
+// WithTextEmbedder enables SearchText: e embeds the query text into the
+// image embedder's space (the text tower of the same model), with the same
+// dimensions.
+func WithTextEmbedder(e langai.Embedder) MediaOption {
+	return func(ix *MediaIndex) { ix.text = e }
 }
 
 // WithMediaMinScore drops search hits scoring below min, for the reasons
@@ -91,6 +112,12 @@ func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, par
 	}
 	for _, opt := range opts {
 		opt(ix)
+	}
+	if ix.video != nil && ix.video.Dimensions() != embedder.Dimensions() {
+		return nil, fmt.Errorf("search: the video embedder's vectors have %d dimensions, the image embedder's %d: they must be one model", ix.video.Dimensions(), embedder.Dimensions())
+	}
+	if ix.text != nil && ix.text.Dimensions() != embedder.Dimensions() {
+		return nil, fmt.Errorf("search: the text embedder's vectors have %d dimensions, the image embedder's %d: they must be one model", ix.text.Dimensions(), embedder.Dimensions())
 	}
 	return ix, nil
 }
@@ -133,16 +160,18 @@ func (ix *MediaIndex) IndexImage(ctx context.Context, docID string, r io.Reader)
 	return ix.indexFrames(ctx, docID, hash, []media.Frame{{Image: img}})
 }
 
-// IndexVideo samples the video at path (see WithSampler), embeds its frames
-// and stores them under docID, replacing whatever was indexed there before.
-// It is a no-op when the file's bytes are unchanged since the last call;
+// IndexVideo embeds the video at path and stores it under docID, replacing
+// whatever was indexed there before: as whole segments through the
+// VideoEmbedder when one is set (see WithVideoEmbedder), otherwise as the
+// frames the Sampler picks (see WithSampler), each embedded as an image. It
+// is a no-op when the file's bytes are unchanged since the last call;
 // hashing the file is far cheaper than decoding it.
 func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error {
 	if docID == "" {
 		return errors.New("empty document id")
 	}
-	if ix.sampler == nil {
-		return errors.New("search: no sampler: pass WithSampler to NewMediaIndex to index videos")
+	if ix.sampler == nil && ix.video == nil {
+		return errors.New("search: no sampler: pass WithSampler or WithVideoEmbedder to NewMediaIndex to index videos")
 	}
 	hash, err := fileHash(path)
 	if err != nil {
@@ -153,6 +182,23 @@ func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error 
 		return fmt.Errorf("search: read content hash: %w", err)
 	}
 	if stored == hash {
+		return nil
+	}
+	if ix.video != nil {
+		segments, err := ix.video.EmbedVideo(ctx, path)
+		if err != nil {
+			return fmt.Errorf("search: embed video %q: %w", docID, err)
+		}
+		chunks := make([]vector.Chunk, len(segments))
+		for i, s := range segments {
+			if len(s.Vector) != ix.embedder.Dimensions() {
+				return fmt.Errorf("search: embed video %q: segment %d has %d dimensions, want %d", docID, i, len(s.Vector), ix.embedder.Dimensions())
+			}
+			chunks[i] = vector.Chunk{Seq: int(s.Start / time.Millisecond), Vector: s.Vector}
+		}
+		if err := ix.store.Upsert(ctx, ix.index, ix.partition, ix.collection, docID, hash, chunks); err != nil {
+			return fmt.Errorf("search: store %q: %w", docID, err)
+		}
 		return nil
 	}
 	frames, err := ix.sampler.Sample(ctx, path)
@@ -243,17 +289,51 @@ func (ix *MediaIndex) SearchImage(ctx context.Context, r io.Reader, limit int) (
 	return ix.SearchFrames(ctx, []media.Frame{{Image: img}}, limit)
 }
 
-// SearchVideo samples the video at path and returns the items that look most
-// like any of its frames, best first, at most limit (10 when <= 0).
+// SearchVideo returns the items that look most like the video at path, best
+// first, at most limit (10 when <= 0): by its segments through the
+// VideoEmbedder when one is set, otherwise by its sampled frames, each
+// embedded as an image. QueryAt is the start of the query segment or the
+// time of the query frame that matched.
 func (ix *MediaIndex) SearchVideo(ctx context.Context, path string, limit int) ([]MediaMatch, error) {
+	if ix.video != nil {
+		segments, err := ix.video.EmbedVideo(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("search: embed query video: %w", err)
+		}
+		queries := make([]queryVector, len(segments))
+		for i, s := range segments {
+			queries[i] = queryVector{vector: s.Vector, at: s.Start}
+		}
+		return ix.search(ctx, queries, limit)
+	}
 	if ix.sampler == nil {
-		return nil, errors.New("search: no sampler: pass WithSampler to NewMediaIndex to search with videos")
+		return nil, errors.New("search: no sampler: pass WithSampler or WithVideoEmbedder to NewMediaIndex to search with videos")
 	}
 	frames, err := ix.sampler.Sample(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("search: sample query video: %w", err)
 	}
 	return ix.SearchFrames(ctx, frames, limit)
+}
+
+// SearchText returns the items that look most like what the text describes,
+// best first, at most limit (10 when <= 0). It needs the text embedder of
+// the same model (WithTextEmbedder); the text is embedded as a query.
+func (ix *MediaIndex) SearchText(ctx context.Context, text string, limit int) ([]MediaMatch, error) {
+	if ix.text == nil {
+		return nil, errors.New("search: no text embedder: pass WithTextEmbedder to NewMediaIndex to search by text")
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, nil
+	}
+	vectors, err := ix.text.Embed(ctx, langai.RoleQuery, []string{text})
+	if err != nil {
+		return nil, fmt.Errorf("search: embed query text: %w", err)
+	}
+	if len(vectors) != 1 {
+		return nil, fmt.Errorf("search: text embedder returned %d vectors for one text", len(vectors))
+	}
+	return ix.search(ctx, []queryVector{{vector: vectors[0]}}, limit)
 }
 
 // SearchFrames is the search behind SearchImage and SearchVideo for frames
@@ -266,18 +346,38 @@ func (ix *MediaIndex) SearchFrames(ctx context.Context, frames []media.Frame, li
 	if len(frames) == 0 {
 		return nil, nil
 	}
-	if limit <= 0 {
-		limit = 10
-	}
 	vectors, err := ix.embed(ctx, frames)
 	if err != nil {
 		return nil, fmt.Errorf("search: embed query: %w", err)
 	}
-	best := make(map[string]MediaMatch)
+	queries := make([]queryVector, len(frames))
 	for i, f := range frames {
+		queries[i] = queryVector{vector: vectors[i], at: f.At}
+	}
+	return ix.search(ctx, queries, limit)
+}
+
+// queryVector is one embedded query frame, segment or text, with the time it
+// stands for in a video query.
+type queryVector struct {
+	vector []float32
+	at     time.Duration
+}
+
+// search looks every query vector up and keeps the best pair per item, as
+// SearchFrames describes.
+func (ix *MediaIndex) search(ctx context.Context, queries []queryVector, limit int) ([]MediaMatch, error) {
+	if len(queries) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	best := make(map[string]MediaMatch)
+	for _, q := range queries {
 		// over-fetch chunks so that several frames of the same item don't
 		// crowd other items out of the final per-item list
-		raw, err := ix.store.Search(ctx, ix.index, ix.partition, ix.collection, vectors[i], limit*4)
+		raw, err := ix.store.Search(ctx, ix.index, ix.partition, ix.collection, q.vector, limit*4)
 		if err != nil {
 			return nil, fmt.Errorf("search: search: %w", err)
 		}
@@ -290,7 +390,7 @@ func (ix *MediaIndex) SearchFrames(ctx context.Context, frames []media.Frame, li
 			if cur, ok := best[m.DocID]; ok && cur.Score >= m.Score {
 				continue
 			}
-			best[m.DocID] = MediaMatch{DocID: m.DocID, Score: m.Score, At: time.Duration(m.Seq) * time.Millisecond, QueryAt: f.At}
+			best[m.DocID] = MediaMatch{DocID: m.DocID, Score: m.Score, At: time.Duration(m.Seq) * time.Millisecond, QueryAt: q.at}
 		}
 	}
 	out := make([]MediaMatch, 0, len(best))

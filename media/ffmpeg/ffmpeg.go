@@ -147,6 +147,39 @@ func (s *Sampler) Sample(ctx context.Context, path string) ([]media.Frame, error
 	return splitFrames(stdout.Bytes(), infos)
 }
 
+// verify the interface is actually satisfied
+var _ media.Cutter = (*Sampler)(nil)
+
+// Duration implements media.Cutter: the container's duration from ffprobe,
+// 0 when it has none (a stream, a still image).
+func (s *Sampler) Duration(ctx context.Context, path string) (time.Duration, error) {
+	return s.probe(ctx, path)
+}
+
+// Cut implements media.Cutter: it copies the video stream of path from
+// start for length (to the end when length <= 0) into out without
+// re-encoding, so a cut starts at the last keyframe before start and the
+// segment's own timestamps start at zero. Audio, subtitles and data are
+// dropped; an MP4 or MOV gets its index at the front, so it plays from a
+// pipe. ctx bounds ffmpeg; cancelling it kills the program.
+func (s *Sampler) Cut(ctx context.Context, path string, start, length time.Duration, out string) error {
+	args := []string{"-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", seconds(start), "-i", path}
+	if length > 0 {
+		args = append(args, "-t", seconds(length))
+	}
+	args = append(args, "-map", "0:v:0", "-an", "-sn", "-dn", "-c", "copy", "-movflags", "+faststart", out)
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, s.cfg.FFmpeg, args...) //nolint:gosec // the binary is the operator's configuration and the arguments are built here, the paths among them as single argv entries
+	cmd.Stderr = &limitedWriter{buf: &stderr, limit: maxStderr}
+	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("ffmpeg: %w", ctxErr)
+		}
+		return fmt.Errorf("ffmpeg: %w: %s", err, tail(stderr.Bytes()))
+	}
+	return nil
+}
+
 // probe asks ffprobe for the container's duration; 0 when it has none (a
 // stream, a still image).
 func (s *Sampler) probe(ctx context.Context, path string) (time.Duration, error) {

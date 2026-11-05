@@ -203,3 +203,50 @@ func times(frames []media.Frame) []time.Duration {
 	}
 	return out
 }
+
+// TestCut_CopiesAStretch: a cut of the 10 s video from 3 s for 4 s is about
+// 4 s long and shows the colours of that stretch; a cut to the end runs from
+// the start given to the end; the segment's timestamps start at zero.
+func TestCut_CopiesAStretch(t *testing.T) {
+	path := cutsVideo(t)
+	s, _ := New(Config{})
+	ctx := context.Background()
+	if d, err := s.Duration(ctx, path); err != nil || !near(d, 10*time.Second) {
+		t.Fatalf("Duration = %v, %v; want ~10 s", d, err)
+	}
+	out := filepath.Join(t.TempDir(), "cut.mp4")
+	if err := s.Cut(ctx, path, 3*time.Second, 4*time.Second, out); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.Duration(ctx, out)
+	if err != nil || d < 3500*time.Millisecond || d > 4600*time.Millisecond {
+		t.Errorf("cut duration = %v, %v; want about 4 s", d, err)
+	}
+	// the cut starts at the keyframe before 3 s, in the green shot that
+	// runs 3 s to 6 s or just before it; its first sampled frame is at 0
+	frames, err := s.Sample(ctx, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) == 0 || frames[0].At != 0 {
+		t.Fatalf("frames of the cut = %d, first at %v", len(frames), frames[0].At)
+	}
+	if c := dominant(frames[len(frames)-1].Image); c != "other" {
+		t.Errorf("last frame of the cut is %s, want the test pattern (the stretch past 6 s)", c)
+	}
+	tail := filepath.Join(t.TempDir(), "tail.mp4")
+	if err := s.Cut(ctx, path, 8*time.Second, 0, tail); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := s.Duration(ctx, tail); err != nil || d < 1500*time.Millisecond || d > 2600*time.Millisecond {
+		t.Errorf("tail duration = %v, %v; want about 2 s", d, err)
+	}
+	if err := s.Cut(ctx, filepath.Join(t.TempDir(), "missing.mp4"), 0, time.Second, out); err == nil || !strings.Contains(err.Error(), "ffmpeg") {
+		t.Errorf("missing input: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := s.Cut(cancelled, path, 0, time.Second, out); err == nil {
+		t.Error("cancelled context: want error")
+	}
+}
