@@ -274,3 +274,12 @@ func TestRuntime_PrepareInstallsTheBuildTheHardwareNeeds(t *testing.T) {
 		t.Errorf("unmanaged empty: %v", err)
 	}
 }
+
+func TestExpectedWarning(t *testing.T) {
+	if !expectedWarning("init: embeddings required but some input tokens were not marked as outputs -> overriding") {
+		t.Error("the per-input embedding warning should be dropped")
+	}
+	if expectedWarning("load: control-looking token: 128247 '</s>' was not control-type") {
+		t.Error("other warnings must get through")
+	}
+}

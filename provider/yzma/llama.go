@@ -236,6 +236,16 @@ func (ffiAPI) tokenText(model uintptr, token int32) []byte {
 // libmtmd gets too when it is loaded later.
 var llamaLogCallback uintptr
 
+// expectedWarning reports whether a llama.cpp warning describes what this
+// package does on purpose, so it is dropped rather than logged once per
+// input. The Vision embedder feeds each input through libmtmd's helper,
+// which marks only the last token as an output, and the embedding context
+// then marks every token itself and says so; llama.cpp's own server logs
+// the same line on every embedding request.
+func expectedWarning(msg string) bool {
+	return strings.Contains(msg, "embeddings required but some input tokens were not marked as outputs")
+}
+
 // logCallback forwards llama.cpp warnings and errors to logger. Everything
 // else (progress, model metadata dumps) is dropped: llama.cpp is chatty, and
 // the lines an operator needs are the ones explaining a failed load, which
@@ -249,7 +259,7 @@ func logCallback(logger *slog.Logger) uintptr {
 			return 0
 		}
 		msg := strings.TrimSpace(utils.BytePtrToString(text))
-		if msg == "" {
+		if msg == "" || expectedWarning(msg) {
 			return 0
 		}
 		switch llama.LogLevel(level) {
