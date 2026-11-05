@@ -37,8 +37,29 @@ func (ffiAPI) load(dir string, logger *slog.Logger) error {
 
 func (ffiAPI) version() string { return llama.Version() }
 
-func (ffiAPI) loadModel(path string) (uintptr, error) {
-	model, err := llama.ModelLoadFromFile(path, llama.ModelDefaultParams())
+func (ffiAPI) devices() []device {
+	n := llama.GGMLBackendDeviceCount()
+	out := make([]device, 0, n)
+	for i := range n {
+		dev := llama.GGMLBackendDeviceGet(i)
+		if dev == 0 {
+			continue
+		}
+		t := llama.GGMLBackendDevType(dev)
+		out = append(out, device{
+			name:        llama.GGMLBackendDeviceName(dev),
+			backend:     llama.GGMLBackendRegName(llama.GGMLBackendDeviceBackendReg(dev)),
+			description: llama.GGMLBackendDeviceDescription(dev),
+			gpu:         t == llama.GGMLBackendDeviceTypeGPU || t == llama.GGMLBackendDeviceTypeIGPU,
+		})
+	}
+	return out
+}
+
+func (ffiAPI) loadModel(path string, gpuLayers int32) (uintptr, error) {
+	p := llama.ModelDefaultParams()
+	p.NGpuLayers = gpuLayers
+	model, err := llama.ModelLoadFromFile(path, p)
 	if err != nil {
 		return 0, err
 	}

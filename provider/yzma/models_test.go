@@ -45,6 +45,7 @@ func TestNew_RunsTheSelectedModel(t *testing.T) {
 	}
 	rt := fakeRuntime(t, f, tmp)
 	offline(t)
+	cpuOnly(t)
 	modelsDir := filepath.Join(tmp, "models")
 	modelPath := filepath.Join(modelsDir, "multilingual-e5-small-q8_0.gguf")
 	if err := os.MkdirAll(modelsDir, 0o750); err != nil {

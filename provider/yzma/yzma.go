@@ -34,6 +34,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/langai/internal/hw"
 	"github.com/go-bumbu/langai/vector"
 )
 
@@ -108,6 +109,14 @@ type Config struct {
 	// Threads is the thread count for model evaluation; <= 0 picks a default
 	// of at most four.
 	Threads int
+	// Accel is what runs the model: "" picks from the hardware (a GPU when
+	// one registers, the CPU otherwise), AccelCPU stays on the CPU, and
+	// AccelVulkan, AccelCUDA or AccelMetal require that backend. A managed
+	// LibDir gets the llama.cpp build the choice needs.
+	Accel Accel
+	// GPULayers caps how many layers go to the GPU when one is used; 0 means
+	// all of them.
+	GPULayers int
 	// Logger receives this package's progress at Info (each first-use
 	// download before it starts, the installed libraries and the downloaded
 	// model, the llama.cpp load) and llama.cpp's own warnings and errors; nil
@@ -152,7 +161,48 @@ type Runtime struct {
 	LibDir        string
 	ManagedLibDir bool
 	Threads       int
+	Accel         Accel
+	GPULayers     int
 	Logger        *slog.Logger
+}
+
+// prepare validates rt, fills its defaults, and makes sure libDir holds the
+// build rt.Accel needs (downloading it into a managed directory). It
+// returns the absolute library directory and the logger this package logs
+// to. ctx bounds the download.
+func (rt *Runtime) prepare(ctx context.Context) (libDir string, logger *slog.Logger, err error) {
+	logger = rt.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	if rt.LibDir == "" {
+		return "", nil, errors.New("yzma: LibDir is required")
+	}
+	if _, err := rt.Accel.normalized(); err != nil {
+		return "", nil, fmt.Errorf("yzma: %w", err)
+	}
+	libDir, err = filepath.Abs(rt.LibDir)
+	if err != nil {
+		return "", nil, err
+	}
+	if rt.Threads <= 0 {
+		rt.Threads = defaultThreads()
+	}
+	report := detectHW()
+	b, err := chooseBackend(rt.Accel, report, platform())
+	if err != nil {
+		if rt.ManagedLibDir {
+			return "", nil, fmt.Errorf("yzma: %w", err)
+		}
+		b = "cpu" // nothing to install; whatever the operator put there registers
+	}
+	// the load line says what runs the model; the findings behind the choice
+	// are for whoever asks
+	logger.Debug("hardware", logComponent, slog.String("found", report.String()), slog.String("accel", string(rt.Accel)), slog.String("build", b))
+	if err := ensureLibs(ctx, libDir, rt.ManagedLibDir, b, logger); err != nil {
+		return "", nil, err
+	}
+	return libDir, logger, nil
 }
 
 // DefaultSpec is Spec(DefaultModel, modelsDir): the pinned EmbeddingGemma
@@ -167,6 +217,9 @@ func DefaultSpec(modelsDir string) ModelSpec {
 // subsystems; the llama.cpp lines logCallback forwards carry "llama.cpp".
 var logComponent = slog.String("component", "semsearch")
 
+// detectHW looks at the machine; tests substitute a fixed report.
+var detectHW = hw.Detect
+
 // New prepares the libraries and the model cfg.Model selects (downloading
 // whatever is missing, see fetch.go), loads them, and probes the model once
 // for its dimensionality. ctx bounds the downloads only; the returned
@@ -176,7 +229,12 @@ func New(ctx context.Context, cfg Config) (*Embedder, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Open(ctx, spec, Runtime{LibDir: cfg.LibDir, ManagedLibDir: cfg.ManagedLibDir, Threads: cfg.Threads, Logger: cfg.Logger})
+	return Open(ctx, spec, cfg.runtime())
+}
+
+// runtime is the Runtime a Config describes.
+func (cfg Config) runtime() Runtime {
+	return Runtime{LibDir: cfg.LibDir, ManagedLibDir: cfg.ManagedLibDir, Threads: cfg.Threads, Accel: cfg.Accel, GPULayers: cfg.GPULayers, Logger: cfg.Logger}
 }
 
 // Open prepares the libraries and the model described by spec (downloading
@@ -185,13 +243,6 @@ func New(ctx context.Context, cfg Config) (*Embedder, error) {
 // the downloads only; the returned Embedder outlives it and is released
 // with Close.
 func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
-	// This package logs to logger. rt.Logger itself goes to llama.cpp as
-	// given, so a nil one keeps llama.cpp's lines silenced on the C side
-	// instead of routing each through a Go callback only to discard it.
-	logger := rt.Logger
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
 	if spec.Name == "" {
 		return nil, errors.New("yzma: ModelSpec.Name is required")
 	}
@@ -205,29 +256,23 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("yzma: model %q: %w", spec.Name, err)
 	}
-	if rt.LibDir == "" {
-		return nil, errors.New("yzma: LibDir is required")
-	}
-	libDir, err := filepath.Abs(rt.LibDir)
-	if err != nil {
-		return nil, err
-	}
-	if rt.Threads <= 0 {
-		rt.Threads = defaultThreads()
-	}
 	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
-	if err := ensureLibs(ctx, libDir, rt.ManagedLibDir, logger); err != nil {
+	// This package logs to logger. rt.Logger itself goes to llama.cpp as
+	// given, so a nil one keeps llama.cpp's lines silenced on the C side
+	// instead of routing each through a Go callback only to discard it.
+	libDir, logger, err := rt.prepare(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if err := ensureModelFile(ctx, spec, logger); err != nil {
 		return nil, err
 	}
-	b, err := openLlama(api, libs, libDir, spec.File, rt.Threads, pooling, spec.MaxTokens, rt.Logger)
+	b, err := openLlama(api, libs, libDir, spec.File, rt.Threads, pooling, spec.MaxTokens, rt.Accel, rt.GPULayers, rt.Logger)
 	if err != nil {
 		return nil, err
 	}
-	logger.Info("llama.cpp loaded", logComponent, slog.String("dir", libDir), slog.String("version", libs.version), slog.Int("threads", rt.Threads), slog.String("model", spec.Name))
+	logger.Info("llama.cpp loaded", logComponent, slog.String("dir", libDir), slog.String("version", libs.version), slog.Int("threads", rt.Threads), slog.String("accel", b.accel), slog.String("model", spec.Name))
 	e, err := newEmbedder(b, spec.Name, spec.QueryPrefix, spec.DocumentPrefix)
 	if err != nil {
 		// the probe failed after the model and its context were created:

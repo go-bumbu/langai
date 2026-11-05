@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -103,37 +102,24 @@ func NewCompleter(ctx context.Context, cfg Config) (*Completer, error) {
 // the downloads only; the returned Completer outlives it and is released with
 // Close.
 func OpenCompleter(ctx context.Context, spec CompleterSpec, rt Runtime) (*Completer, error) {
-	logger := rt.Logger
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
 	if err := spec.validate(); err != nil {
 		return nil, err
 	}
-	if rt.LibDir == "" {
-		return nil, errors.New("yzma: LibDir is required")
-	}
-	libDir, err := filepath.Abs(rt.LibDir)
-	if err != nil {
-		return nil, err
-	}
-	if rt.Threads <= 0 {
-		rt.Threads = defaultThreads()
-	}
 	ctx, cancel := context.WithTimeout(ctx, completerDownloadTimeout)
 	defer cancel()
-	if err := ensureLibs(ctx, libDir, rt.ManagedLibDir, logger); err != nil {
+	libDir, logger, err := rt.prepare(ctx)
+	if err != nil {
 		return nil, err
 	}
 	asModel := ModelSpec{Name: spec.Name, File: spec.File, URL: spec.URL, SHA256: spec.SHA256, Size: spec.Size}
 	if err := ensureModelFile(ctx, asModel, logger); err != nil {
 		return nil, err
 	}
-	c, err := openCompleter(chatLib, libs, libDir, spec.File, spec, rt.Threads, rt.Logger)
+	c, err := openCompleter(chatLib, libs, libDir, spec.File, spec, rt.Threads, rt.Accel, rt.GPULayers, rt.Logger)
 	if err != nil {
 		return nil, err
 	}
-	logger.Info("llama.cpp loaded", logComponent, slog.String("dir", libDir), slog.String("version", libs.version), slog.Int("threads", rt.Threads), slog.String("model", spec.Name))
+	logger.Info("llama.cpp loaded", logComponent, slog.String("dir", libDir), slog.String("version", libs.version), slog.Int("threads", rt.Threads), slog.String("accel", c.accel), slog.String("model", spec.Name))
 	return c, nil
 }
 
@@ -142,8 +128,9 @@ func OpenCompleter(ctx context.Context, spec CompleterSpec, rt Runtime) (*Comple
 // (llama.go) is the real implementation; complete_test.go has a fake.
 type chatAPI interface {
 	runtimeAPI
-	// loadModel loads a GGUF file; a zero handle is an error.
-	loadModel(path string) (model uintptr, err error)
+	// loadModel loads a GGUF file with gpuLayers layers on the GPU (0: all
+	// on the CPU); a zero handle is an error.
+	loadModel(path string, gpuLayers int32) (model uintptr, err error)
 	freeModel(model uintptr)
 	nCtxTrain(model uintptr) int32
 	// newChatContext creates a generation context of nCtx tokens that takes
@@ -190,18 +177,24 @@ type Completer struct {
 	nCtx     int // tokens the context holds, the prompt and the reply together
 	batch    int // most tokens one decode takes
 	maxNew   int
-	closed   bool // set by Close and read by Complete, both under mu
+	accel    string // what runs the model, for the load log line
+	closed   bool   // set by Close and read by Complete, both under mu
 }
 
-// openCompleter loads the libraries (once, through rt) and the model, builds a
+// openCompleter loads the libraries (once, through rt) and the model, on the
+// GPU the accelerator resolves to (see resolveAccel) or the CPU, builds a
 // generation context for it and tries the chat template once, so that a name
 // llama.cpp does not know fails here and not at the first call. Whatever it
 // created is freed again when a later step fails.
-func openCompleter(api chatAPI, rt *runtimeLoader, libDir, modelPath string, spec CompleterSpec, threads int, logger *slog.Logger) (*Completer, error) {
+func openCompleter(api chatAPI, rt *runtimeLoader, libDir, modelPath string, spec CompleterSpec, threads int, accel Accel, gpuLayers int, logger *slog.Logger) (*Completer, error) {
 	if err := rt.load(api, libDir, logger); err != nil {
 		return nil, err
 	}
-	model, err := api.loadModel(modelPath)
+	layers, used, err := resolveAccel(accel, gpuLayers, rt.devices)
+	if err != nil {
+		return nil, err
+	}
+	model, err := api.loadModel(modelPath, layers)
 	if err != nil {
 		return nil, fmt.Errorf("load model %s: %w", modelPath, err)
 	}
@@ -227,6 +220,7 @@ func openCompleter(api chatAPI, rt *runtimeLoader, libDir, modelPath string, spe
 		nCtx:     min(nCtxGot, int(nCtx)),
 		batch:    min(batchGot, int(batch)),
 		maxNew:   cmp.Or(spec.MaxNewTokens, defaultMaxNewTokens),
+		accel:    used,
 	}
 	// a context or a batch of no tokens would hold no prompt, and feed would
 	// never advance
