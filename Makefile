@@ -23,6 +23,14 @@ test-models: ## run the real-model tests: the embedding smoke test and the golde
 test-gentags: ## run the tag Generator's real-model test: the chat model writes tags for golden documents, the embedding model scores them
 	@SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$(SEMSEARCH_YZMA_TEST_DIR) go test ./provider/yzma/ -run 'TestGenerateTags' -v -count=1 -timeout 0
 
+# The image tests download the pinned ONNX Runtime build (~11 MB) and the default image
+# model (~370 MB) into SEMSEARCH_ONNX_TEST_DIR on first run; the package is CGO and needs
+# a C compiler to build. SEMSEARCH_ONNX_MODEL=facebook/dinov2-base runs them on the other
+# pinned model (another ~350 MB).
+SEMSEARCH_ONNX_TEST_DIR ?= $(HOME)/.cache/semsearch-onnx
+test-images: ## run the real-model image tests: embeddings through ONNX Runtime and the media index end to end
+	@SEMSEARCH_MODELS=1 SEMSEARCH_ONNX_TEST_DIR=$(SEMSEARCH_ONNX_TEST_DIR) SEMSEARCH_ONNX_MODEL='$(SEMSEARCH_ONNX_MODEL)' go test ./provider/onnx/ -run 'TestEmbedImagesReal|TestMediaIndexReal' -v -count=1
+
 lint: ## run go linter
 	# depends on https://github.com/golangci/golangci-lint
 	@golangci-lint run

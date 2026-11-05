@@ -9,8 +9,10 @@ jobs:
       - uses: actions/checkout@v4
       ## sqlite-vec (vector/sqlitevec) is CGO and needs the system sqlite3.h
       ## to compile, so both `make test` and `make coverage` need it.
-      - name: Install libsqlite3-dev
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      ## media/ffmpeg's tests run the ffmpeg binary and skip without it,
+      ## which would leave the package under the coverage gate.
+      - name: Install libsqlite3-dev and ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev ffmpeg
       ## Setup GO
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -92,3 +94,25 @@ jobs:
           key: semsearch-yzma-${{ runner.os }}-${{ hashFiles('provider/yzma/fetch.go') }}
       - name: Run the real-model embedding and golden tagging tests
         run: make test-models
+
+  images-real:
+    # Runs the real ONNX Runtime + SigLIP 2 image tests: the embedding
+    # checks and the media index end to end (provider/onnx). The downloads
+    # are keyed by fetch.go and models.go, where the pins live, so a pin
+    # change refreshes the cache.
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+      - name: Cache the ONNX Runtime library and the model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/semsearch-onnx
+          key: semsearch-onnx-${{ runner.os }}-${{ hashFiles('provider/onnx/fetch.go', 'provider/onnx/models.go') }}
+      - name: Run the real-model image tests
+        run: make test-images

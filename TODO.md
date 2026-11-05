@@ -71,40 +71,42 @@ and `todo list --json` cover the common actions — run `todo --help`.
 
 ## image/vide
 
-- [ ] image to image proximity search
-  Embed the images themselves, no captions: the vectors go into the existing
-  Store and are ranked by cosine. langai.Embedder only takes text, so this
-  needs an image-input embedder next to it.
-  DINOv2 base (facebook/dinov2-base): Apache-2.0, 86.6M params, 768-d, 518 px
-  input, vision only. ONNX export: onnx-community/dinov2-base-ONNX.
-  SigLIP 2 base (google/siglip2-base-patch16-224): Apache-2.0, 0.4B with its
-  text half, so the same vectors also match text. ONNX export:
-  onnx-community/siglip2-base-patch16-224-ONNX.
-  Qwen3-VL-Embedding 2B also embeds images, see "text to image / video".
-  Image-only embedding output is not confirmed in llama.cpp, so yzma is not a
-  known route; the Go route is yalue/onnxruntime_go (MIT, needs cgo and the
-  onnxruntime shared library).
+- [x] image to image proximity search
+  Done: langai.ImageEmbedder, provider/onnx (ONNX Runtime through
+  yalue/onnxruntime_go, cgo; SigLIP 2 base pinned as the default, DINOv2 base
+  as the other pinned model) and search.MediaIndex over the existing Store.
   Not for a commercial app: OpenAI CLIP (card puts deployed use out of scope),
   DINOv3 (custom license, needs legal review).
-- [ ] video to vide proximiuty search
-  Same index as the text queries: embed the query clip, take the nearest video
-  vectors, drop the clip itself. Store has no get-vector-by-docID, so keep the
-  vector or embed the clip again. No video-to-video numbers found for
-  Qwen3-VL-Embedding; the video retrieval results found (its paper, the
-  Mixpeek blog) all use text queries.
-  Qwen3-VL-Embedding 2B: Apache-2.0, text, image and video in one space, video
-  sampled at 1 FPS up to 64 frames. Details under "text to image / video".
-  V-JEPA 2 ViT-L (facebook/vjepa2-vitl-fpc64-256): MIT, 0.3B, 64 frames, video
-  features only, no text side.
-  X-CLIP base (microsoft/xclip-base-patch32): MIT, ~0.2B, 8 frames at 224x224,
-  512-d, also matches text.
-  InternVideo2 (OpenGVLab/InternVideo2-Stage2_1B-224p-f4): Apache-2.0, slow.
-  Go runtime for V-JEPA 2, X-CLIP and InternVideo2 was not checked.
-  Cheapest start: sample frames and embed each with the image model (one Chunk
-  per frame, Seq = position). For exact near-duplicates, frame-level DINOv2 or
-  a perceptual hash fits better than a semantic model.
+- [x] video to vide proximiuty search
+  Done the cheap way: media/ffmpeg samples frames (scene cuts plus an
+  interval, or keyframes only), each is embedded with the image model as one
+  Chunk (Seq = milliseconds), and an item is scored by its best frame against
+  any query frame, so images and videos share one index and find each other.
+  Store still has no get-vector-by-docID, so a query that is itself indexed
+  comes back first and the caller drops its own id. Video-native models
+  (Qwen3-VL-Embedding 2B, V-JEPA 2, X-CLIP, InternVideo2) remain an option
+  for whole-clip matching; their Go runtime was not checked. For exact
+  near-duplicates DINOv2 or a perceptual hash fits better than SigLIP.
   Not for a commercial app: VideoMAE v2 (CC-BY-NC-4.0).
+- [ ] honour EXIF orientation when embedding JPEGs
+  Go's image/jpeg ignores the orientation tag, so a phone photo stored
+  rotated is embedded rotated and matches its upright video frames less. A
+  small APP1/TIFF parser for tag 0x0112 plus a rotate before embedding, in
+  search's decodeImage.
+- [ ] run provider/onnx on a GPU
+  The CUDA (gpu_cuda12 build, device_id) and CoreML paths are wired but were
+  only unit-tested with a fake session; the real-model tests ran on a CPU.
+  Check the CUDA provider loads, that batches speed up, and the yalue note on
+  CUDA overwriting Go's signal handlers (onnxruntime_go issue 140).
+- [ ] perceptual hash for exact and near-exact duplicates
+  A 64-bit dHash/pHash as a second, model-free ImageEmbedder (±1 per bit, so
+  cosine = 1 - 2·hamming/64 and the same Store works) for de-duplication
+  jobs that should not pay for a model.
 - [ ] text to image / video proximity search
+  Cheapest now: the SigLIP 2 text tower (text_model.onnx in the same
+  onnx-community repo, 1.1 GB fp32 / 283 MB int8) as a langai.Embedder in
+  provider/onnx, so a text query lands in the space MediaIndex already
+  stores; it needs the SentencePiece tokenizer (tokenizer.model, 4 MB) in Go.
   Qwen3-VL-Embedding 2B (Qwen/Qwen3-VL-Embedding-2B, arXiv 2601.04720):
   Apache-2.0, text, image, video and mixes in one space, so a text query ranks
   images and videos directly. 2048-d, can be cut down to 64..2048 (Matryoshka),
@@ -176,7 +178,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
 - [ ] text => new tags
   - kronk + LLM (Qwen3 4B Instruct) writes candidate tags
   - kronk + embedding model drops candidates too close to existing tags
-- [ ] image / video => proximity image / vide
+- [x] image / video => proximity image / vide
   - onnxruntime (cgo) + SigLIP 2 base; kronk can't embed images
   - video: ffmpeg samples frames, each embedded as an image; best frame wins
 - [ ] image / video => description

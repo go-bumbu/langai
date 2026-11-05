@@ -186,6 +186,35 @@ var (
 	sceneBlue = color.RGBA{40, 60, 200, 255}
 )
 
+// BenchmarkEmbedImagesReal times one picture through the real model, eight
+// per batch, with the default threads; it is the number the README quotes.
+// It skips unless the real-model tests are enabled (see realConfig).
+func BenchmarkEmbedImagesReal(b *testing.B) {
+	if os.Getenv("SEMSEARCH_MODELS") == "" || os.Getenv("SEMSEARCH_ONNX_TEST_DIR") == "" {
+		b.Skip("set SEMSEARCH_MODELS=1 and SEMSEARCH_ONNX_TEST_DIR to benchmark the real model")
+	}
+	dir := os.Getenv("SEMSEARCH_ONNX_TEST_DIR")
+	emb, err := New(context.Background(), Config{
+		ModelsDir: filepath.Join(dir, "models"), Model: os.Getenv("SEMSEARCH_ONNX_MODEL"),
+		LibDir: filepath.Join(dir, "onnxruntime", LibVersion), ManagedLibDir: true,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = emb.Close() }()
+	images := make([]image.Image, 8)
+	for i := range images {
+		images[i] = scene(1024, sceneRed, i*10)
+	}
+	b.ResetTimer()
+	for range b.N {
+		if _, err := emb.EmbedImages(context.Background(), images); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(b.Elapsed().Milliseconds())/float64(b.N*len(images)), "ms/image")
+}
+
 // encodePNG is what IndexImage and SearchImage read.
 func encodePNG(t *testing.T, img image.Image) *bytes.Buffer {
 	t.Helper()

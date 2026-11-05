@@ -1,27 +1,31 @@
 # langai
 
 Libraries that use language models, run locally: semantic search over your own
-documents, automatic tagging that learns from the tags people assign by hand, and
-tags written for a text. Nothing leaves the process: the models run in-process through
-llama.cpp.
+documents, image and video similarity search, automatic tagging that learns from the
+tags people assign by hand, and tags written for a text. Nothing leaves the process: the
+models run in-process through llama.cpp and ONNX Runtime.
 
 ## Packages
 
 | Package | What it does |
 |---|---|
-| `langai` | The ports: `Embedder` (embedding models), `Completer` (chat models) and the `Role` a text is embedded as. `LazyEmbedder` defers loading a model to its first use. |
-| `search` | Turns documents into embedding vectors and answers free-text queries with the closest ones: `Index` and the markdown-aware chunker. |
+| `langai` | The ports: `Embedder` (text embedding models), `ImageEmbedder` (image embedding models), `Completer` (chat models) and the `Role` a text is embedded as. `LazyEmbedder` defers loading a model to its first use. |
+| `search` | Turns documents into embedding vectors and answers free-text queries with the closest ones: `Index` and the markdown-aware chunker. `MediaIndex` does the same for pictures: it embeds images and the sampled frames of videos and answers an image or a video with the items that look most like it, across both kinds. |
+| `media` | The port for video input: `Sampler` turns a video file into the `Frame`s that stand for it. |
+| `media/ffmpeg` | `Sampler` over the ffmpeg and ffprobe binaries: the first frame, every scene cut and one frame per interval, scaled down, capped per video; or the keyframes only, for long videos. |
 | `tagging` | Tags for a text. `Tagger` suggests tags among the ones an application already has and learns from the tags people put on items by hand: each tag's vector blends its name with the items tagged with it, and each tag is judged against its own cutoff. It keeps the tags, items and hand-made links in a `Store`: `MemStore` (in memory), `tagging/sqlitestore` (SQLite) or `tagging/pgstore` (Postgres), the last two over plain tables with no extension. `Generator` writes tags with no list to start from: a chat model proposes them and the embedding model scores each against the text, so one cutoff means the same on every text. |
 | `vector` | The `Store` interface for search vectors, and `MemStore` (exact, in memory, for tests and evaluation). |
 | `vector/sqlitevec` | `Store` on SQLite with the sqlite-vec extension (CGO). |
 | `vector/pgvec` | `Store` on Postgres with pgvector. |
 | `provider/yzma` | `Embedder` that runs a GGUF sentence-embedding model, and `Completer` that runs a GGUF chat model (the one the `Generator` writes tags with), through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Downloads and verifies the pinned llama.cpp build and models on first use. |
+| `provider/onnx` | `ImageEmbedder` that runs an ONNX vision model through [ONNX Runtime](https://onnxruntime.ai) (CGO, via [onnxruntime_go](https://github.com/yalue/onnxruntime_go)): SigLIP 2 base by default, DINOv2 base as the other pinned model, any other through a `ModelSpec`. CPU by default, CUDA or CoreML by configuration. Downloads and verifies the pinned runtime build and model on first use. |
 | `eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. `make semeval` compares embedding models side by side on it. |
-| `langaitest` | `FakeEmbedder`, deterministic, for tests. |
+| `langaitest` | `FakeEmbedder` and `FakeImageEmbedder`, deterministic, for tests. |
 
 Every package stands alone and you only compile the dependencies of the packages you
 import: CGO and sqlite-vec come in only with `vector/sqlitevec`, pgvector only with
-`vector/pgvec`, llama.cpp only with `provider/yzma`.
+`vector/pgvec`, llama.cpp only with `provider/yzma`, CGO and ONNX Runtime only with
+`provider/onnx`, and the ffmpeg binary is only run by `media/ffmpeg`.
 
 ## Layout
 
@@ -31,7 +35,7 @@ not exist yet (see TODO.md).
 ```
 langai/                 the shared ports: Embedder, Completer, Role
 │
-├── search/             text → similar documents; planned: similar images and videos
+├── search/             text → similar documents; image or video → similar images and videos
 ├── tagging/            text → tags from your corpus (Tagger), text → new tags (Generator)
 │   ├── sqlitestore/    the Tagger's Store on SQLite
 │   ├── pgstore/        the Tagger's Store on Postgres
@@ -42,20 +46,21 @@ langai/                 the shared ports: Embedder, Completer, Role
 │
 ├── provider/           model runtimes; each implements some of the ports
 │   ├── yzma/           llama.cpp in process: text embeddings, chat model
+│   ├── onnx/           ONNX Runtime in process (CGO): SigLIP 2 and DINOv2 image embeddings
 │   ├── kronk/          planned: llama.cpp via kronk: embeddings, chat, vision, rerank
-│   ├── hugot/          planned: ONNX, SigLIP 2 image and text embeddings
 │   ├── openai/         planned: OpenAI-compatible HTTP, remote APIs or a kronk server
 │   └── cache/          planned: wraps any provider, caches by content hash
 ├── vector/             Store for search vectors, in-memory MemStore
 │   ├── sqlitevec/      SQLite with sqlite-vec (CGO)
 │   ├── pgvec/          Postgres with pgvector
 │   └── qdrant/         planned, if a dedicated vector database is needed
-├── media/              video input
-│   └── ffmpeg/         planned: video → keyframes via the ffmpeg binary
+├── media/              video input: the Sampler port and Frame
+│   └── ffmpeg/         video → frames via the ffmpeg binary
 │
 ├── eval/               golden-set evaluation of embedding models
 ├── langaitest/         fakes of the ports, for tests
-├── internal/           tablename: SQL table names; planned: rank, score roll-up
+├── internal/           tablename: SQL table names; fetch: verified downloads and release
+│                       archives for the providers; planned: rank, score roll-up
 └── examples/           planned: end-to-end wiring
 ```
 
@@ -98,6 +103,17 @@ go get github.com/go-bumbu/langai
   bindings mirror exactly that build's ABI. A module that imports `provider/yzma` must
   not require another yzma version: minimal version selection would hand these
   bindings to libraries they do not match.
+- **`provider/onnx`** is CGO and needs a C compiler to build (no ONNX Runtime headers:
+  the bindings carry their own). At runtime it needs the ONNX Runtime shared library:
+  a managed `LibDir` downloads the pinned CPU build (`onnx.LibVersion`, ~11 MB) on
+  linux/amd64, linux/arm64 and darwin/arm64. For **CUDA** set `Config.Provider` to
+  `onnx.ProviderCUDA`: a managed `LibDir` on linux/amd64 downloads the CUDA 12 build
+  (~450 MB), and the host needs CUDA 12 and cuDNN 9 installed; **CoreML** is built into
+  the macOS build. The bindings' headers target one runtime release, so keep
+  `onnxruntime_go` where this module pins it, as with yzma. The default model is a
+  ~370 MB download on first use, and a loaded process holds about 1 GB.
+- **`media/ffmpeg`** runs the `ffmpeg` and `ffprobe` binaries, 5.1 or newer, found on
+  PATH or named in its `Config`: `sudo apt-get install -y ffmpeg`.
 
 ## Use
 
@@ -137,6 +153,65 @@ emb := langai.NewLazyEmbedder(func() (langai.Embedder, error) {
 
 A failed load is cached and returned by every later call; `State` reports it, e.g. for
 a health endpoint.
+
+### Image and video search
+
+```go
+emb, err := onnx.New(ctx, onnx.Config{
+    ModelsDir:     "data/models",
+    LibDir:        filepath.Join("data", "onnxruntime", onnx.LibVersion), // named after the pinned build
+    ManagedLibDir: true,                                                  // download the pinned build into it
+    Provider:      onnx.ProviderCPU,                                      // or ProviderCUDA, ProviderCoreML
+})
+frames, err := ffmpeg.New(ffmpeg.Config{}) // scene cuts, one frame every 5 s, at most 64, 512 px
+store, err := sqlitevec.New(ctx, db, emb.Dimensions())
+
+// an image model's vectors get a collection of their own, never a text model's
+ix, err := search.NewMediaIndex(emb, store, "tenant-1", "space-7", "media",
+    search.WithSampler(frames), search.WithMediaMinScore(0.6))
+err = ix.IndexImage(ctx, "photo-42", file)             // JPEG, PNG, GIF, WebP, BMP, TIFF; a no-op while the bytes are unchanged
+err = ix.IndexVideo(ctx, "clip-7", "/media/clip-7.mp4") // one vector per sampled frame; a no-op while the file is unchanged
+hits, err := ix.SearchImage(ctx, file, 10)              // []search.MediaMatch: DocID, Score, At (the matching frame's time)
+hits, err := ix.SearchVideo(ctx, "/media/query.mp4", 10) // and QueryAt, the query frame that matched
+err = ix.Delete(ctx, "photo-42")
+```
+
+An image is one frame at time zero and a video the frames its `Sampler` picked, each
+embedded as an image into one vector space, so an image query finds videos and a video
+query finds images. A search embeds every query frame, asks the store for the closest
+frames of each and scores an item by its best frame, so a video is found by the one shot
+that resembles the query most; `At` says where in the video that is, and for a video
+query `QueryAt` which of its frames matched. An item that is the query itself comes back
+first with a score near 1, so drop your own id. `IndexFrames` and `SearchFrames` take
+frames you extracted yourself, with your own content hash; more image formats register
+through `image.RegisterFormat`.
+
+- **Models.** The default, `google/siglip2-base-patch16-224` (Apache-2.0, 768
+  dimensions), was trained with a text tower, so its vectors can later be matched by
+  text too; with it a resized or recompressed copy scores above 0.9 and an unrelated
+  picture well below. `onnx.DINOv2Model` (`facebook/dinov2-base`, Apache-2.0, 768
+  dimensions) has no text side and keeps instance-level detail, so it suits
+  near-duplicate matching: it puts unrelated pictures further apart. The two live in
+  different spaces: one model per collection, as `tagging` keeps one model per store.
+  `Open` runs any other ONNX vision model from a `ModelSpec` (tensor names, pooling,
+  input size, resize and normalization).
+- **Videos.** `ffmpeg.Config` sets the scene-change threshold (0.4), the shortest and
+  longest gap between frames (1 s and 5 s), the cap per video (64 frames, with the
+  shortest gap raised to `duration/64` so a cut-heavy video still yields about that
+  many) and the size frames are scaled to (512 px). Scene detection decodes every frame;
+  `KeyframesOnly` decodes only the encoder's keyframes, which sit at cuts and at a fixed
+  interval anyway, and makes hours of video cheap at the price of a coarser sample.
+- **Cost.** On a CPU with the default four threads the SigLIP 2 model embeds a
+  1024-pixel picture in about 100 ms, eight per batch (an AMD Ryzen AI 9 HX PRO 370,
+  `BenchmarkEmbedImagesReal`), and the process holds about 1.3 GB with the model
+  loaded; `Config.Threads` and `BatchSize` tune it, and CUDA takes batches. Indexing a
+  video costs its decode plus one embedding per frame. Embedding, the ffmpeg run and the
+  hash of a video all run per call; the background job that indexes decides how many run
+  at once.
+- **Limits.** Pictures are embedded as decoded: a JPEG whose EXIF orientation says to
+  rotate it is seen unrotated. There is no text-to-image search yet (the SigLIP 2 text
+  tower is a later provider). The CUDA and CoreML paths are wired but were not run on a
+  GPU in this release; the CPU path is what the real-model tests cover.
 
 ### Automatic tagging
 
@@ -311,9 +386,10 @@ keeps every metric, and the Makefile lists the other settings.
 ## Development
 
 ```
-make test          # go tests (the pgvector ones skip without TESTDBS_ALL=1 and Docker)
+make test          # go tests (the pgvector ones skip without TESTDBS_ALL=1 and Docker; the ffmpeg ones without ffmpeg)
 make test-models   # the real-model tests (downloads ~350 MB on first run)
 make test-gentags  # the tag Generator on the real models (adds the 2.5 GB chat model; minutes on a CPU)
+make test-images   # the real image-model tests: ONNX Runtime + SigLIP 2 (downloads ~380 MB on first run)
 make coverage      # per-package coverage gate (>= 70%), pgvector tests included
 make lint          # golangci-lint
 make license-check # go-licence-detector
