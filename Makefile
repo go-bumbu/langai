@@ -17,6 +17,12 @@ SEMSEARCH_YZMA_TEST_DIR ?= $(HOME)/.cache/semsearch-yzma
 test-models: ## run the real-model tests: the embedding smoke test and the golden-set quality floors
 	@SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$(SEMSEARCH_YZMA_TEST_DIR) go test -p 1 ./provider/yzma/ ./tagging/ -run 'TestEmbedAndRank|TestGoldenSet|TestGoldenTagging' -v -count=1
 
+# The vision model is ~2.7 GB on top of the above (the Qwen3-VL-Embedding GGUF and its
+# projector) and needs ffmpeg, so its real-model test has a target of its own. On a
+# machine with a GPU the provider installs the matching llama.cpp build into the cache.
+test-vision: ## run the vision embedder's real-model test: text, image and video segments in one space through libmtmd
+	@SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$(SEMSEARCH_YZMA_TEST_DIR) go test ./provider/yzma/ -run 'TestVisionReal' -v -count=1 -timeout 0
+
 # The chat model is ~2.5 GB on top of the above and a run takes minutes on a CPU, so
 # the tag Generator's real-model test has a target of its own. -timeout 0: the first run
 # downloads the model, and every golden document the model tags takes seconds.

@@ -28,7 +28,8 @@ func (ffiAPI) load(dir string, logger *slog.Logger) error {
 	if err := llama.Load(dir); err != nil {
 		return fmt.Errorf("load llama.cpp libraries from %s: %w (they need libgomp1 and libstdc++6 installed; libffi8 is required by the Go bindings)", dir, err)
 	}
-	llama.LogSet(logCallback(logger))
+	llamaLogCallback = logCallback(logger)
+	llama.LogSet(llamaLogCallback)
 	if err := llama.Init(); err != nil {
 		return fmt.Errorf("init llama.cpp backends from %s: %w", dir, err)
 	}
@@ -230,6 +231,10 @@ func (ffiAPI) tokenText(model uintptr, token int32) []byte {
 	}
 	return buf[:n]
 }
+
+// llamaLogCallback is the callback load installed for llama.cpp's log, which
+// libmtmd gets too when it is loaded later.
+var llamaLogCallback uintptr
 
 // logCallback forwards llama.cpp warnings and errors to logger. Everything
 // else (progress, model metadata dumps) is dropped: llama.cpp is chatty, and
