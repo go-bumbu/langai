@@ -61,7 +61,7 @@ langai/                 the shared ports: Embedder, Completer, Role
 ├── langaitest/         fakes of the ports, for tests
 ├── internal/           tablename: SQL table names; fetch: verified downloads and release
 │                       archives for the providers; planned: rank, score roll-up
-└── examples/           planned: end-to-end wiring
+└── examples/           the example service: a page per feature, media search first
 ```
 
 - **The root is the front door:** the shared ports and the capabilities (`search`,
@@ -382,6 +382,16 @@ run `make semeval SEMEVAL_ONLY=<its name>` once without a digest and paste the o
 prints. The dataset format is plain YAML, so an export of your own documents can be
 scored the same way (`make semeval SEMEVAL_DATASET=export.yaml`); `SEMEVAL_JSON=out.json`
 keeps every metric, and the Makefile lists the other settings.
+
+## Examples
+
+`examples/` is a single-user web service that exercises the features by hand,
+one page per feature. Media search is the first: `cd examples && make prepare`
+fetches sample photos and renders two slideshow clips, `make run` indexes them
+and serves a grid of thumbnails on http://127.0.0.1:8085/mediasearch/; click one
+to see the items that look like it with their scores, the frame of a video that
+matched and when, the frames the index saw of a video, and how long the search
+took; or search with a file of your own. See [examples/README.md](examples/README.md).
 
 ## Development
 

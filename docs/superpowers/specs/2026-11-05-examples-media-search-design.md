@@ -205,8 +205,9 @@ re-run; `make clean` removes only the index and the cache.
 ## Constraints
 
 - `make verify` stays green: `examples/mediasearch` is tested to the 70 %
-  coverage gate with fakes; `examples` (package main) has no tests and the gate
-  tolerates a package without tests.
+  coverage gate with fakes. `examples` (package main) has no tests, and since
+  Go reports a test-less package as 0 % under `-cover`, the coverage target
+  reports it as a command that wires the real model and leaves it ungated.
 - `make lint` passes with the repository's golangci-lint settings (gosec included:
   file paths come from the catalog, the server binds to localhost by default).
 - `examples/data/` is git-ignored at the root.

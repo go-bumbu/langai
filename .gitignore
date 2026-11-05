@@ -17,3 +17,6 @@ cover.html
 cover.out
 coverage.out
 .tokensave
+
+# the example service: sample media, index databases, thumbnail cache
+examples/data/
