@@ -182,19 +182,23 @@ emb, err := onnx.New(ctx, onnx.Config{
   = at most four), `BatchSize` (images per run, ≤ 0 = 8), `Logger`.
 - `ModelSpec` (like `yzma.ModelSpec`): `Name`, `File`, `URL`, `SHA256`,
   `Size`, `Input` (tensor name, default `pixel_values`), `Output` (default
-  `pooler_output`), `Size` (224), `Resize` (`squash` | `shortest-edge-crop`),
-  `ShortestEdge` (256 for the crop mode), `Mean`, `Std` (per channel),
-  `Interpolation` (`bilinear` | `bicubic`), `Dims`. `Spec(name, modelsDir)`
-  returns the pinned ones; `Open(ctx, spec, Runtime)` runs any.
+  `pooler_output`), `Pooling` (`none` for an output that is the vectors,
+  `cls` or `mean` for a token sequence `[n, tokens, Dims]`), `Side` (224),
+  `Resize` (`squash` | `crop`), `ShortestEdge` (256 for the crop mode),
+  `Mean`, `Std` (per channel), `Interpolation` (`bilinear` | `bicubic`),
+  `Dims`. `Spec(name, modelsDir)` returns the pinned ones; `Open(ctx, spec,
+  Runtime)` runs any.
 - Pinned models (digests from Hugging Face LFS metadata, files from the
   `onnx-community` Optimum exports):
   - `google/siglip2-base-patch16-224` (default): `vision_model.onnx`, fp32,
-    371,807,752 bytes, squash to 224, bilinear, mean/std 0.5, 768-d.
-    Apache-2.0. Its vectors share a space with the text tower, so text
-    queries can be added later.
-  - `facebook/dinov2-base`: `model.onnx`, fp32, 346,608,174 bytes, shortest
-    edge 256 then centre crop 224, bicubic, ImageNet mean/std, 768-d.
-    Apache-2.0. Better for instance-level and near-duplicate matching.
+    371,807,752 bytes, `pooler_output`, squash to 224, bilinear, mean/std
+    0.5, 768-d. Apache-2.0. Its vectors share a space with the text tower,
+    so text queries can be added later.
+  - `facebook/dinov2-base`: `model.onnx`, fp32, 346,608,174 bytes; the
+    export has no pooler output, so the class token of `last_hidden_state`
+    is taken (`Pooling: cls`); shortest edge 256 then centre crop 224,
+    bicubic, ImageNet mean/std, 768-d. Apache-2.0. Better for instance-level
+    and near-duplicate matching.
 - Pinned runtime: ONNX Runtime 1.31.1 (`LibVersion`), the version
   `onnxruntime_go v1.38.0`'s headers target. Managed `LibDir` downloads the
   CPU build for linux/amd64, linux/arm64 and darwin/arm64, or the
@@ -212,8 +216,13 @@ emb, err := onnx.New(ctx, onnx.Config{
 - Session: `NewDynamicAdvancedSession(file, [Input], [Output], opts)`; output
   dims read from `GetInputOutputInfo` and checked against `spec.Dims`; input
   and output names checked too, with the model's names in the error. One
-  `Run` per batch; vectors normalized with `vector.Normalize`. Runs are
+  `Run` per batch with a runtime-allocated output, whose shape decides the
+  pooling in Go; vectors normalized with `vector.Normalize`. Runs are
   serialized with a mutex.
+- The verified download and the tarball extraction are shared with
+  `provider/yzma` through `internal/fetch` (mechanism without domain
+  knowledge, second consumer), which `provider/yzma/fetch.go` now wraps
+  with its own pins, logging and error texts unchanged.
 - Providers: CPU (nothing appended), CUDA (`AppendExecutionProviderCUDA` with
   `device_id`), CoreML (`AppendExecutionProviderCoreMLV2`). Untested on a GPU
   in this build; the CPU path is tested with the real model.
