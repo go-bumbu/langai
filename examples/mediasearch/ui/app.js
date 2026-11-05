@@ -60,7 +60,6 @@
       el('img', { src: 'thumb/' + enc(it.id), loading: 'lazy', alt: it.name }),
       it.kind === 'video' ? el('span', { class: 'badge video' }, 'video') : null,
       it.error ? el('span', { class: 'badge error', title: it.error }, 'failed') : null,
-      it.skipped ? el('span', { class: 'badge skipped', title: 'unchanged since the previous scan: the index call was a no-op' }, 'unchanged') : null,
       el('div', { class: 'name' }, it.name));
     c.dataset.id = it.id;
     return c;
@@ -80,7 +79,7 @@
     if (it.kind === 'video') jobs.push(api('api/frames/' + enc(id)).catch((e) => ({ error: e.message })));
     try {
       const [res, board] = await Promise.all(jobs);
-      detail.replaceChildren(preview(it), facts(it), board ? storyboard(it, board) : null, hits(res, it));
+      detail.replaceChildren(...[preview(it), facts(it), board ? storyboard(it, board) : null, hits(res, it)].filter(Boolean));
     } catch (e) {
       detail.replaceChildren(preview(it), facts(it), el('p', { class: 'error' }, e.message));
     }
@@ -89,7 +88,7 @@
   function preview(it, src) {
     const url = src || 'file/' + enc(it.id);
     const node = it.kind === 'video'
-      ? el('video', { src: url, controls: '', preload: 'metadata', id: 'preview' })
+      ? el('video', { src: url, controls: '', preload: 'metadata', id: 'preview', poster: src ? null : 'thumb/' + enc(it.id) })
       : el('img', { src: url, alt: it.name });
     return el('div', { class: 'preview' }, node);
   }
