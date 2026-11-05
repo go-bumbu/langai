@@ -49,8 +49,9 @@ slideshow() { # slideshow <out> <photo>...
 	for ((i = 0; i < n; i++)); do filter+="[$i:v]scale=640:480:force_original_aspect_ratio=decrease,pad=640:480:-1:-1,setsar=1,fps=25[v$i];"; done
 	for ((i = 0; i < n; i++)); do filter+="[v$i]"; done
 	filter+="concat=n=$n:v=1:a=0[v]"
-	# the native mpeg4 encoder: no libx264 needed
-	ffmpeg -v error -y "${args[@]}" -filter_complex "$filter" -map "[v]" -c:v mpeg4 -q:v 3 -pix_fmt yuv420p "$out"
+	# the native mpeg4 encoder: no libx264 needed; faststart puts the index first, so the
+	# file plays from a pipe and the browser starts it sooner
+	ffmpeg -v error -y "${args[@]}" -filter_complex "$filter" -map "[v]" -c:v mpeg4 -q:v 3 -pix_fmt yuv420p -movflags +faststart "$out"
 }
 
 echo "clips into $clips"

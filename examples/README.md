@@ -28,8 +28,11 @@ Settings, as environment variables or `make run MODEL=facebook/dinov2-base`:
 | `MEDIA_DIR` | `data/media` | the directory scanned, recursively; dot-directories are skipped |
 | `DATA_DIR` | `data` | the index database, the catalog and the thumbnail cache |
 | `MODELS_DIR` | `~/.cache/semsearch-onnx` | models and runtime |
-| `MODEL` | `google/siglip2-base-patch16-224` | or `facebook/dinov2-base`; each model gets a database of its own |
-| `PROVIDER` | `cpu` | `cuda` or `coreml` to run the model on a GPU |
+| `MODEL` | `google/siglip2-base-patch16-224` | `facebook/dinov2-base` (also ONNX, videos as frames) or `qwen3vl` (Qwen3-VL-Embedding-2B through llama.cpp: text, images and videos as segments in one space); each model gets a database of its own |
+| `PROVIDER` | `cpu` | `cuda` or `coreml` to run an ONNX model on a GPU |
+| `ACCEL` | auto | what runs the GGUF model: empty picks a GPU when the machine has one (Vulkan, CUDA, Metal), `cpu`, `vulkan`, `cuda` or `metal` require it |
+| `SEGMENT` | `20s` | how much of a video the vision model sees at once |
+| `LLAMA_DIR` | `~/.cache/semsearch-yzma` | the GGUF files and the llama.cpp build, shared with `make test-vision` |
 | `MIN_SCORE` | `0` | hits below it are dropped; 0 shows everything, which is what a debug view wants |
 | `LIMIT` | `12` | hits per search |
 | `ADDR` | `127.0.0.1:8085` | listen address |
@@ -62,6 +65,20 @@ models stay.
   many hits came back and how long the search took, and the header line says
   which model, how many dimensions, which provider, the floor and what the
   last scan did.
+
+### With the vision model
+
+`make run MODEL=qwen3vl` switches to Qwen3-VL-Embedding-2B (a 2.7 GB download on first
+run, into `LLAMA_DIR`). The header shows what runs it (`Vulkan0: AMD Radeon 890M
+Graphics` or `cpu`) and the segment length, a **search by text** box appears, and the
+scores read differently: unrelated items sit near 0.1 instead of 0.7, a description
+against its picture around 0.65. Videos are indexed as segments, so a hit says
+*matched in the segment at 20.00 s* and the storyboard labels each sampled frame with
+its segment; the clip is one vector per segment, which is what lets "a black dog" find
+the clip and what makes a clip's score against one of its photos lower (about 0.5 for
+a four-shot slideshow) than the frame route's. Expect about 1.5 s per photo on the
+laptop's iGPU and 7 s on the CPU, so a large library takes a while the first time;
+later runs skip unchanged files.
 
 ## How it is built
 

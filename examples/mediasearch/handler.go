@@ -31,6 +31,7 @@ func Handler(l *Library) http.Handler {
 	mux.HandleFunc("GET /api/items", h.items)
 	mux.HandleFunc("GET /api/similar/{id...}", h.similar)
 	mux.HandleFunc("POST /api/search", h.search)
+	mux.HandleFunc("GET /api/text", h.text)
 	mux.HandleFunc("POST /api/rescan", h.rescan)
 	mux.HandleFunc("GET /api/frames/{id...}", h.frames)
 	mux.HandleFunc("GET /thumb/{id...}", h.thumb)
@@ -109,6 +110,20 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = file.Close() }()
 	res, err := h.lib.Search(r.Context(), header.Filename, file, limitOf(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *handler) text(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "query parameter \"q\" missing"})
+		return
+	}
+	res, err := h.lib.SearchText(r.Context(), q, limitOf(r))
 	if err != nil {
 		writeError(w, err)
 		return

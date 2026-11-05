@@ -64,8 +64,15 @@ type Config struct {
 type Info struct {
 	Model      string  `json:"model"`
 	Dimensions int     `json:"dimensions"`
-	Provider   string  `json:"provider"`
+	Provider   string  `json:"provider"` // what runs the model: an ONNX provider, or "cpu" or a GPU device for a GGUF model
 	MinScore   float64 `json:"minScore"`
+	// Mode says how videos are indexed: "frames" (sampled frames through an
+	// image model) or "segments" (whole stretches through a video model).
+	Mode string `json:"mode"`
+	// SegmentMs is the segment length in milliseconds in the segments mode.
+	SegmentMs int64 `json:"segmentMs"`
+	// Text says whether text queries work (the model has a text side).
+	Text bool `json:"text"`
 }
 
 // Item is one file of the media directory.

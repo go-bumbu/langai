@@ -34,7 +34,14 @@ header h1 { font-size: 16px; margin: 0; font-weight: 600; }
 .home:hover { color: var(--text); }
 .info { color: var(--muted); font-size: 12px; flex: 1; min-width: 200px; }
 .info b { color: var(--text); font-weight: 500; }
-.actions { display: flex; gap: 8px; }
+.actions { display: flex; gap: 8px; align-items: center; }
+.textsearch { display: flex; gap: 4px; }
+.textsearch[hidden] { display: none; }
+.textsearch input {
+  background: #15171a; border: 1px solid var(--line); color: var(--text);
+  padding: 6px 10px; border-radius: 6px; font: inherit; width: 220px;
+}
+.textsearch input:focus { outline: none; border-color: var(--accent); }
 .button {
   background: #2a2f37;
   border: 1px solid var(--line);

@@ -2,6 +2,7 @@ package mediasearch
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -9,6 +10,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/langai/search"
+	"github.com/go-bumbu/langai/vector"
 )
 
 func serve(t *testing.T) (*fixture, *httptest.Server) {
@@ -168,4 +173,32 @@ func TestHandler_SearchUploadAndRescan(t *testing.T) {
 		t.Errorf("rescan while scanning: %d", resp.StatusCode)
 	}
 	f.lib.scanning.Store(false)
+}
+
+// TestHandler_TextSearch: a text query goes through the index's text
+// embedder; without the query parameter it is a 400, without a text
+// embedder a 500 naming the option.
+func TestHandler_TextSearch(t *testing.T) {
+	_, srv := serve(t)
+	status, body, _ := get(t, srv.URL+"/api/text?q=green&limit=2")
+	var res Result
+	decode(t, body, &res)
+	ids := map[string]bool{}
+	for _, h := range res.Hits {
+		ids[h.Item.ID] = true
+	}
+	// the green-and-blue photo and the clip's green-and-blue frame, the red
+	// ones left behind
+	if status != 200 || res.Text != "green" || len(res.Hits) != 2 || !ids["sub dir/green blue.png"] || !ids["clip.mp4"] {
+		t.Errorf("text: %d %+v", status, res)
+	}
+	if status, _, _ := get(t, srv.URL+"/api/text"); status != 400 {
+		t.Errorf("no q: %d", status)
+	}
+	f := newFixture(t) // no text embedder on this one
+	ix, _ := search.NewMediaIndex(langaitest.FakeImageEmbedder{}, vector.NewMemStore(), "i", "p", "c")
+	f.lib.cfg.Index = ix
+	if _, err := f.lib.SearchText(context.Background(), "green", 0); err == nil || !strings.Contains(err.Error(), "WithTextEmbedder") {
+		t.Errorf("no text embedder: %v", err)
+	}
 }

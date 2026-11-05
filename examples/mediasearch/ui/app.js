@@ -41,14 +41,21 @@
     return body;
   };
 
+  let info = {};
   async function loadInfo() {
     const d = await api('api/info');
+    info = d.info;
     const scan = d.lastScan && d.lastScan.at && !d.lastScan.at.startsWith('0001')
       ? ` · scan ${ms(d.lastScan.elapsedMs)}: ${d.lastScan.indexed} indexed, ${d.lastScan.skipped} unchanged, ${d.lastScan.failed} failed, ${d.lastScan.removed} removed`
       : '';
-    infoEl.innerHTML = `<b>${d.info.model}</b> · ${d.info.dimensions} dims · ${d.info.provider} · min score ${d.info.minScore} · limit ${d.limit}<br>` +
+    const videos = info.mode === 'segments' ? `videos as ${ms(info.segmentMs)} segments` : 'videos as sampled frames';
+    infoEl.innerHTML = `<b>${info.model}</b> · ${info.dimensions} dims · ${info.provider} · ${videos} · min score ${info.minScore} · limit ${d.limit}<br>` +
       `<b>${d.images}</b> images, <b>${d.videos}</b> videos in ${d.dir}${scan}`;
+    $('#textsearch').hidden = !info.text;
   }
+
+  // segmentOf names the segment a time falls in, in the segments mode
+  const segmentOf = (t) => info.mode === 'segments' && info.segmentMs > 0 ? ` · segment ${Math.floor(t / info.segmentMs) + 1}` : '';
 
   async function loadItems() {
     items = await api('api/items');
@@ -107,10 +114,13 @@
     if (board.error) return el('div', { class: 'board' }, el('h3', {}, 'frames the index saw'), el('p', { class: 'error' }, board.error));
     const scale = 90 / board.cellH;
     const cells = el('div', { class: 'cells' }, ...board.times.map((t) =>
-      el('div', { class: 'cell', style: `width:${board.cellW * scale}px`, title: 'seek to ' + ms(t), onclick: () => seek(t) },
-        el('span', {}, ms(t)))));
+      el('div', { class: 'cell', style: `width:${board.cellW * scale}px`, title: 'seek to ' + ms(t) + segmentOf(t), onclick: () => seek(t) },
+        el('span', {}, ms(t) + segmentOf(t).replace(' · segment ', ' s')))));
+    const title = info.mode === 'segments'
+      ? `sampled frames (${board.times.length}); the index saw ${ms(info.segmentMs)} segments`
+      : `frames the index saw (${board.times.length})`;
     return el('div', { class: 'board' },
-      el('h3', {}, `frames the index saw (${board.times.length})`),
+      el('h3', {}, title),
       el('div', { class: 'strip', style: `width:${board.cellW * scale * board.times.length}px` },
         el('img', { src: 'storyboard/' + enc(it.id), alt: 'storyboard' }), cells));
   }
@@ -128,17 +138,18 @@
     if (!res.hits.length) list.append(el('p', { class: 'hint' }, 'nothing above the min score'));
     for (const h of res.hits) {
       const times = [];
+      const segments = info.mode === 'segments';
       if (h.item.kind === 'video') {
-        times.push('matched at ');
+        times.push(segments ? 'matched in the segment at ' : 'matched at ');
         times.push(h.self || (query && h.item.id === query.id)
           ? el('a', { href: '#', onclick: (e) => { e.preventDefault(); seek(h.atMs); } }, ms(h.atMs))
           : ms(h.atMs));
       }
       if (query && query.kind === 'video') {
-        times.push((times.length ? ' · ' : '') + 'query frame ');
+        times.push((times.length ? ' · ' : '') + (segments ? 'query segment at ' : 'query frame '));
         times.push(el('a', { href: '#', onclick: (e) => { e.preventDefault(); seek(h.queryAtMs); } }, ms(h.queryAtMs)));
       }
-      if (res.frames > 1 && !query) times.push('query frame ' + ms(h.queryAtMs));
+      if (res.frames > 1 && !query) times.push((segments ? 'query segment at ' : 'query frame ') + ms(h.queryAtMs));
       list.append(el('div', { class: 'hit' + (h.self ? ' self' : ''), onclick: () => open(h.item.id) },
         el('img', { src: 'thumb/' + enc(h.item.id), loading: 'lazy', alt: '' }),
         el('div', { class: 'meta' },
@@ -166,6 +177,21 @@
     }
   }
 
+  async function searchText(q) {
+    mark(null);
+    detail.replaceChildren(el('p', { class: 'hint' }, `searching for “${q}”…`));
+    try {
+      const res = await api('api/text?q=' + encodeURIComponent(q));
+      const f = el('div', { class: 'facts' }, el('span', {}, 'text'), el('b', {}, q));
+      const list = hits(res, null);
+      list.querySelector('.summary').textContent = `text embedded, ${res.hits.length} hits in ${res.elapsedMs} ms`;
+      detail.replaceChildren(f, list);
+    } catch (e) {
+      detail.replaceChildren(el('p', { class: 'error' }, e.message));
+    }
+  }
+
+  $('#textsearch').addEventListener('submit', (e) => { e.preventDefault(); const q = $('#q').value.trim(); if (q) searchText(q); });
   $('#upload').addEventListener('change', (e) => { if (e.target.files[0]) upload(e.target.files[0]); e.target.value = ''; });
   $('#rescan').addEventListener('click', async (e) => {
     e.target.disabled = true;

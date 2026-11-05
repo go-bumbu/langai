@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/go-bumbu/langai/media"
 	"github.com/go-bumbu/langai/search"
 )
 
@@ -30,8 +31,11 @@ type Hit struct {
 
 // Result is what a search returns.
 type Result struct {
-	// Query is the catalog item searched with; nil for an uploaded file.
+	// Query is the catalog item searched with; nil for an uploaded file or
+	// a text.
 	Query *Item `json:"query,omitempty"`
+	// Text is the query text, for a text search.
+	Text string `json:"text,omitempty"`
 	// Frames is how many query frames were embedded: 1 for an image.
 	Frames    int   `json:"frames"`
 	ElapsedMs int64 `json:"elapsedMs"`
@@ -101,6 +105,19 @@ func (l *Library) Search(ctx context.Context, name string, r io.Reader, limit in
 	return Result{}, ErrUnsupported
 }
 
+// SearchText returns the items that look most like what the text describes;
+// it needs a model with a text side (see Info.Text).
+func (l *Library) SearchText(ctx context.Context, text string, limit int) (Result, error) {
+	start := time.Now()
+	hits, err := l.cfg.Index.SearchText(ctx, text, l.limit(limit))
+	if err != nil {
+		return Result{}, err
+	}
+	r := l.result(hits, 1, start)
+	r.Text = text
+	return r, nil
+}
+
 func (l *Library) searchImage(ctx context.Context, r io.Reader, limit int) (Result, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -114,7 +131,19 @@ func (l *Library) searchImage(ctx context.Context, r io.Reader, limit int) (Resu
 	return l.result(hits, 1, start), nil
 }
 
+// searchVideo searches with a video the way the index embeds videos: as
+// segments through the index's video embedder in the segments mode (Frames
+// is then the segment count, from the video's duration), otherwise as the
+// sampled frames.
 func (l *Library) searchVideo(ctx context.Context, path string, limit int) (Result, error) {
+	if l.cfg.Info.Mode == "segments" {
+		start := time.Now()
+		hits, err := l.cfg.Index.SearchVideo(ctx, path, l.limit(limit))
+		if err != nil {
+			return Result{}, err
+		}
+		return l.result(hits, l.segmentCount(ctx, path), start), nil
+	}
 	if l.cfg.Sampler == nil {
 		return Result{}, errors.New("mediasearch: no sampler: videos cannot be searched")
 	}
@@ -128,6 +157,21 @@ func (l *Library) searchVideo(ctx context.Context, path string, limit int) (Resu
 		return Result{}, err
 	}
 	return l.result(hits, len(frames), start), nil
+}
+
+// segmentCount is how many segments a video is, when the Sampler can
+// measure it; 0 when it cannot.
+func (l *Library) segmentCount(ctx context.Context, path string) int {
+	c, ok := l.cfg.Sampler.(media.Cutter)
+	if !ok || l.cfg.Info.SegmentMs <= 0 {
+		return 0
+	}
+	d, err := c.Duration(ctx, path)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	segment := time.Duration(l.cfg.Info.SegmentMs) * time.Millisecond
+	return int((d + segment - 1) / segment)
 }
 
 func (l *Library) limit(limit int) int {

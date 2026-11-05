@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-bumbu/langai"
 	"github.com/go-bumbu/langai/langaitest"
 	"github.com/go-bumbu/langai/media"
 	"github.com/go-bumbu/langai/search"
@@ -121,7 +122,7 @@ func newFixture(t *testing.T) *fixture {
 		"clip.mp4": {{Image: pic(64, 48, red2, red2), At: 0}, {Image: pic(64, 48, green2, blue2), At: 2 * time.Second}},
 	}}
 	emb := &countingEmbedder{}
-	ix, err := search.NewMediaIndex(emb, vector.NewMemStore(), "examples", "local", "media", search.WithSampler(sampler))
+	ix, err := search.NewMediaIndex(emb, vector.NewMemStore(), "examples", "local", "media", search.WithSampler(sampler), search.WithTextEmbedder(colourText{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,4 +292,19 @@ func TestKindOf(t *testing.T) {
 			t.Errorf("kindOf(%q) = %q, want %q", name, got, want)
 		}
 	}
+}
+
+// colourText is a text Embedder in the fake image space: a text names a
+// colour and embeds as a picture of it, so text search can be tested.
+type colourText struct{ emb langaitest.FakeImageEmbedder }
+
+func (c colourText) Dimensions() int { return c.emb.Dimensions() }
+
+func (c colourText) Embed(ctx context.Context, _ langai.Role, texts []string) ([][]float32, error) {
+	images := make([]image.Image, len(texts))
+	for i, t := range texts {
+		col := map[string]color.RGBA{"red": red, "green": green, "blue": blue}[t]
+		images[i] = pic(32, 24, col, col)
+	}
+	return c.emb.EmbedImages(ctx, images)
 }
