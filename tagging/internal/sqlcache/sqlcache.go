@@ -10,12 +10,16 @@
 package sqlcache
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -64,11 +68,15 @@ var _ tagging.EmbeddingCache = (*Cache)(nil)
 
 // New returns a Cache that keeps its table in db, in the SQL of d, creating the
 // table if it is missing. now is the clock the last-used times come from;
-// tests inject theirs. It does not look at the database, which its caller knows
-// how to check.
+// tests inject theirs; a nil one is refused rather than left to panic on the
+// first Put. It does not look at the database, which its caller knows how to
+// check.
 func New(ctx context.Context, db *sql.DB, d Dialect, now func() time.Time) (*Cache, error) {
-	if db == nil {
+	switch {
+	case db == nil:
 		return nil, errors.New("nil database handle")
+	case now == nil:
+		return nil, errors.New("nil clock")
 	}
 	c := &Cache{db: db, d: d, now: now}
 	for _, st := range []string{
@@ -189,7 +197,9 @@ func (c *Cache) touch(ctx context.Context, index string, g group, stale [][]byte
 }
 
 // Put implements tagging.EmbeddingCache. It stores every vector in one
-// transaction, so a failure leaves none of them.
+// transaction, so a failure leaves none of them, upserting them in the order of
+// the primary key (see keyOrder), so concurrent Puts of the same keys do not
+// deadlock.
 func (c *Cache) Put(ctx context.Context, index string, vecs map[tagging.CacheKey][]float32) error {
 	if index == "" {
 		return errEmptyIndex
@@ -214,12 +224,22 @@ func (c *Cache) Put(ctx context.Context, index string, vecs map[tagging.CacheKey
 		return err
 	}
 	defer func() { _ = stmt.Close() }()
-	for k, v := range vecs {
-		if _, err := stmt.ExecContext(ctx, index, k.Model, int64(k.Role), k.Hash[:], encode(v), now); err != nil {
+	for _, k := range keyOrder(vecs) {
+		if _, err := stmt.ExecContext(ctx, index, k.Model, int64(k.Role), k.Hash[:], encode(vecs[k]), now); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// keyOrder returns the keys of vecs in the order of the primary key within one
+// index: model, role, hash. Two Puts of overlapping keys then lock their rows in
+// the same order, so the second waits for the first instead of deadlocking
+// with it, as they do in Go's random map order on Postgres.
+func keyOrder(vecs map[tagging.CacheKey][]float32) []tagging.CacheKey {
+	return slices.SortedFunc(maps.Keys(vecs), func(a, b tagging.CacheKey) int {
+		return cmp.Or(strings.Compare(a.Model, b.Model), cmp.Compare(a.Role, b.Role), bytes.Compare(a.Hash[:], b.Hash[:]))
+	})
 }
 
 // DeleteIndex implements tagging.EmbeddingCache.

@@ -8,8 +8,10 @@
 //
 //	db, err := sql.Open("pgx", "postgres://user:password@localhost:5432/app")
 //
-// Several goroutines can write at once with no special setup: a Put is one
-// transaction of independent upserts.
+// Several goroutines, or processes, can write at once with no special setup: a
+// Put is one transaction of upserts made in one fixed order of the keys (model,
+// role, hash), so two Puts of overlapping keys lock their rows in the same
+// order and the second waits for the first instead of deadlocking with it.
 package pgcache
 
 import (

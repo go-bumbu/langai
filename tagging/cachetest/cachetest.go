@@ -57,6 +57,7 @@ func Run(t *testing.T, newCache func(t *testing.T) tagging.EmbeddingCache) {
 		{"PruneDeletesUnused", pruneDeletesUnused},
 		{"LargeBatchesRoundTrip", largeBatchesRoundTrip},
 		{"ConcurrentPutsAllLand", concurrentPutsAllLand},
+		{"OverlappingConcurrentPutsAllLand", overlappingConcurrentPutsAllLand},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.run(t, newCache(t)) })
@@ -264,6 +265,45 @@ func concurrentPutsAllLand(t *testing.T, c tagging.EmbeddingCache) {
 	}
 	if got := get(t, c, idx, keys...); len(got) != writers*each {
 		t.Errorf("got %d entries, want %d", len(got), writers*each)
+	}
+}
+
+// overlappingConcurrentPutsAllLand: writers that put the same large set of keys
+// at once, as two processes rebuilding one space do, all succeed, round after
+// round: a SQL backend that locks the rows of a Put in no fixed order
+// deadlocks here.
+func overlappingConcurrentPutsAllLand(t *testing.T, c tagging.EmbeddingCache) {
+	const rounds, writers, n = 5, 8, 200
+	vecs := make(map[tagging.CacheKey][]float32, n)
+	keys := make([]tagging.CacheKey, 0, n)
+	for i := range n {
+		k := tagging.KeyFor("m", langai.RoleQuery, strconv.Itoa(i))
+		vecs[k] = []float32{float32(i), 1}
+		keys = append(keys, k)
+	}
+	for round := range rounds {
+		index := idx + strconv.Itoa(round)
+		var wg sync.WaitGroup
+		errs := make(chan error, writers)
+		for range writers {
+			wg.Go(func() { errs <- c.Put(context.Background(), index, vecs) })
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: Put: %v", round, err)
+			}
+		}
+		got := get(t, c, index, keys...)
+		if len(got) != n {
+			t.Fatalf("round %d: got %d entries, want %d", round, len(got), n)
+		}
+		for k, want := range vecs {
+			if !reflect.DeepEqual(got[k], want) {
+				t.Fatalf("round %d: entry %x = %v, want %v", round, k.Hash[:4], got[k], want)
+			}
+		}
 	}
 }
 
