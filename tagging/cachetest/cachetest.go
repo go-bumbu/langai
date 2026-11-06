@@ -46,6 +46,7 @@ func Run(t *testing.T, newCache func(t *testing.T) tagging.EmbeddingCache) {
 	}{
 		{"VectorsRoundTrip", vectorsRoundTrip},
 		{"MissingKeysAreAbsent", missingKeysAreAbsent},
+		{"EmptyKeysReturnEmpty", emptyKeysReturnEmpty},
 		{"PutReplaces", putReplaces},
 		{"KeysDifferByModelAndRole", keysDifferByModelAndRole},
 		{"IndexesAreIsolated", indexesAreIsolated},
@@ -263,5 +264,16 @@ func concurrentPutsAllLand(t *testing.T, c tagging.EmbeddingCache) {
 	}
 	if got := get(t, c, idx, keys...); len(got) != writers*each {
 		t.Errorf("got %d entries, want %d", len(got), writers*each)
+	}
+}
+
+// emptyKeysReturnEmpty: a Get of no keys is an empty answer, not an error, for
+// a nil slice as for an empty one.
+func emptyKeysReturnEmpty(t *testing.T, c tagging.EmbeddingCache) {
+	for name, keys := range map[string][]tagging.CacheKey{"nil": nil, "empty": {}} {
+		got, err := c.Get(context.Background(), idx, keys)
+		if err != nil || len(got) != 0 {
+			t.Errorf("Get with %s keys = %v, %v; want empty, nil", name, got, err)
+		}
 	}
 }
