@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/go-bumbu/langai"
 	"github.com/go-bumbu/langai/langaitest"
@@ -275,6 +275,41 @@ func TestEngine_EmbedderErrorFailsAndRetries(t *testing.T) {
 	}
 }
 
+// TestEngine_FailureInAChunkedTextKeepsWhatWasEmbedded: a long member failing
+// loses neither the batch of short ones embedded before it nor a long one that
+// came first: the error wraps ErrNotRebuilt, and the retry embeds only the text
+// that failed.
+func TestEngine_FailureInAChunkedTextKeepsWhatWasEmbedded(t *testing.T) {
+	const (
+		short   = "Short bread"
+		earlier = "A long pastry recipe that goes on past the chunk size"
+		failing = "A long croissant recipe that boom goes on past the chunk size"
+		item    = "bread at home"
+	)
+	boom := errors.New("embedder down")
+	cfg := engineCfg
+	cfg.ChunkBytes = 20
+	cat := &fakeCatalog{tags: breadAndJapan("1"), members: map[string][]string{"bread": {short, earlier, failing}}}
+	r := newRig(t, cfg, cat, nil, nil)
+	r.emb.failContaining("boom", boom)
+	ss, err := r.e.scores(context.Background(), "1", "10", "1", item)
+	if !errors.Is(err, ErrNotRebuilt) || !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want one wrapping ErrNotRebuilt and the cause", err)
+	}
+	if ss != nil {
+		t.Fatalf("scores = %+v, want none on an error", ss)
+	}
+	r.emb.failContaining("", nil)
+	calls := r.emb.callsOf(langai.RoleQuery)
+	r.scores(t, "1", item)
+	if n := r.emb.times(langai.RoleQuery, short); n != 1 {
+		t.Errorf("the short member was embedded %d times, want once: the failure must not lose it", n)
+	}
+	if n := r.emb.callsOf(langai.RoleQuery) - calls; n != 1 {
+		t.Errorf("the retry made %d Embed calls of items, want 1: only the text that failed", n)
+	}
+}
+
 func TestEngine_RejectsBadInput(t *testing.T) {
 	r := newRig(t, engineCfg, &fakeCatalog{tags: breadAndJapan("1")}, nil, nil)
 	ctx := context.Background()
@@ -397,35 +432,50 @@ func TestEngine_RefusesABrokenEmbedder(t *testing.T) {
 	}
 }
 
+// TestEngine_ConcurrentCallsRebuildOnce holds the one rebuild in the catalog
+// until every caller is provably blocked. With none finished and one Tags call
+// between the fifty of them, the others can only be waiting on it in the flight.
 func TestEngine_ConcurrentCallsRebuildOnce(t *testing.T) {
-	cat := breadWithRecipes("1")
-	cat.release, cat.entered = make(chan struct{}), make(chan struct{}, 1)
-	r := newRig(t, engineCfg, cat, nil, nil)
-	const n = 50
-	got := make([][]TagScore, n)
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Go(func() { got[i], errs[i] = r.e.scores(context.Background(), "1", "10", "1", croissantText) })
-	}
-	<-cat.entered
-	time.Sleep(20 * time.Millisecond) // let the others reach the flight; not needed for the assertions to hold
-	close(cat.release)
-	wg.Wait()
-	if tags, _ := cat.counts(); tags != 1 {
-		t.Fatalf("Tags called %d times, want once", tags)
-	}
-	for i := range n {
-		if errs[i] != nil {
-			t.Fatalf("call %d: %v", i, errs[i])
+	synctest.Test(t, func(t *testing.T) {
+		cat := breadWithRecipes("1")
+		cat.release = make(chan struct{})
+		r := newRig(t, engineCfg, cat, nil, nil)
+		const n = 50
+		got := make([][]TagScore, n)
+		errs := make([]error, n)
+		var finished atomic.Int32
+		var wg sync.WaitGroup
+		for i := range n {
+			wg.Go(func() {
+				got[i], errs[i] = r.e.scores(context.Background(), "1", "10", "1", croissantText)
+				finished.Add(1)
+			})
 		}
-		if !reflect.DeepEqual(got[i], got[0]) {
-			t.Fatalf("call %d scored %+v, call 0 %+v", i, got[i], got[0])
+		synctest.Wait()
+		// not Fatalf: the callers must get to finish for the bubble to end
+		if tags, _ := cat.counts(); tags != 1 {
+			t.Errorf("with every caller blocked, Tags was called %d times, want once", tags)
 		}
-	}
-	if !slices.Equal(picked(got[0]), []string{"bread"}) {
-		t.Fatalf("picked %v, want [bread]", picked(got[0]))
-	}
+		if k := finished.Load(); k != 0 {
+			t.Errorf("%d callers finished before the rebuild did", k)
+		}
+		close(cat.release)
+		wg.Wait()
+		if tags, _ := cat.counts(); tags != 1 {
+			t.Fatalf("Tags called %d times, want once", tags)
+		}
+		for i := range n {
+			if errs[i] != nil {
+				t.Fatalf("call %d: %v", i, errs[i])
+			}
+			if !reflect.DeepEqual(got[i], got[0]) {
+				t.Fatalf("call %d scored %+v, call 0 %+v", i, got[i], got[0])
+			}
+		}
+		if !slices.Equal(picked(got[0]), []string{"bread"}) {
+			t.Fatalf("picked %v, want [bread]", picked(got[0]))
+		}
+	})
 }
 
 func TestEngine_CancelledLeaderDoesNotFailWaiters(t *testing.T) {
@@ -459,6 +509,100 @@ func TestEngine_CancelledLeaderDoesNotFailWaiters(t *testing.T) {
 	}
 	if tags, _ := cat.counts(); tags != 1 {
 		t.Fatalf("Tags called %d times, want once: the leader's cancel must not end the rebuild", tags)
+	}
+}
+
+// evictOther fills another space of a tiny MemIndex, which evicts every other
+// space. It may run on the flight's goroutine, so it does not stop the test.
+func evictOther(t *testing.T, ix *MemIndex) {
+	t.Helper()
+	if err := ix.Apply(context.Background(), "1", "other", "", "s", []TagVector{{ID: "x", Vec: []float32{1}}}, nil); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestEngine_SpaceEvictedMidRebuildIsNotRecordedCurrent: a space evicted
+// between the engine's read of its state and its Apply comes back with only the
+// tags that changed, so it must not be recorded current: the next call at that
+// revision diffs again and scores every tag.
+func TestEngine_SpaceEvictedMidRebuildIsNotRecordedCurrent(t *testing.T) {
+	ix := NewMemIndex(1) // tiny budget: only the space just used is kept
+	tags := append(breadAndJapan("1"), CatalogTag{"rust", "dev / rust", "1"})
+	cat := &fakeCatalog{tags: tags}
+	r := newRig(t, engineCfg, cat, nil, ix)
+	if ss := r.scores(t, "1", diaryText); len(ss) != 3 {
+		t.Fatalf("first call: %d scores, want 3", len(ss))
+	}
+	bumped := slices.Clone(tags)
+	bumped[0].Revision = "2"
+	cat.set(bumped, nil)
+	cat.runAtMembers(func() { evictOther(t, ix) })
+	r.scores(t, "2", diaryText)
+	if ss := r.scores(t, "2", diaryText); len(ss) != 3 {
+		t.Errorf("after an eviction mid-rebuild: %d scores at the same revision, want 3", len(ss))
+	}
+	tagCalls, _ := cat.counts()
+	if ss := r.scores(t, "2", diaryText); len(ss) != 3 {
+		t.Errorf("once recovered: %d scores, want 3", len(ss))
+	}
+	if n, _ := cat.counts(); n != tagCalls {
+		t.Errorf("%d more Tags calls once recovered, want none: the state is recorded by now", n-tagCalls)
+	}
+}
+
+// evictingIndex is a TagIndex that runs hook before Candidates: before the
+// first call, or before every call with always.
+type evictingIndex struct {
+	TagIndex
+	hook   func()
+	always bool
+	once   sync.Once
+}
+
+func (x *evictingIndex) Candidates(ctx context.Context, index, partition string, vec []float32) ([]TagVector, error) {
+	if x.always {
+		x.hook()
+	} else {
+		x.once.Do(x.hook)
+	}
+	return x.TagIndex.Candidates(ctx, index, partition, vec)
+}
+
+// TestEngine_SpaceEvictedBeforeCandidatesIsRebuiltOnce: a space evicted between
+// the refresh and the Candidates would score nothing with no error, so the
+// engine refreshes once more and reads the candidates again; it does not go on
+// for ever when the eviction keeps happening.
+func TestEngine_SpaceEvictedBeforeCandidatesIsRebuiltOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		always    bool
+		wantScore int
+	}{{"once", false, 2}, {"every time", true, 0}} {
+		t.Run(tc.name, func(t *testing.T) {
+			mem := NewMemIndex(1)
+			ix := &evictingIndex{TagIndex: mem, always: tc.always, hook: func() { evictOther(t, mem) }}
+			cat := &fakeCatalog{tags: breadAndJapan("1")}
+			r := newRig(t, engineCfg, cat, nil, ix)
+			if ss := r.scores(t, "1", diaryText); len(ss) != tc.wantScore {
+				t.Errorf("%d scores, want %d", len(ss), tc.wantScore)
+			}
+			if n, _ := cat.counts(); n != 2 {
+				t.Errorf("%d Tags calls, want 2: the refresh and one more", n)
+			}
+		})
+	}
+}
+
+// TestEngine_SpaceWithNoTagsIsNotRebuilt: no candidates from a space that is
+// known is the right answer, not an eviction.
+func TestEngine_SpaceWithNoTagsIsNotRebuilt(t *testing.T) {
+	cat := &fakeCatalog{}
+	r := newRig(t, engineCfg, cat, nil, nil)
+	if ss := r.scores(t, "1", diaryText); len(ss) != 0 {
+		t.Errorf("%d scores, want none", len(ss))
+	}
+	if n, _ := cat.counts(); n != 1 {
+		t.Errorf("%d Tags calls, want 1", n)
 	}
 }
 
@@ -615,36 +759,47 @@ func TestEngine_OnePathUnlessAllPathLevels(t *testing.T) {
 	}
 }
 
+// TestFlight_RunsOncePerKey holds the run until all ten callers are provably
+// blocked, one in fn and nine on its run, so none can arrive after it ended
+// and start a second one.
 func TestFlight_RunsOncePerKey(t *testing.T) {
-	var f flight
-	var runs, others atomic.Int32
-	release, started := make(chan struct{}), make(chan struct{})
-	fn := func(context.Context) error {
-		if runs.Add(1) == 1 {
-			close(started)
+	synctest.Test(t, func(t *testing.T) {
+		var f flight
+		var runs, finished, others atomic.Int32
+		release := make(chan struct{})
+		fn := func(context.Context) error {
+			runs.Add(1)
+			<-release
+			return nil
 		}
-		<-release
-		return nil
-	}
-	var wg sync.WaitGroup
-	wg.Go(func() { _ = f.do(context.Background(), "k", fn) })
-	<-started
-	for range 9 {
-		wg.Go(func() { _ = f.do(context.Background(), "k", fn) })
-	}
-	// another key runs on its own, while "k" is in flight
-	if err := f.do(context.Background(), "other", func(context.Context) error { others.Add(1); return nil }); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(20 * time.Millisecond) // let the others join; not needed for the count to hold
-	close(release)
-	wg.Wait()
-	if n := runs.Load(); n != 1 {
-		t.Fatalf("fn ran %d times for one key, want once", n)
-	}
-	if others.Load() != 1 {
-		t.Fatal("the other key did not run")
-	}
+		var wg sync.WaitGroup
+		for range 10 {
+			wg.Go(func() {
+				_ = f.do(context.Background(), "k", fn)
+				finished.Add(1)
+			})
+		}
+		synctest.Wait()
+		// not Fatalf: the callers must get to finish for the bubble to end
+		if n := runs.Load(); n != 1 {
+			t.Errorf("with every caller blocked, fn ran %d times, want once", n)
+		}
+		if n := finished.Load(); n != 0 {
+			t.Errorf("%d callers finished before the run did", n)
+		}
+		// another key runs on its own, while "k" is in flight
+		if err := f.do(context.Background(), "other", func(context.Context) error { others.Add(1); return nil }); err != nil {
+			t.Error(err)
+		}
+		if others.Load() != 1 {
+			t.Error("the other key did not run")
+		}
+		close(release)
+		wg.Wait()
+		if n := runs.Load(); n != 1 {
+			t.Fatalf("fn ran %d times for one key, want once", n)
+		}
+	})
 }
 
 func TestFlight_SharesTheErrorAndRunsAgainAfter(t *testing.T) {

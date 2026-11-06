@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/go-bumbu/langai"
@@ -28,6 +29,9 @@ type tallyEmbedder struct {
 	calls map[langai.Role]int
 	fail  map[langai.Role]error
 	short map[string]bool
+	// failOn, when not empty, fails every call with a text containing it
+	failOn    string
+	failOnErr error
 }
 
 func (e *tallyEmbedder) embedder() langai.Embedder {
@@ -57,6 +61,11 @@ func (e *tallyEmbedder) Embed(ctx context.Context, role langai.Role, texts []str
 	}
 	e.calls[role]++
 	err := e.fail[role]
+	for _, t := range texts {
+		if e.failOn != "" && strings.Contains(t, e.failOn) {
+			err = e.failOnErr
+		}
+	}
 	short := maps.Clone(e.short)
 	e.mu.Unlock()
 	if err != nil {
@@ -86,6 +95,17 @@ func (e *tallyEmbedder) failRole(role langai.Role, err error) {
 		return
 	}
 	e.fail[role] = err
+}
+
+// failContaining makes every Embed with a text containing word fail with err;
+// a nil err clears it.
+func (e *tallyEmbedder) failContaining(word string, err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err == nil {
+		word = ""
+	}
+	e.failOn, e.failOnErr = word, err
 }
 
 // shortFor has Embed return a 3-dimensional vector for text.
@@ -184,8 +204,9 @@ func (b brokenEmbedder) Embed(_ context.Context, role langai.Role, texts []strin
 // the ids asked for, plus every entry of extra, asked or not. It counts its
 // calls and records the ids of each Members call. It can fail with a set
 // error, and Tags can block until release is closed, or its ctx ends; entered
-// receives a value (without blocking) each time Tags starts. It is safe for
-// concurrent use.
+// receives a value (without blocking) each time Tags starts. onMembers, when
+// set, runs once at the next Members call: inside a rebuild, between the
+// engine's read of the index and its Apply. It is safe for concurrent use.
 type fakeCatalog struct {
 	mu        sync.Mutex
 	tags      []CatalogTag
@@ -194,6 +215,7 @@ type fakeCatalog struct {
 	err       error
 	release   chan struct{}
 	entered   chan struct{}
+	onMembers func()
 	tagsCalls int
 	memCalls  int
 	memIDs    [][]string
@@ -228,6 +250,10 @@ func (c *fakeCatalog) Tags(ctx context.Context, _, _ string) ([]CatalogTag, erro
 func (c *fakeCatalog) Members(_ context.Context, _, _ string, tagIDs []string) (map[string][]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if hook := c.onMembers; hook != nil {
+		c.onMembers = nil
+		hook()
+	}
 	c.memCalls++
 	c.memIDs = append(c.memIDs, slices.Clone(tagIDs))
 	if c.err != nil {
@@ -250,6 +276,13 @@ func (c *fakeCatalog) set(tags []CatalogTag, members map[string][]string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.tags, c.members = tags, members
+}
+
+// runAtMembers has the next Members call run hook first.
+func (c *fakeCatalog) runAtMembers(hook func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onMembers = hook
 }
 
 // setErr has every later call fail with err; nil clears it.

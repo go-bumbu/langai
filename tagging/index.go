@@ -15,14 +15,26 @@ type TagVector struct {
 // space is one (index, partition) pair; an index is never empty, a partition
 // may be.
 type TagIndex interface {
-	// State returns the state recorded by the last Apply that set one, and
-	// the fingerprint of every tag held, by id; ok is false when the space
-	// holds nothing and no state was recorded.
+	// State returns the space's state and the fingerprint of every tag held,
+	// by id; ok is false, and the state "", when the index knows nothing of the
+	// space: it holds nothing and no state was recorded, or it was evicted. A
+	// known space's state is never "": it is the one recorded by the last Apply
+	// that set one or, when an Apply could not record its own, a value of the
+	// index's choosing that no caller records, so every caller takes the space
+	// for stale and passes that value on as its from. The map may be shared:
+	// callers must not modify it.
 	State(ctx context.Context, index, partition string) (state string, fingerprints map[string]string, ok bool, err error)
-	// Apply upserts put, removes drop, and records state unless it is "".
-	// An id in both put and drop ends up held: put wins.
-	Apply(ctx context.Context, index, partition, state string, put []TagVector, drop []string) error
-	// Candidates returns the tags to score vec against. The slices are
-	// shared: callers must not modify them.
+	// Apply upserts put and removes drop; an id in both ends up held: put wins.
+	// from is the state the caller diffed against: what State reported, "" when
+	// it reported ok == false. Apply records state, unless it is "", only if
+	// from is still the space's state, so the space holds what the caller read
+	// plus these changes. Otherwise the space was evicted and recreated, or
+	// another Apply moved its state, so it holds something no caller built:
+	// Apply still takes put and drop, but leaves the space under a state of its
+	// own choosing, and the next call diffs again. A state of "" records nothing
+	// and, when from matches, leaves the recorded state as it is.
+	Apply(ctx context.Context, index, partition, from, state string, put []TagVector, drop []string) error
+	// Candidates returns the tags to score vec against. The slice and the
+	// vectors in it are shared: callers must not modify them.
 	Candidates(ctx context.Context, index, partition string, vec []float32) ([]TagVector, error)
 }

@@ -75,14 +75,34 @@ func (e *engine) scores(ctx context.Context, index, partition, revision, text st
 		return nil, err
 	}
 	vec := vecs[text]
-	if err := e.refresh(ctx, index, partition, revision); err != nil {
-		return nil, err
-	}
-	cands, err := e.ix.Candidates(ctx, index, partition, vec)
+	cands, err := e.candidates(ctx, index, partition, revision, vec)
 	if err != nil {
 		return nil, err
 	}
 	return scoreVectors(vec, cands, !e.cfg.AllPathLevels), nil
+}
+
+// candidates brings the space up to revision (see refresh) and returns the
+// index's candidates for vec. A space evicted between the two reads as holding
+// no tags, which is not an answer: when the index knows no such space, it
+// refreshes once more and reads the candidates again. Once, not in a loop: a
+// budget too small to keep the space until the next line cannot be out-waited.
+func (e *engine) candidates(ctx context.Context, index, partition, revision string, vec []float32) ([]TagVector, error) {
+	if err := e.refresh(ctx, index, partition, revision); err != nil {
+		return nil, err
+	}
+	cands, err := e.ix.Candidates(ctx, index, partition, vec)
+	if err != nil || len(cands) > 0 {
+		return cands, err
+	}
+	_, _, ok, err := e.ix.State(ctx, index, partition)
+	if err != nil || ok {
+		return cands, err
+	}
+	if err := e.refresh(ctx, index, partition, revision); err != nil {
+		return nil, err
+	}
+	return e.ix.Candidates(ctx, index, partition, vec)
 }
 
 // warm brings the space up to revision (see refresh) and caches the vectors
@@ -132,7 +152,9 @@ func (e *engine) fingerprint(t CatalogTag) string {
 // refresh brings the space up to revision unless the index records that
 // state already. The rebuild runs once for every caller of one space and
 // state at a time (see flight), and re-reads the state first, since another
-// caller may just have applied it.
+// caller may just have applied it. It hands Apply the state it diffed against,
+// so an Apply over a space that changed in the meantime records nothing and
+// the next call diffs again (see TagIndex.Apply).
 func (e *engine) refresh(ctx context.Context, index, partition, revision string) error {
 	state := e.state(revision)
 	cur, _, ok, err := e.ix.State(ctx, index, partition)
@@ -156,7 +178,7 @@ func (e *engine) refresh(ctx context.Context, index, partition, revision string)
 			// next call diffs again; what was embedded stays cached
 			return fmt.Errorf("%w: %w", ErrNotRebuilt, err)
 		}
-		return e.ix.Apply(ctx, index, partition, state, put, drop)
+		return e.ix.Apply(ctx, index, partition, cur, state, put, drop)
 	})
 }
 
@@ -276,7 +298,9 @@ func (e *engine) nameVectors(ctx context.Context, index string, names []string) 
 // vectors returns the vector of each of texts, by text: the cache's, in one
 // Get, where it holds one under key(text), and embed's for the rest, which
 // are then cached in one Put. A text listed twice is looked up and embedded
-// once.
+// once. When embed fails, the vectors it returned with its error (nil for the
+// texts it did not embed) are cached all the same, and the call fails: what
+// was embedded before a failure stays cached (see ErrNotRebuilt).
 func (e *engine) vectors(ctx context.Context, index string, texts []string, key func(string) CacheKey,
 	embed func(context.Context, []string) ([][]float32, error)) (map[string][]float32, error) {
 	var uniq []string
@@ -310,23 +334,29 @@ func (e *engine) vectors(ctx context.Context, index string, texts []string, key 
 	if len(misses) == 0 {
 		return out, nil
 	}
-	vs, err := embed(ctx, misses)
-	if err != nil {
-		return nil, err
-	}
+	vs, embedErr := embed(ctx, misses)
 	put := make(map[CacheKey][]float32, len(misses))
-	for i, t := range misses {
-		out[t], put[keys[t]] = vs[i], vs[i]
+	for i, v := range vs {
+		if v != nil {
+			t := misses[i]
+			out[t], put[keys[t]] = v, v
+		}
 	}
-	if err := e.cache.Put(ctx, index, put); err != nil {
-		return nil, err
+	var putErr error
+	if len(put) > 0 {
+		putErr = e.cache.Put(ctx, index, put)
+	}
+	if embedErr != nil || putErr != nil {
+		return nil, errors.Join(embedErr, putErr)
 	}
 	return out, nil
 }
 
 // embedItems embeds item texts as queries: the ones that make one chunk at
 // most whole, as given, in one call, and longer ones one at a time in pieces
-// (see embedItem).
+// (see embedItem). When one fails it returns the error together with what it
+// embedded before it, a nil vector for every text it did not, so the caller
+// can keep those: a retry then embeds only what is missing.
 func (e *engine) embedItems(ctx context.Context, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	var whole []string
@@ -350,7 +380,7 @@ func (e *engine) embedItems(ctx context.Context, texts []string) ([][]float32, e
 	for _, i := range chunkedAt {
 		v, err := embedItem(ctx, e.emb, e.cfg.ChunkBytes, texts[i])
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		out[i] = v
 	}
