@@ -106,10 +106,25 @@ func NewTagger(emb langai.Embedder, store Store, cfg TaggerConfig) (*Tagger, err
 		return nil, errors.New("tagging: no embedder")
 	case store == nil:
 		return nil, errors.New("tagging: no store")
+	}
+	cfg, params, err := checkConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Tagger{emb: emb, store: store, cfg: cfg, params: params, itemModel: itemModel(cfg)}, nil
+}
+
+// checkConfig returns cfg with the defaults TaggerConfig documents applied,
+// and the fingerprint of its scoring settings: tags built with other ones are
+// stale. It fails without a Model, on a negative ChunkBytes, and on a scoring
+// setting that is not a finite number once the defaults are applied (see
+// NewTagger).
+func checkConfig(cfg TaggerConfig) (TaggerConfig, string, error) {
+	switch {
 	case cfg.Model == "":
-		return nil, errors.New("tagging: no TaggerConfig.Model")
+		return cfg, "", errors.New("tagging: no TaggerConfig.Model")
 	case cfg.ChunkBytes < 0:
-		return nil, fmt.Errorf("tagging: TaggerConfig.ChunkBytes is %d, want 0 or more", cfg.ChunkBytes)
+		return cfg, "", fmt.Errorf("tagging: TaggerConfig.ChunkBytes is %d, want 0 or more", cfg.ChunkBytes)
 	}
 	if cfg.NameMinScore == 0 {
 		cfg.NameMinScore = DefaultNameMinScore
@@ -125,7 +140,7 @@ func NewTagger(emb langai.Embedder, store Store, cfg TaggerConfig) (*Tagger, err
 		value float64
 	}{{"NameMinScore", cfg.NameMinScore}, {"MemberMinScore", cfg.MemberMinScore}, {"SmoothingK", cfg.SmoothingK}} {
 		if math.IsNaN(s.value) || math.IsInf(s.value, 0) {
-			return nil, fmt.Errorf("tagging: TaggerConfig.%s is %v, want a finite number", s.name, s.value)
+			return cfg, "", fmt.Errorf("tagging: TaggerConfig.%s is %v, want a finite number", s.name, s.value)
 		}
 	}
 	params := fmt.Sprintf("%s k=%g name=%g member=%g", scoringRule, cfg.SmoothingK, cfg.NameMinScore, cfg.MemberMinScore)
@@ -134,7 +149,7 @@ func NewTagger(emb langai.Embedder, store Store, cfg TaggerConfig) (*Tagger, err
 		// it the fingerprint stays what stores built before ChunkBytes hold
 		params += fmt.Sprintf(" chunk=%d", cfg.ChunkBytes)
 	}
-	return &Tagger{emb: emb, store: store, cfg: cfg, params: params, itemModel: itemModel(cfg)}, nil
+	return cfg, params, nil
 }
 
 // ErrNotRebuilt is wrapped, together with its cause, by the error of a write
@@ -358,15 +373,15 @@ func (s *Scope) Rebuild(ctx context.Context) error {
 // missing one, and refusing a vector that is empty, or whose length is not the
 // embedder's Dimensions when it says them, rather than storing it for a
 // rebuild to blend with vectors of another length.
-func (t *Tagger) embedOne(ctx context.Context, role langai.Role, text string) ([]float32, error) {
-	vs, err := t.emb.Embed(ctx, role, []string{text})
+func embedOne(ctx context.Context, emb langai.Embedder, role langai.Role, text string) ([]float32, error) {
+	vs, err := emb.Embed(ctx, role, []string{text})
 	if err != nil {
 		return nil, err
 	}
 	if len(vs) != 1 {
 		return nil, fmt.Errorf("tagging: embedder returned %d vectors for one %s", len(vs), role)
 	}
-	switch dims := t.emb.Dimensions(); {
+	switch dims := emb.Dimensions(); {
 	case dims > 0 && len(vs[0]) != dims:
 		return nil, fmt.Errorf("tagging: embedder returned a vector of %d dimensions, want %d", len(vs[0]), dims)
 	case len(vs[0]) == 0:
@@ -380,7 +395,7 @@ func (t *Tagger) embedOne(ctx context.Context, role langai.Role, text string) ([
 // Tagger's item model. It returns the ids of the tags the item is linked to,
 // whose Versions the store bumped.
 func (s *Scope) putItem(ctx context.Context, itemID, text string) (linked []string, err error) {
-	vec, err := s.tg.embedItem(ctx, text)
+	vec, err := embedItem(ctx, s.tg.emb, s.tg.cfg.ChunkBytes, text)
 	if err != nil {
 		return nil, err
 	}
@@ -394,7 +409,7 @@ func (s *Scope) putItem(ctx context.Context, itemID, text string) (linked []stri
 // item was read. stored is false when the item is gone or its text changed;
 // the store then bumped no tag, and its writer bumped them instead.
 func (s *Scope) reembedItem(ctx context.Context, item ItemRecord) (vec []float32, stored bool, err error) {
-	vec, err = s.tg.embedItem(ctx, item.Text)
+	vec, err = embedItem(ctx, s.tg.emb, s.tg.cfg.ChunkBytes, item.Text)
 	if err != nil {
 		return nil, false, err
 	}
@@ -432,7 +447,7 @@ func (s *Scope) itemVector(ctx context.Context, item ItemRecord) ([]float32, err
 	case edited.Model == s.tg.itemModel:
 		return edited.Vec, nil
 	}
-	return s.tg.embedItem(ctx, edited.Text)
+	return embedItem(ctx, s.tg.emb, s.tg.cfg.ChunkBytes, edited.Text)
 }
 
 // unknownItem is the error for an item the scope does not hold.

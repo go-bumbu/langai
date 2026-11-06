@@ -185,14 +185,26 @@ func rank(vec []float32, tags []TagRecord, model string, onePath bool) []string 
 }
 
 // scores returns vec's score against every tag that has a vector of model,
-// with the tag's cutoff, best score first and equal scores by id. A NaN score
+// as scoreVectors does: a tag built under another model is skipped.
+func scores(vec []float32, tags []TagRecord, model string, onePath bool) []TagScore {
+	var vecs []TagVector
+	for _, tg := range tags {
+		if tg.Model == model {
+			vecs = append(vecs, TagVector{ID: tg.ID, Name: tg.Name, Vec: tg.Vec, Cutoff: tg.Cutoff})
+		}
+	}
+	return scoreVectors(vec, vecs, onePath)
+}
+
+// scoreVectors returns vec's score against every tag that has a vector, with
+// the tag's cutoff, best score first and equal scores by id. A NaN score
 // sorts last. With onePath, a tag that reaches its cutoff but is shadowed on
 // its path says by which tag (see shadowOnPaths).
-func scores(vec []float32, tags []TagRecord, model string, onePath bool) []TagScore {
+func scoreVectors(vec []float32, tags []TagVector, onePath bool) []TagScore {
 	var out []TagScore
 	paths := map[string][]string{}
 	for _, tg := range tags {
-		if tg.Vec == nil || tg.Model != model {
+		if tg.Vec == nil {
 			continue
 		}
 		out = append(out, TagScore{ID: tg.ID, Score: cosine(vec, tg.Vec), Cutoff: tg.Cutoff})

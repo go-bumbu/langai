@@ -70,16 +70,16 @@ func itemModel(cfg TaggerConfig) string {
 	return fmt.Sprintf("%s+chunks=%d", cfg.Model, cfg.ChunkBytes)
 }
 
-// embedItem embeds an item's text as a query, the way Suggest scores it. With
-// ChunkBytes set, a longer text is embedded in pieces (see Chunk), in one call,
-// and its vector is the unit-length mean of theirs, so all of it counts
-// instead of the part an embedder reads before it truncates.
-func (t *Tagger) embedItem(ctx context.Context, text string) ([]float32, error) {
-	pieces := Chunk(text, t.cfg.ChunkBytes)
+// embedItem embeds an item's text with emb as a query, the way Suggest scores
+// it. With chunkBytes above zero, a longer text is embedded in pieces (see
+// Chunk), in one call, and its vector is the unit-length mean of theirs, so
+// all of it counts instead of the part an embedder reads before it truncates.
+func embedItem(ctx context.Context, emb langai.Embedder, chunkBytes int, text string) ([]float32, error) {
+	pieces := Chunk(text, chunkBytes)
 	if len(pieces) <= 1 {
-		return t.embedOne(ctx, langai.RoleQuery, text)
+		return embedOne(ctx, emb, langai.RoleQuery, text)
 	}
-	vs, err := t.emb.Embed(ctx, langai.RoleQuery, pieces)
+	vs, err := emb.Embed(ctx, langai.RoleQuery, pieces)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +87,7 @@ func (t *Tagger) embedItem(ctx context.Context, text string) ([]float32, error) 
 		return nil, fmt.Errorf("tagging: embedder returned %d vectors for %d pieces of an item", len(vs), len(pieces))
 	}
 	dims := len(vs[0])
-	if d := t.emb.Dimensions(); d > 0 {
+	if d := emb.Dimensions(); d > 0 {
 		dims = d
 	}
 	for _, v := range vs {

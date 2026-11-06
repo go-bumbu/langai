@@ -47,7 +47,7 @@ func (s *Scope) rebuild(ctx context.Context, id string) (err error) {
 	store, cfg := s.tg.store, s.tg.cfg
 	nameVec := rec.NameVec
 	if nameVec == nil || rec.Model != cfg.Model {
-		if nameVec, err = s.tg.embedOne(ctx, langai.RoleDocument, rec.Name); err != nil {
+		if nameVec, err = embedOne(ctx, s.tg.emb, langai.RoleDocument, rec.Name); err != nil {
 			return err
 		}
 	}
