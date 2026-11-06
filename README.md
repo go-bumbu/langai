@@ -376,6 +376,17 @@ site name followed by the first 2 KB of its text, one per line
 (`eval.Document.Essence`). Pass `Suggest`, and your catalog's `Members`, your documents
 built the same way to get what the numbers say.
 
+**Upgrading from the Store.** The Tagger used to keep its own copy of your tags, items and
+links in a `tagging.Store`; now it reads them from your `Catalog`, so the application's
+writes no longer go through it. `NewTagger(emb, store, cfg)` became
+`NewTagger(emb, catalog, cache, cfg)`, and `SetTag`, `SetItem`, `TagByHand` and their
+kin are gone; `Suggest` and `Scores` now take `(ctx, rev, text)`. No data needs to move:
+the cache starts empty and every embedding is recomputed on first use. The old tables are
+left behind for your application to drop, as nothing reads them any more:
+`autotag_<first 16 hex of sha256(index)>_{tags,items,links}`, and
+`autotag_<generation>_<hash>_{tags,items,links}` for generations. The example service's
+old `data/autotag-<model>.sqlite` files can be deleted.
+
 ### Known limitations
 
 - **Second and side topics.** A page is one embedding of its first ~2 KB. When pairs of
