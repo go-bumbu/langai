@@ -101,7 +101,7 @@ both ways `tagging` tags a text:
   every tag, each bar marked at that tag's cutoff, so a tag that was not
   picked says by how much it missed, or which tag on its path fits better. The left
   column counts, per tag, the notes tagged by hand and the ones it is picked
-  for; click a tag to filter. Picking for every note reads stored vectors
+  for; click a tag to filter. Picking for every note reads cached vectors
   only, so the whole list takes milliseconds.
 - **Long notes.** EmbeddingGemma reads 512 tokens, about 2.2 KB of English, and
   drops the rest. A note over 2,000 bytes is embedded in parts
@@ -150,27 +150,31 @@ both ways `tagging` tags a text:
   `cooking / baking` for a recipe, not an unrelated one.
 
 The notebook (`data/notebook.json`) owns the notes, tags and hand tags. The
-Tagger's store (`data/autotag-<model>.sqlite`) is derived from it: at start the
-notebook is replayed into it, which is a no-op for what it holds, so
-`make clean` or another embedding model rebuilds it from the notebook.
+application provides its tags and hand-made links through a `Catalog` (here
+the notebook itself, read when it changes); the Tagger keeps only an embedding cache (`MemCache`,
+`tagging/sqlitecache`, `tagging/pgcache`) and an in-memory index of tag
+vectors. Here that cache is `data/autotag-cache.sqlite`, one for every
+embedding model (the model is part of every key), so `make clean` or another
+model only costs embedding the notes again.
 
 ## How it is built
 
 ```
 zarf/examples/
 ├── main.go           flags, wiring (onnx + ffmpeg + sqlitevec + search.MediaIndex), the home page
-├── tagging.go        wiring of the auto tagging page (yzma Embedder, lazy Completer, sqlitestore)
+├── tagging.go        wiring of the auto tagging page (yzma Embedder, lazy Completer, sqlitecache)
 ├── mediasearch/      Library: scan, catalog, search, thumbnails, storyboards; Handler: the API and the page
 │   └── ui/           index.html, app.js, style.css, embedded in the binary
-├── autotag/          Notebook: notes, tags, hand tags, replay into the Tagger; Handler: the API and the page
+├── autotag/          Notebook: notes, tags, hand tags, the Tagger's Catalog; Handler: the API and the page
 │   └── ui/
 ├── prepare.sh        the sample data
 └── data/             git-ignored: media/, index-<model>.sqlite, index-<model>.catalog.json, thumbs/,
-                      notebook.json, autotag-<model>.sqlite
+                      notebook.json, autotag-cache.sqlite
 ```
 
-`autotag` takes a `tagging.Scope` and a `tagging.Generator`, so its tests run
-on a `tagging.MemStore`, `langaitest.FakeEmbedder` and a canned chat model. Its
+`autotag` takes a `tagging.EmbeddingCache` and builds its own Tagger and
+`tagging.Generator`, so its tests run on a `tagging.MemCache`,
+`langaitest.FakeEmbedder` and a canned chat model. Its
 API, under `/autotag/`: `GET api/info`, `GET api/notebook` (every tag and note
 with its automatic tags), `POST api/tags` (`{"name"}`; an existing name returns
 that tag), `PUT|DELETE api/tags/<id>`, `POST api/notes` (`{"title","text"}`),

@@ -10,10 +10,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/go-bumbu/langai/zarf/examples/autotag"
 	"github.com/go-bumbu/langai/provider/yzma"
 	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/tagging/sqlitestore"
+	"github.com/go-bumbu/langai/tagging/sqlitecache"
+	"github.com/go-bumbu/langai/zarf/examples/autotag"
 )
 
 // chunkBytes is the most of a note the Tagger embeds at once. EmbeddingGemma
@@ -24,8 +24,9 @@ const chunkBytes = 2000
 
 // openTagging builds the auto tagging page: the text embedder now, the chat
 // model on the first recommendation. The notebook (notes, tags, hand tags) is
-// notebook.json; the Tagger's store is derived from it, one per embedding
-// model, and is rebuilt from the notebook when missing.
+// notebook.json, and the Tagger reads them from it; all the Tagger keeps is
+// its embedding cache, autotag-cache.sqlite, one for every model (the model is
+// part of every key), which refills itself when deleted.
 func openTagging(ctx context.Context, cfg yzma.Config, dataDir, samples string, minScore float64, logger *slog.Logger) (*autotag.Notebook, func(), error) {
 	logger.Info("loading the text embedding model", "model", yzma.DefaultModel, "accel", cfg.Accel, "dir", filepath.Dir(cfg.ModelsDir))
 	emb, err := yzma.New(ctx, cfg)
@@ -39,30 +40,27 @@ func openTagging(ctx context.Context, cfg yzma.Config, dataDir, samples string, 
 	chat.setState("not loaded")
 	closeAll := func() { _ = chat.Close(); _ = emb.Close() }
 
-	db, err := sql.Open("sqlite3", filepath.Join(dataDir, "autotag-"+slug(yzma.DefaultModel)+".sqlite")+"?_busy_timeout=5000&_txlock=immediate")
+	db, err := sql.Open("sqlite3", filepath.Join(dataDir, "autotag-cache.sqlite")+"?_busy_timeout=5000&_txlock=immediate")
 	if err != nil {
 		closeAll()
-		return nil, nil, fmt.Errorf("open tag database: %w", err)
+		return nil, nil, fmt.Errorf("open tag cache database: %w", err)
 	}
 	fail := func(err error) (*autotag.Notebook, func(), error) {
 		_ = db.Close()
 		closeAll()
 		return nil, nil, err
 	}
-	store, err := sqlitestore.New(ctx, db)
+	cache, err := sqlitecache.New(ctx, db)
 	if err != nil {
-		return fail(fmt.Errorf("tag store: %w", err))
-	}
-	tagger, err := tagging.NewTagger(emb, store, tagging.TaggerConfig{Model: yzma.DefaultModel, ChunkBytes: chunkBytes})
-	if err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("tag cache: %w", err))
 	}
 	if _, err := os.Stat(samples); samples != "" && err != nil {
 		logger.Info("no samples for the auto tagging page", "file", samples, "err", err)
 		samples = ""
 	}
 	nb, err := autotag.New(ctx, autotag.Config{
-		Scope:       tagger.Scope("examples", "notebook"),
+		Cache:       cache,
+		Tagging:     tagging.TaggerConfig{Model: yzma.DefaultModel, ChunkBytes: chunkBytes},
 		Chat:        chat,
 		Embedder:    emb,
 		File:        filepath.Join(dataDir, "notebook.json"),

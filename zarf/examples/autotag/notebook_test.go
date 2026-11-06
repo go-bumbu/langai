@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-bumbu/langai/langaitest"
 	"github.com/go-bumbu/langai/tagging"
@@ -27,7 +29,7 @@ func (m *cannedModel) Complete(_ context.Context, system, _ string) (string, err
 	return m.flat, nil
 }
 
-// newNotebook builds a notebook over a fresh MemStore. FakeEmbedder only
+// newNotebook builds a notebook over a fresh MemCache. FakeEmbedder only
 // counts shared words, so its scores run far below a real model's, and the
 // cutoffs are lowered to match.
 func newNotebook(t *testing.T, file string) *Notebook {
@@ -39,13 +41,10 @@ func newNotebookModel(t *testing.T, file string) (*Notebook, *cannedModel) {
 	t.Helper()
 	ctx := context.Background()
 	emb := langaitest.FakeEmbedder{}
-	tg, err := tagging.NewTagger(emb, tagging.NewMemStore(), tagging.TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2})
-	if err != nil {
-		t.Fatal(err)
-	}
 	model := &cannedModel{flat: "bread\nbaking\ntravel\n", tree: "cooking / baking / sourdough\ncooking / bread\ntravel / city guides\n"}
 	nb, err := New(ctx, Config{
-		Scope:       tg.Scope("test", "notebook"),
+		Cache:       tagging.NewMemCache(),
+		Tagging:     tagging.TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2},
 		Chat:        model,
 		Embedder:    emb,
 		File:        file,
@@ -301,7 +300,7 @@ func TestNotebook_RecommendKnowsTheDeepestExistingLevel(t *testing.T) {
 	}
 }
 
-func TestNotebook_PersistsAndReplaysIntoAFreshStore(t *testing.T) {
+func TestNotebook_PersistsAndRestartsOnAFreshCache(t *testing.T) {
 	ctx := context.Background()
 	file := filepath.Join(t.TempDir(), "notebook.json")
 	nb := newNotebook(t, file)
@@ -311,15 +310,15 @@ func TestNotebook_PersistsAndReplaysIntoAFreshStore(t *testing.T) {
 	gone, _ := nb.AddNote(ctx, "", "deleted")
 	_ = nb.DeleteNote(ctx, gone.ID)
 
-	// a new notebook over an empty store: the file is the truth
+	// a new notebook over an empty cache: the file is the truth
 	again := newNotebook(t, file)
 	got := noteView(t, again, n.ID)
 	if got.Title != "Loaf" || !slices.Equal(got.Tags, []string{tag.ID}) || !slices.Equal(got.Auto, []string{tag.ID}) {
-		t.Errorf("replayed note: %+v", got)
+		t.Errorf("restarted note: %+v", got)
 	}
 	v, _ := again.View(ctx)
 	if len(v.Notes) != 1 || v.Tags[0].Hand != 1 {
-		t.Errorf("replayed view: %+v", v)
+		t.Errorf("restarted view: %+v", v)
 	}
 	// ids keep counting past the deleted note
 	if next, _ := again.AddNote(ctx, "", "more"); next.ID == n.ID || next.ID == gone.ID {
@@ -477,5 +476,92 @@ func TestNotebook_ViewSaysWhichTagShadowsAnother(t *testing.T) {
 		if s.TagID == cooking.ID && (s.Score < s.Cutoff || s.ShadowedBy != bread.ID) {
 			t.Errorf("cooking: %+v, want it over its cutoff and shadowed by %s", s, bread.ID)
 		}
+	}
+}
+
+// TestNotebook_HandTagChangesSuggestionsAtOnce: a croissant note shares no
+// word with the tag "cooking / bread", until croissant recipes are tagged
+// with it by hand; the next View learns from those members, with no restart,
+// and forgets them as soon as they are untagged.
+func TestNotebook_HandTagChangesSuggestionsAtOnce(t *testing.T) {
+	ctx := context.Background()
+	nb := newNotebook(t, "")
+	bread, _ := nb.AddTag(ctx, "cooking / bread", false)
+	var recipes []Note
+	for _, text := range []string{
+		"Croissant dough: folding cold butter into layers",
+		"Butter croissant dough, step by step",
+		"Shaping croissant dough with butter",
+	} {
+		n, _ := nb.AddNote(ctx, "", text)
+		recipes = append(recipes, n)
+	}
+	target, _ := nb.AddNote(ctx, "", "Croissant dough with cold butter")
+	if got := noteView(t, nb, target.ID).Auto; len(got) != 0 {
+		t.Fatalf("auto tags before the hand tags: %v, want none", got)
+	}
+	for _, r := range recipes {
+		if err := nb.TagNote(ctx, r.ID, bread.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := noteView(t, nb, target.ID).Auto; !slices.Equal(got, []string{bread.ID}) {
+		t.Errorf("auto tags after the hand tags: %v, want [%s]", got, bread.ID)
+	}
+	for _, r := range recipes {
+		if err := nb.UntagNote(ctx, r.ID, bread.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := noteView(t, nb, target.ID).Auto; len(got) != 0 {
+		t.Errorf("auto tags after the untags: %v, want none", got)
+	}
+}
+
+// TestNotebook_ViewAndWritesDoNotDeadlock: View scores outside the notebook's
+// lock, because scoring reads the notebook back as the Tagger's Catalog;
+// holding a read lock across it would deadlock against a waiting writer.
+func TestNotebook_ViewAndWritesDoNotDeadlock(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	nb := newNotebook(t, "")
+	bread, _ := nb.AddTag(ctx, "cooking / bread", false)
+	_, _ = nb.AddTag(ctx, "travel / hiking", false)
+	var notes []Note
+	for _, text := range []string{"bread dough in a hot oven", "a hike in the hills", "croissant dough with butter"} {
+		n, _ := nb.AddNote(ctx, "", text)
+		notes = append(notes, n)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+	for g := range 20 {
+		wg.Go(func() {
+			note := notes[g%len(notes)]
+			for i := range 10 {
+				if _, err := nb.View(ctx); err != nil {
+					errs <- err
+					return
+				}
+				write := nb.TagNote
+				if i%2 == 1 {
+					write = nb.UntagNote
+				}
+				if err := write(ctx, note.ID, bread.ID); err != nil {
+					errs <- err
+					return
+				}
+			}
+		})
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("View and the writes did not all return within 10 s: deadlock")
+	}
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }

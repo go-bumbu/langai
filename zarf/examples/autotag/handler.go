@@ -7,8 +7,6 @@ import (
 	"io/fs"
 	"net/http"
 	"strconv"
-
-	"github.com/go-bumbu/langai/tagging"
 )
 
 //go:embed ui
@@ -55,7 +53,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, ErrNotFound), errors.Is(err, tagging.ErrUnknownItem), errors.Is(err, tagging.ErrUnknownTag):
+	case errors.Is(err, ErrNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, ErrBadInput), errors.Is(err, ErrNoSamples):
 		status = http.StatusBadRequest

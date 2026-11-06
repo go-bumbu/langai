@@ -60,7 +60,7 @@ func cutAt(text string, target int) int {
 	return cut
 }
 
-// itemModel is the model an item's vector is stored under: the Tagger's
+// itemModel is the model an item's vector is cached under: the Tagger's
 // model, marked with the chunk size when items are embedded in chunks, so a
 // change of ChunkBytes re-embeds every item as a change of model does.
 func itemModel(cfg TaggerConfig) string {

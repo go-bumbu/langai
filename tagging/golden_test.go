@@ -2,6 +2,7 @@ package tagging
 
 import (
 	"context"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -12,8 +13,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/zarf/eval"
 	"github.com/go-bumbu/langai/provider/yzma"
+	"github.com/go-bumbu/langai/zarf/eval"
 )
 
 // TestGoldenTagging replays the golden set through Suggest with the real
@@ -43,7 +44,7 @@ func TestGoldenTagging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := newGoldenWorld(ctx, t, emb, ds)
+	w := newGoldenWorld(t, emb, ds)
 	untagged, unrelated := w.untagged(ctx, t)
 	got := map[string]float64{
 		// no examples anywhere, so every tag is judged by its name alone (the
@@ -92,9 +93,12 @@ func TestGoldenTagging(t *testing.T) {
 	}
 }
 
-// goldenWorld is the golden set loaded into one scope of a Tagger: every tag
-// path a tag, and every document an item, its essence embedded once. links
-// and present mirror the scope, so a scenario changes only what differs.
+// goldenWorld is the golden set as an application holds it, and the Catalog
+// a Tagger reads it through: every tag path a tag, and every document an
+// item, its essence its text. links and present are the application's
+// records, so a scenario changes only what differs, and every change goes up
+// a revision: rev, the space's, on every change, and a tag's own when its
+// members change.
 type goldenWorld struct {
 	space   *Scope
 	ds      *eval.Dataset
@@ -102,54 +106,97 @@ type goldenWorld struct {
 	names   map[string]string          // id -> path
 	nums    map[string]int             // id -> the tag's position in the dataset, from 1
 	byTag   map[string][]string        // tag id -> ids of the documents carrying it, dataset order
+	essence map[string]string          // document id -> its essence
 	allTags []string                   // every tag's id, dataset order
-	present map[string]bool            // tag id -> the tag is in the scope
+	present map[string]bool            // tag id -> the tag is in the space
 	links   map[string]map[string]bool // tag id -> ids of the documents tagged with it by hand
+	rev     int                        // the space's revision
+	tagRev  map[string]int             // tag id -> its revision
 }
 
-func newGoldenWorld(ctx context.Context, t *testing.T, emb langai.Embedder, ds *eval.Dataset) *goldenWorld {
+func newGoldenWorld(t *testing.T, emb langai.Embedder, ds *eval.Dataset) *goldenWorld {
 	t.Helper()
-	tg, err := NewTagger(emb, NewMemStore(), TaggerConfig{Model: "golden"})
+	w := &goldenWorld{
+		ds:     ds,
+		tagIDs: map[string]string{}, names: map[string]string{}, nums: map[string]int{},
+		byTag: map[string][]string{}, essence: map[string]string{}, present: map[string]bool{},
+		links: map[string]map[string]bool{}, tagRev: map[string]int{},
+	}
+	tg, err := NewTagger(emb, w, NewMemCache(), TaggerConfig{Model: "golden"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := &goldenWorld{
-		space: tg.Scope("1", "1"), ds: ds,
-		tagIDs: map[string]string{}, names: map[string]string{}, nums: map[string]int{},
-		byTag: map[string][]string{}, present: map[string]bool{}, links: map[string]map[string]bool{},
-	}
+	w.space = tg.Scope("1", "1")
 	for i, path := range ds.Tags {
 		id := strconv.Itoa(i + 1)
 		w.tagIDs[path], w.names[id], w.nums[id] = id, path, i+1
 		w.allTags = append(w.allTags, id)
-		w.setTag(ctx, t, id)
+		w.setTag(id)
 	}
 	for _, doc := range ds.Documents {
 		for _, tg := range doc.Tags {
 			w.byTag[w.tagIDs[tg]] = append(w.byTag[w.tagIDs[tg]], doc.ID)
 		}
-		if err := w.space.SetItem(ctx, doc.ID, doc.Essence()); err != nil {
-			t.Fatal(err)
-		}
+		w.essence[doc.ID] = doc.Essence()
 	}
 	return w
 }
 
-// setTag puts the tag in the scope under its path. A tag put back after
-// DeleteTag starts without members, like a new one.
-func (w *goldenWorld) setTag(ctx context.Context, t *testing.T, id string) {
-	t.Helper()
-	if err := w.space.SetTag(ctx, id, w.names[id]); err != nil {
-		t.Fatal(err)
+// Tags returns the tags in the space, in dataset order.
+func (w *goldenWorld) Tags(context.Context, string, string) ([]CatalogTag, error) {
+	var out []CatalogTag
+	for _, id := range w.allTags {
+		if w.present[id] {
+			out = append(out, CatalogTag{ID: id, Name: w.names[id], Revision: strconv.Itoa(w.tagRev[id])})
+		}
 	}
-	w.present[id], w.links[id] = true, map[string]bool{}
+	return out, nil
 }
 
-// setMembers gives every tag in the scope up to capOf(its position) members:
+// Members returns the essences of the documents tagged with each tag by hand,
+// by document id.
+func (w *goldenWorld) Members(_ context.Context, _, _ string, tagIDs []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, id := range tagIDs {
+		for _, d := range slices.Sorted(maps.Keys(w.links[id])) {
+			out[id] = append(out[id], w.essence[d])
+		}
+	}
+	return out, nil
+}
+
+// setTag puts the tag in the space under its path. A tag put back after
+// deleteTag starts without members, like a new one, so its revision goes up
+// as well as the space's.
+func (w *goldenWorld) setTag(id string) {
+	w.present[id], w.links[id] = true, map[string]bool{}
+	w.tagRev[id]++
+	w.rev++
+}
+
+// deleteTag deletes the tag and its hand-made links.
+func (w *goldenWorld) deleteTag(id string) {
+	delete(w.links, id)
+	delete(w.present, id)
+	w.rev++
+}
+
+// link tags the document with the tag by hand, or untags it, which changes
+// the tag's members.
+func (w *goldenWorld) link(tagID, docID string, on bool) {
+	if on {
+		w.links[tagID][docID] = true
+	} else {
+		delete(w.links[tagID], docID)
+	}
+	w.tagRev[tagID]++
+	w.rev++
+}
+
+// setMembers gives every tag in the space up to capOf(its position) members:
 // the first documents carrying it, in dataset order, never one in skip. It
 // tags and untags by hand only the documents that change.
-func (w *goldenWorld) setMembers(ctx context.Context, t *testing.T, skip map[string]bool, capOf func(int) int) {
-	t.Helper()
+func (w *goldenWorld) setMembers(skip map[string]bool, capOf func(int) int) {
 	for _, id := range w.allTags {
 		if !w.present[id] {
 			continue
@@ -164,29 +211,23 @@ func (w *goldenWorld) setMembers(ctx context.Context, t *testing.T, skip map[str
 			}
 		}
 		for d := range w.links[id] {
-			if want[d] {
-				continue
+			if !want[d] {
+				w.link(id, d, false)
 			}
-			if err := w.space.UntagByHand(ctx, d, id); err != nil {
-				t.Fatal(err)
-			}
-			delete(w.links[id], d)
 		}
 		for d := range want {
-			if w.links[id][d] {
-				continue
+			if !w.links[id][d] {
+				w.link(id, d, true)
 			}
-			if err := w.space.TagByHand(ctx, d, id); err != nil {
-				t.Fatal(err)
-			}
-			w.links[id][d] = true
 		}
 	}
 }
 
-func (w *goldenWorld) suggest(ctx context.Context, t *testing.T, itemID string) []string {
+// suggest returns the tags suggested for the document's essence at the
+// space's current revision.
+func (w *goldenWorld) suggest(ctx context.Context, t *testing.T, doc eval.Document) []string {
 	t.Helper()
-	got, err := w.space.Suggest(ctx, itemID)
+	got, err := w.space.Suggest(ctx, strconv.Itoa(w.rev), doc.Essence())
 	if err != nil {
 		t.Fatalf("Suggest: %v", err)
 	}
@@ -223,8 +264,8 @@ func (c tagCounts) f1() float64 { return 2 * float64(c.tp) / float64(2*c.tp+c.fp
 func (w *goldenWorld) tagging(ctx context.Context, t *testing.T, capOf func(int) int) tagCounts {
 	var c tagCounts
 	for _, doc := range w.ds.Documents {
-		w.setMembers(ctx, t, map[string]bool{doc.ID: true}, capOf)
-		c.add(w.suggest(ctx, t, doc.ID), w.truth(doc))
+		w.setMembers(map[string]bool{doc.ID: true}, capOf)
+		c.add(w.suggest(ctx, t, doc), w.truth(doc))
 	}
 	return c
 }
@@ -247,14 +288,10 @@ func (w *goldenWorld) untagged(ctx context.Context, t *testing.T) (none, noUnrel
 	for _, doc := range w.ds.Documents {
 		own := w.truth(doc)
 		for _, id := range own {
-			if err := w.space.DeleteTag(ctx, id); err != nil {
-				t.Fatal(err)
-			}
-			delete(w.links, id)
-			delete(w.present, id)
+			w.deleteTag(id)
 		}
-		w.setMembers(ctx, t, map[string]bool{doc.ID: true}, func(int) int { return math.MaxInt })
-		got := w.suggest(ctx, t, doc.ID)
+		w.setMembers(map[string]bool{doc.ID: true}, func(int) int { return math.MaxInt })
+		got := w.suggest(ctx, t, doc)
 		if len(got) == 0 {
 			n++
 		}
@@ -262,7 +299,7 @@ func (w *goldenWorld) untagged(ctx context.Context, t *testing.T) (none, noUnrel
 			ok++
 		}
 		for _, id := range own {
-			w.setTag(ctx, t, id)
+			w.setTag(id)
 		}
 	}
 	all := float64(len(w.ds.Documents))
@@ -278,7 +315,8 @@ func (w *goldenWorld) ancestorOfOwn(doc eval.Document, tagID string) bool {
 // bothTags stitches pairs of single-tag documents with different leaf tags
 // into one page (title, excerpt and the first 1000 bytes of each), about 100
 // pairs spread over the dataset, and reports how often both tags are
-// suggested. Each page is the item "page", deleted at the end.
+// suggested. A page is a text the application holds nowhere: it is only
+// suggested for.
 func (w *goldenWorld) bothTags(ctx context.Context, t *testing.T) float64 {
 	var single []eval.Document
 	for _, doc := range w.ds.Documents {
@@ -301,18 +339,12 @@ func (w *goldenWorld) bothTags(ctx context.Context, t *testing.T) float64 {
 			Title: a.Title + " / " + b.Title, Excerpt: a.Excerpt + " " + b.Excerpt, Site: a.Site,
 			Text: cutBytes(a.Text, 1000) + "\n\n" + cutBytes(b.Text, 1000),
 		}
-		if err := w.space.SetItem(ctx, "page", page.Essence()); err != nil {
-			t.Fatal(err)
-		}
-		w.setMembers(ctx, t, map[string]bool{a.ID: true, b.ID: true}, func(int) int { return math.MaxInt })
-		got := w.suggest(ctx, t, "page")
+		w.setMembers(map[string]bool{a.ID: true, b.ID: true}, func(int) int { return math.MaxInt })
+		got := w.suggest(ctx, t, page)
 		n++
 		if slices.Contains(got, w.tagIDs[a.Tags[0]]) && slices.Contains(got, w.tagIDs[b.Tags[0]]) {
 			both++
 		}
-	}
-	if err := w.space.DeleteItem(ctx, "page"); err != nil {
-		t.Fatal(err)
 	}
 	return float64(both) / float64(n)
 }

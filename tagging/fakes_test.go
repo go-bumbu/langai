@@ -2,6 +2,7 @@ package tagging
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"sync"
@@ -14,9 +15,8 @@ import (
 // the texts it is asked to embed, per role and per text, so a test can assert
 // what the engine embedded and what it found in the cache. It counts the
 // texts of a call that fails too. It can fail every call of one role, and
-// return a 3-dimensional vector for chosen texts. Named apart from the older
-// countingEmbedder of tagger_test.go, which counts calls. It is safe for
-// concurrent use.
+// return a 3-dimensional vector for chosen texts. It is safe for concurrent
+// use.
 type tallyEmbedder struct {
 	inner langai.Embedder
 	// noDims has Dimensions report 0, so a vector of another length passes
@@ -124,6 +124,59 @@ func (e *tallyEmbedder) callsOf(role langai.Role) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.calls[role]
+}
+
+// stubEmbedder maps texts to fixed vectors. Unknown text is an error, so
+// nothing is scored by accident.
+type stubEmbedder struct {
+	dims int
+	vecs map[string][]float32
+}
+
+func (s stubEmbedder) Dimensions() int { return s.dims }
+
+func (s stubEmbedder) Embed(_ context.Context, _ langai.Role, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		v, ok := s.vecs[text]
+		if !ok {
+			return nil, fmt.Errorf("stubEmbedder: no vector for %q", text)
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+// vectorlessEmbedder breaks the Embedder contract on purpose: every call
+// succeeds without returning a single vector.
+type vectorlessEmbedder struct{}
+
+func (vectorlessEmbedder) Dimensions() int { return 64 }
+
+func (vectorlessEmbedder) Embed(context.Context, langai.Role, []string) ([][]float32, error) {
+	return nil, nil
+}
+
+// brokenEmbedder breaks the Embedder contract on purpose: it says its vectors
+// have dims entries, and returns doc for every text embedded as a document (a
+// tag's name) and query for every one embedded as a query (an item's text).
+type brokenEmbedder struct {
+	dims       int
+	doc, query []float32
+}
+
+func (b brokenEmbedder) Dimensions() int { return b.dims }
+
+func (b brokenEmbedder) Embed(_ context.Context, role langai.Role, texts []string) ([][]float32, error) {
+	v := b.query
+	if role == langai.RoleDocument {
+		v = b.doc
+	}
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = slices.Clone(v)
+	}
+	return out, nil
 }
 
 // fakeCatalog is a map-backed Catalog. It ignores the index and partition, so

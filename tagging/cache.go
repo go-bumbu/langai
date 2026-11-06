@@ -3,10 +3,15 @@ package tagging
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"time"
 
 	"github.com/go-bumbu/langai"
 )
+
+// errEmptyIndex is refused by every cache, index and Tagger call: an index is
+// the hard tenant boundary, and an empty one names no tenant.
+var errEmptyIndex = errors.New("tagging: empty index")
 
 // CacheKey identifies one embedding: the model and role it was made under and
 // the SHA-256 of the text.

@@ -23,14 +23,14 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/zarf/examples/autotag"
-	"github.com/go-bumbu/langai/zarf/examples/mediasearch"
 	"github.com/go-bumbu/langai/media/ffmpeg"
 	"github.com/go-bumbu/langai/provider/onnx"
 	"github.com/go-bumbu/langai/provider/yzma"
 	"github.com/go-bumbu/langai/search"
 	"github.com/go-bumbu/langai/tagging"
 	"github.com/go-bumbu/langai/vector/sqlitevec"
+	"github.com/go-bumbu/langai/zarf/examples/autotag"
+	"github.com/go-bumbu/langai/zarf/examples/mediasearch"
 )
 
 // qwenAliases are the short names -model accepts for the vision model.

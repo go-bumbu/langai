@@ -127,7 +127,7 @@ func tagCutoff(nameVec []float32, memberVecs [][]float32, k, nameMin, memberMin 
 
 // never is the cutoff of a tag that no score can reach. A cosine is at most 1,
 // so 2 is out of reach, and unlike the +Inf or NaN that tagCutoff can return,
-// it is a number every store can keep.
+// it is a number every TagIndex can keep.
 const never = 2.0
 
 // storedCutoff returns the cutoff to store for a tag whose tagCutoff is c: c
@@ -163,43 +163,14 @@ func cosine(a, b []float32) float64 {
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
-// rank returns the ids of the tags for which vec, a document's embedding,
-// scores at least the tag's own cutoff, best score first and equal scores by
-// id, with no limit on how many. Each tag has its own cutoff, so a tag below
-// its cutoff says nothing about the next: every tag is checked. A tag with no
-// vector yet, or one built under another model than model, has nothing to
-// compare vec with and is skipped. It fails closed: a NaN score or cutoff picks
-// nothing. rank sorts a slice of its own, so tags keeps its order and its
-// vectors.
-//
-// With onePath, of the tags that reach their cutoff on one path of the tag
-// tree, only the one that clears it by most is picked (see shadowOnPaths).
-func rank(vec []float32, tags []TagRecord, model string, onePath bool) []string {
-	var ids []string
-	for _, s := range scores(vec, tags, model, onePath) {
-		if s.Picked() {
-			ids = append(ids, s.ID)
-		}
-	}
-	return ids
-}
-
-// scores returns vec's score against every tag that has a vector of model,
-// as scoreVectors does: a tag built under another model is skipped.
-func scores(vec []float32, tags []TagRecord, model string, onePath bool) []TagScore {
-	var vecs []TagVector
-	for _, tg := range tags {
-		if tg.Model == model {
-			vecs = append(vecs, TagVector{ID: tg.ID, Name: tg.Name, Vec: tg.Vec, Cutoff: tg.Cutoff})
-		}
-	}
-	return scoreVectors(vec, vecs, onePath)
-}
-
 // scoreVectors returns vec's score against every tag that has a vector, with
-// the tag's cutoff, best score first and equal scores by id. A NaN score
-// sorts last. With onePath, a tag that reaches its cutoff but is shadowed on
-// its path says by which tag (see shadowOnPaths).
+// the tag's cutoff, best score first and equal scores by id. Each tag has its
+// own cutoff, so a tag below its cutoff says nothing about the next: every tag
+// is scored, and a tag with no vector, which has nothing to compare vec with,
+// is skipped. A NaN score sorts last, and a NaN score or cutoff picks nothing.
+// It sorts a slice of its own, so tags keeps its order and its vectors. With
+// onePath, a tag that reaches its cutoff but is shadowed on its path says by
+// which tag (see shadowOnPaths).
 func scoreVectors(vec []float32, tags []TagVector, onePath bool) []TagScore {
 	var out []TagScore
 	paths := map[string][]string{}

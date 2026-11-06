@@ -13,7 +13,7 @@ models run in-process through llama.cpp and ONNX Runtime.
 | `search` | Turns documents into embedding vectors and answers free-text queries with the closest ones: `Index` and the markdown-aware chunker. `MediaIndex` does the same for pictures: it embeds images and videos (as sampled frames through an image model, or as whole segments through a video model) and answers an image, a video or, with a model that has a text side, a text with the items that look most like it, across both kinds. |
 | `media` | The ports for video input: `Sampler` turns a video file into the `Frame`s that stand for it, `VideoEmbedder` embeds it as whole `Segment`s, `Cutter` measures and cuts it. |
 | `media/ffmpeg` | `Sampler` and `Cutter` over the ffmpeg and ffprobe binaries: the first frame, every scene cut and one frame per interval, scaled down, capped per video, or the keyframes only, for long videos; stream-copy cuts for the segment embedder. |
-| `tagging` | Tags for a text. `Tagger` suggests tags among the ones an application already has and learns from the tags people put on items by hand: each tag's vector blends its name with the items tagged with it, and each tag is judged against its own cutoff. It keeps the tags, items and hand-made links in a `Store`: `MemStore` (in memory), `tagging/sqlitestore` (SQLite) or `tagging/pgstore` (Postgres), the last two over plain tables with no extension. `Generator` writes tags with no list to start from: a chat model proposes them and the embedding model scores each against the text, so one cutoff means the same on every text. |
+| `tagging` | Tags for a text. `Tagger` suggests tags among the ones an application already has and learns from the tags people put on items by hand: each tag's vector blends its name with the items tagged with it, and each tag is judged against its own cutoff. The application provides its tags and hand-made links through a `Catalog`; the Tagger keeps only an embedding cache (`MemCache`, `tagging/sqlitecache`, `tagging/pgcache`) and an in-memory index of tag vectors. `Generator` writes tags with no list to start from: a chat model proposes them and the embedding model scores each against the text, so one cutoff means the same on every text. |
 | `vector` | The `Store` interface for search vectors, and `MemStore` (exact, in memory, for tests and evaluation). |
 | `vector/sqlitevec` | `Store` on SQLite with the sqlite-vec extension (CGO). |
 | `vector/pgvec` | `Store` on Postgres with pgvector. |
@@ -37,10 +37,10 @@ langai/                 the shared ports: Embedder, Completer, Role
 │
 ├── search/             text → similar documents; image or video → similar images and videos
 ├── tagging/            text → tags from your corpus (Tagger), text → new tags (Generator)
-│   ├── sqlitestore/    the Tagger's Store on SQLite
-│   ├── pgstore/        the Tagger's Store on Postgres
-│   ├── storetest/      conformance suite for a Store
-│   └── internal/       sqlstore: the SQL the two stores share
+│   ├── sqlitecache/    the Tagger's EmbeddingCache on SQLite
+│   ├── pgcache/        the Tagger's EmbeddingCache on Postgres
+│   ├── cachetest/      conformance suite for an EmbeddingCache
+│   └── internal/       sqlcache: the SQL the two caches share
 ├── mediatag/           planned: image or video → tags
 ├── caption/            planned: image or video → description
 │
@@ -207,7 +207,7 @@ through `image.RegisterFormat`.
   picture well below. `onnx.DINOv2Model` (`facebook/dinov2-base`, Apache-2.0, 768
   dimensions) has no text side and keeps instance-level detail, so it suits
   near-duplicate matching: it puts unrelated pictures further apart. The two live in
-  different spaces: one model per collection, as `tagging` keeps one model per store.
+  different spaces: one model per collection, as `tagging` keys every embedding by model.
   `Open` runs any other ONNX vision model from a `ModelSpec` (tensor names, pooling,
   input size, resize and normalization).
 - **Videos.** `ffmpeg.Config` sets the scene-change threshold (0.4), the shortest and
@@ -274,54 +274,53 @@ pictures and clips, and an image finds the stretch of a video it appears in.
 ### Automatic tagging
 
 ```go
-tagger, err := tagging.NewTagger(emb, store, tagging.TaggerConfig{Model: yzma.DefaultModel})
+// catalog is your tagging.Catalog: Tags lists a space's tags (id, name, revision),
+// Members the texts of the items tagged with some of them by hand
+cache, err := sqlitecache.New(ctx, db)
+tagger, err := tagging.NewTagger(emb, catalog, cache, tagging.TaggerConfig{Model: yzma.DefaultModel})
 space := tagger.Scope("tenant-1", "space-7")
-space.SetTag(ctx, "bread", "cooking / bread")   // create or rename
-space.SetItem(ctx, "item-42", essence)          // create or edit; embeds only when text or model changed
-space.TagByHand(ctx, "item-42", "bread")        // a person tagged it: teaches the tag
-space.UntagByHand(ctx, "item-42", "bread")
-ids, err := space.Suggest(ctx, "item-42")       // auto tags, best first; never stored as links
-scores, err := space.Scores(ctx, "item-42")     // every tag's score and cutoff: why a tag was or was not picked
-space.DeleteItem(ctx, "item-42"); space.DeleteTag(ctx, "bread")
-space.Rebuild(ctx)                              // optional warm-up, e.g. after switching models
+ids, err := space.Suggest(ctx, rev, essence)    // auto tags, best first; never stored as links
+scores, err := space.Scores(ctx, rev, essence)  // every tag's score and cutoff: why a tag was or was not picked
+err = space.Warm(ctx, rev, essences...)         // optional warm-up, e.g. after switching models
 ```
 
-The Tagger owns what it learns from: your application reports its tags and its items
-(bookmarks, notes, pages) by id and text, plus the tags people put on items by hand, and
-asks for suggestions. As in search, the first argument of `Scope` is the hard isolation
-boundary (a tenant) and the second a space within it; scopes never see each other's tags,
-items or links. Use a tag's full path as its name (`colors / warm / red` says more than
-`red`). `TaggerConfig.Model` names the embedding model, and every stored vector is kept with the
-model it came from.
+Your application owns what the Tagger learns from: its tags, its items (bookmarks, notes,
+pages) and the tags people put on items by hand. It never tells the Tagger about a
+change; the Tagger reads the `Catalog` when the space's revision `rev` changes. `rev` is an
+opaque string the application changes whenever a tag, a hand-made link or a tagged item
+of the space does (a counter on the space's row will do), and each tag's own revision
+changes whenever its members do: a link added or removed, a member's text edited, a
+member deleted. At the revision it was last built at, a Suggest never calls the catalog.
+As in search, the first argument of `Scope` is the hard isolation boundary (a tenant) and
+the second a space within it; scopes never see each other's tags, and no embedding is read
+on behalf of another index. Use a tag's full path as its name (`colors / warm / red` says
+more than `red`). `TaggerConfig.Model` names the embedding model, and every cached vector
+is kept under the model it came from.
 
 **Long items.** An embedder reads a window of tokens and silently drops the rest: the
 default yzma model reads 512 tokens, some 2 KB of prose, so only the start of a longer item
 counts. `TaggerConfig.ChunkBytes` (off by default) embeds a longer item in pieces of about
-equal size cut at whitespace (`tagging.Chunk`) and stores the mean of their vectors; set
+equal size cut at whitespace (`tagging.Chunk`) and caches the mean of their vectors; set
 it a little under the window, 2000 for the default model. A mean of pieces lies closer to
 every tag than one piece does: on a 4.9 KB note every score rose by 0.04 to 0.05, so a
 chunked item clears a cutoff more easily, and the cutoffs were measured on unchunked
-items. Items are stored under the model marked with the chunk size, so changing
+items. Items are cached under the model marked with the chunk size, so changing
 `ChunkBytes` re-embeds them as switching models does.
 
-**Storage.** A `Store` keeps the tags, the items with their embeddings and the hand-made
-links. `tagging.NewMemStore()` keeps them in memory, for tests and tiny corpora.
-`tagging/sqlitestore` and `tagging/pgstore` keep them in a SQLite or Postgres database
-that you open and pass to `New(ctx, db)`; your application imports the driver. Both use
-plain tables and need no extension: a space has few tags, so the Tagger scores them in
-Go. Each index gets a table set of its own, and a store opened with `WithGeneration`
-keeps further table sets of its own, so a migration can build a second model's tags and
-vectors next to the current ones before switching over. SQLite allows one writer at a
-time: when several goroutines write, open it with `?_busy_timeout=5000&_txlock=immediate`
-(for `go-sqlite3`: `sql.Open("sqlite3", "autotag.db?_busy_timeout=5000&_txlock=immediate")`),
-so a writer waits for its turn instead of failing with "database is locked". Postgres
-needs no such setup: concurrent writes queue on row locks. That locking relies on READ
-COMMITTED, Postgres's default isolation level. `tagging/pgstore` begins its own
-transactions at that level, but its single-statement writes run at the session's
-default, so keep `default_transaction_isolation` at `read committed` for its
-connections: under `repeatable read` or `serializable` they can fail with serialization
-errors, which the store does not retry. `tagging/storetest` is the conformance suite for
-a `Store` of your own.
+**Storage.** The Tagger keeps only derived data, and losing it costs time, never
+correctness. An `EmbeddingCache` holds every embedding, keyed by index, model, role and the
+hash of the text, so an edited text or another model simply misses and is embedded again.
+`tagging.NewMemCache()` keeps it in memory, for tests and tiny corpora;
+`tagging/sqlitecache` and `tagging/pgcache` keep it in one plain table of a SQLite or
+Postgres database that you open and pass to `New(ctx, db)`; your application imports the
+driver. `Prune` drops the rows not used since a given time, such as the texts of edited
+items. SQLite allows one writer at a time: when several goroutines write, open it with
+`?_busy_timeout=5000&_txlock=immediate`, so a writer waits for its turn instead of failing
+with "database is locked". `tagging/cachetest` is the conformance suite for a cache of your
+own. Each space's tag vectors and cutoffs live in a `TagIndex`, by default a `MemIndex`
+(an LRU of spaces under a 256 MB budget; `WithTagIndex` sets another), rebuilt from the
+cache, never from the model, after a restart or an eviction. A space has few tags, so the
+Tagger scores them all in Go.
 
 How a tag is judged:
 
@@ -344,34 +343,24 @@ How a tag is judged:
   the path implies; a general programming page gets `dev` and not the `dev / web` it
   clears by less; two children that both beat their parent are both suggested.
   `TagScore.ShadowedBy` names the winner; `TaggerConfig.AllPathLevels` turns the rule
-  off. A suggestion is never stored as a link: only `TagByHand` teaches a tag.
-- **Changes rebuild the affected tags right away.** Every change to what a tag's vectors
-  depend on bumps the tag's version, and a rebuild stores its result only while the tag
-  is still at the version it read, so a hand tag that lands mid-rebuild is never
-  overwritten. A write whose rebuild fails stays stored and returns an error wrapping
-  `tagging.ErrNotRebuilt`: retrying it is a safe no-op, and the next `Suggest` or
-  `Rebuild` rebuilds the tag, as it does one whose rebuild was overtaken. A `Suggest`
-  that cannot rebuild a tag still ranks the others and returns their ids with that
-  error, leaving the tag out or scoring it with its previous vectors. A change to
-  `NameMinScore`, `MemberMinScore` or `SmoothingK` leaves tags stale the same way and
-  they are rebuilt lazily, without re-embedding anything.
-- **Bulk writes rebuild as they go:** every hand tag rebuilds its tag at once, from all
-  of its members, so importing n hand tags of one tag reads its members n times (about
-  n²/2 rows), and every edit of an item rebuilds each tag it carries.
-- **One model and one set of scoring settings per store:** every Tagger that shares a
-  `Store` must use the same `TaggerConfig.Model`, `NameMinScore`, `MemberMinScore`,
-  `SmoothingK` and `ChunkBytes` (`AllPathLevels` only filters what is returned, and may
-  differ). A Tagger takes tags built under another model or with other settings for
-  stale and rebuilds them, re-embedding their members when the model differs, so two
-  Taggers that differ rebuild each other's tags at every `Suggest` and never settle.
-- **Switching models:** the Tagger stores each item's text next to its embedding, so after
-  you change `TaggerConfig.Model` it re-embeds the stored texts it needs, lazily, and never
-  mixes the vectors of two models: a tag's members when the tag is rebuilt, an item at
-  its next `Suggest`. To switch in place, stop every instance together, start them with
-  the new model, and call `Scope.Rebuild` on every scope. To switch without stopping,
-  open a new generation of the store with `WithGeneration`: its tables start empty, so
-  replay every tag, item and hand-made link into it, and write to both stores until the
-  cutover.
+  off. A suggestion is never stored as a link: only the application's hand-made links
+  teach a tag.
+- **A new revision rebuilds only what moved.** The Tagger reads the catalog's tags,
+  rebuilds from the cache the ones whose revision, name, model or settings changed, with
+  one `Members` call, and drops the ones gone; the callers that ask at one revision
+  together share one rebuild. So a bulk import costs one rebuild per changed tag, at the
+  next call. A catalog or embedder failure in a rebuild fails the call with no tags and an error
+  wrapping `tagging.ErrNotRebuilt`; the index stays as it was, so the next call tries
+  again, and what was embedded before the failure stays cached.
+- **One configuration per shared index:** Taggers that share a `TagIndex` (through
+  `WithTagIndex`) must use the same `Model`, `NameMinScore`, `MemberMinScore`,
+  `SmoothingK` and `ChunkBytes` (`AllPathLevels` may differ), or each takes the other's
+  tags for stale and they rebuild at every call. Taggers of different models can share
+  a cache: the model is part of every key.
+- **Switching models** needs no migration: after you change `TaggerConfig.Model` the new
+  model misses the cache and embeds what it needs, lazily, never mixing two models'
+  vectors. `Scope.Warm` with the corpus's texts does it ahead of time, and `Prune` later
+  drops the old model's rows.
 - **Rejected alternatives:** kNN voting on its own (it never abstains); a kNN agreement
   check (it blocks second tags on two-topic pages); one global cutoff (it fits only one
   stage, names or examples); the cosine to the members' centroid (it drifts with their
@@ -384,8 +373,8 @@ How a tag is judged:
 
 The golden numbers below measure tagging over *essences*: a page's title, excerpt and
 site name followed by the first 2 KB of its text, one per line
-(`eval.Document.Essence`). Pass `SetItem` your documents built the same way to get what
-the numbers say.
+(`eval.Document.Essence`). Pass `Suggest`, and your catalog's `Members`, your documents
+built the same way to get what the numbers say.
 
 ### Known limitations
 

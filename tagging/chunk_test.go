@@ -97,16 +97,17 @@ func (e truncating) Embed(ctx context.Context, role langai.Role, texts []string)
 // past what the truncating embedder reads.
 var longItem = strings.Repeat("lorem ipsum dolor sit amet ", 20) + strings.Repeat("sourdough bread loaf crust ", 6)
 
-func newChunkTagger(t *testing.T, store Store, chunk int) *Scope {
+func newChunkScope(t *testing.T, chunk int) *Scope {
 	t.Helper()
-	tg, err := NewTagger(truncating{n: 200}, store, TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2, ChunkBytes: chunk})
+	cat := &fakeCatalog{tags: []CatalogTag{{"bread", "sourdough bread", "1"}}}
+	tg, err := NewTagger(truncating{n: 200}, cat, NewMemCache(), TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2, ChunkBytes: chunk})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return tg.Scope("ix", "p")
 }
 
-func TestTagger_ChunkBytesReadsTheWholeItem(t *testing.T) {
+func TestScope_ChunkBytesReadsTheWholeItem(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
 		chunk int
@@ -115,102 +116,15 @@ func TestTagger_ChunkBytesReadsTheWholeItem(t *testing.T) {
 		{0, nil},                 // the embedder sees filler only
 		{180, []string{"bread"}}, // every piece is read, the last one is about bread
 	} {
-		s := newChunkTagger(t, NewMemStore(), c.chunk)
-		if err := s.SetTag(ctx, "bread", "sourdough bread"); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.SetItem(ctx, "long", longItem); err != nil {
-			t.Fatal(err)
-		}
-		got, err := s.Suggest(ctx, "long")
+		got, err := newChunkScope(t, c.chunk).Suggest(ctx, "1", longItem)
 		if err != nil || !slices.Equal(got, c.want) {
 			t.Errorf("ChunkBytes %d: Suggest = %v, %v; want %v", c.chunk, got, err, c.want)
 		}
 	}
 }
 
-func TestTagger_ChangingChunkBytesReembedsItemsAndRebuildsTags(t *testing.T) {
-	ctx := context.Background()
-	store := NewMemStore()
-	whole := newChunkTagger(t, store, 0)
-	if err := whole.SetTag(ctx, "bread", "sourdough bread"); err != nil {
-		t.Fatal(err)
-	}
-	if err := whole.SetItem(ctx, "long", longItem); err != nil {
-		t.Fatal(err)
-	}
-	if err := whole.TagByHand(ctx, "long", "bread"); err != nil {
-		t.Fatal(err)
-	}
-	item, _, _ := store.Item(ctx, "ix", "p", "long")
-	if item.Model != "fake" {
-		t.Errorf("unchunked item stored under %q", item.Model)
-	}
-
-	chunked := newChunkTagger(t, store, 180)
-	// the same text: SetItem re-embeds it all the same, in pieces
-	if err := chunked.SetItem(ctx, "long", longItem); err != nil {
-		t.Fatal(err)
-	}
-	item, _, _ = store.Item(ctx, "ix", "p", "long")
-	if item.Model != "fake+chunks=180" {
-		t.Errorf("chunked item stored under %q", item.Model)
-	}
-	got, err := chunked.Suggest(ctx, "long")
-	if err != nil || !slices.Equal(got, []string{"bread"}) {
-		t.Errorf("Suggest after the switch = %v, %v", got, err)
-	}
-	tag, _, _ := store.Tag(ctx, "ix", "p", "bread")
-	if !strings.Contains(tag.Params, "chunk=180") || tag.Built != tag.Version {
-		t.Errorf("tag not rebuilt for the chunk size: params %q, built %d of %d", tag.Params, tag.Built, tag.Version)
-	}
-}
-
 func TestNewTagger_RefusesNegativeChunkBytes(t *testing.T) {
-	if _, err := NewTagger(langaitest.FakeEmbedder{}, NewMemStore(), TaggerConfig{Model: "m", ChunkBytes: -1}); err == nil {
+	if _, err := NewTagger(langaitest.FakeEmbedder{}, &fakeCatalog{}, NewMemCache(), TaggerConfig{Model: "m", ChunkBytes: -1}); err == nil {
 		t.Error("want an error")
-	}
-}
-
-func TestScope_ScoresEveryTagAndAgreesWithSuggest(t *testing.T) {
-	ctx := context.Background()
-	tg, err := NewTagger(langaitest.FakeEmbedder{}, NewMemStore(), TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := tg.Scope("ix", "p")
-	for id, name := range map[string]string{"bread": "bread baking", "travel": "travel hiking trail", "tax": "income tax"} {
-		if err := s.SetTag(ctx, id, name); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := s.SetItem(ctx, "it", "baking bread at home, then a hiking trail"); err != nil {
-		t.Fatal(err)
-	}
-	got, err := s.Scores(ctx, "it")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("Scores = %+v, want all three tags", got)
-	}
-	var picked []string
-	for i, sc := range got {
-		if i > 0 && sc.Score > got[i-1].Score {
-			t.Errorf("not best first: %+v", got)
-		}
-		if sc.Picked() {
-			picked = append(picked, sc.ID)
-		}
-	}
-	want, err := s.Suggest(ctx, "it")
-	if err != nil || !slices.Equal(picked, want) {
-		t.Errorf("picked %v, Suggest %v (%v)", picked, want, err)
-	}
-	if slices.Contains(picked, "tax") || !slices.Contains(picked, "bread") {
-		t.Errorf("picked %v from %+v", picked, got)
-	}
-	if _, err := s.Scores(ctx, "nope"); err == nil {
-		t.Error("Scores of an unknown item: want an error")
 	}
 }
