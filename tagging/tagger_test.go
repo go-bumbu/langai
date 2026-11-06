@@ -72,11 +72,14 @@ func TestNew_RequiresEmbedderStoreAndModel(t *testing.T) {
 
 func TestNew_Defaults(t *testing.T) {
 	tg := mustNew(t, langaitest.FakeEmbedder{}, NewMemStore(), TaggerConfig{Model: "m"})
-	if tg.cfg.NameMinScore != 0.46 {
-		t.Fatalf("NameMinScore = %v, want default 0.46", tg.cfg.NameMinScore)
+	if tg.cfg.NameMinScore != 0.42 {
+		t.Fatalf("NameMinScore = %v, want default 0.42", tg.cfg.NameMinScore)
 	}
-	if tg.cfg.MemberMinScore != 0.70 {
-		t.Fatalf("MemberMinScore = %v, want default 0.70", tg.cfg.MemberMinScore)
+	if tg.cfg.MemberMinScore != 0.58 {
+		t.Fatalf("MemberMinScore = %v, want default 0.58", tg.cfg.MemberMinScore)
+	}
+	if tg.cfg.AllPathLevels {
+		t.Fatal("AllPathLevels is on by default, want one tag per path")
 	}
 	if tg.cfg.SmoothingK != 3 {
 		t.Fatalf("SmoothingK = %v, want default 3", tg.cfg.SmoothingK)
@@ -192,14 +195,14 @@ func (s stubEmbedder) Embed(_ context.Context, _ langai.Role, texts []string) ([
 
 // taughtAndPlain is the embedder of the per-tag cutoff tests (see
 // fillTaughtAndPlain). The text "query" embeds as q and "member" as m. The
-// name "taught" scores 0.55 against q and m scores 0.60, so a tag "taught"
-// with three members of text "member" blends to a score of 0.705 against q.
+// name "taught" scores 0.55 against q and m scores 0.40, so a tag "taught"
+// with three members of text "member" blends to a score of 0.608 against q.
 // The name "plain" scores 0.50.
 func taughtAndPlain() stubEmbedder {
 	return stubEmbedder{dims: 4, vecs: map[string][]float32{
 		"taught": unitVec(0.55, math.Sqrt(1-0.55*0.55), 0, 0),
 		"plain":  unitVec(0.50, 0, 0, math.Sqrt(0.75)),
-		"member": unitVec(0.60, 0, 0.80, 0),
+		"member": unitVec(0.40, 0, math.Sqrt(1-0.40*0.40), 0),
 		"query":  unitVec(1, 0, 0, 0),
 	}}
 }
@@ -229,9 +232,9 @@ func suggestTaughtAndPlain(t *testing.T, cfg TaggerConfig) []string {
 	return suggest(t, space, "q")
 }
 
-// With the default minimums "taught" blends to 0.705, which clears a global
-// 0.46 but not its own cutoff (0.711), since its name scores 0.55 against 0.46
-// and its members 0.60 against 0.70. "plain" scores 0.50 against 0.46.
+// With the default minimums "taught" blends to 0.608, which clears a global
+// 0.42 but not its own cutoff (0.640), since its name scores 0.55 against 0.42
+// and its members 0.40 against 0.58. "plain" scores 0.50 against 0.42.
 // "taught" comes first, so an implementation that stops at the first refused
 // tag never reaches "plain".
 func TestSuggest_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
@@ -241,10 +244,10 @@ func TestSuggest_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
 }
 
 // MemberMinScore reaches the Tagger, and moves the cutoff of a tag with
-// members. The default of 0.70 hides it: a Tagger that used 0.70 whatever it
+// members. The default of 0.58 hides it: a Tagger that used 0.58 whatever it
 // was given would pass every other test. Lowered to 0.5, the cutoff of "taught"
-// (3 members, so a blend weight of 0.5) drops from 0.711 to about 0.589, below
-// its score of 0.705, so it is suggested along with "plain", and first.
+// (3 members, so a blend weight of 0.5) drops from 0.640 to about 0.589, below
+// its score of 0.608, so it is suggested along with "plain", and first.
 func TestSuggest_MemberMinScoreSetsTheCutoffOfATaughtTag(t *testing.T) {
 	if got := suggestTaughtAndPlain(t, TaggerConfig{Model: "stub", MemberMinScore: 0.5}); !slices.Equal(got, []string{"1", "2"}) {
 		t.Fatalf("Suggest = %v, want [taught plain]", got)
@@ -379,7 +382,7 @@ func TestHandTagStoreErrors_NameBothIDs(t *testing.T) {
 func TestTagByHand_TeachesTheTagAndUntagForgets(t *testing.T) {
 	ctx := context.Background()
 	space := mustNew(t, langaitest.FakeEmbedder{}, NewMemStore(),
-		TaggerConfig{Model: "fake", NameMinScore: 0.3, MemberMinScore: 0.5}).Scope("1", "10")
+		TaggerConfig{Model: "fake", NameMinScore: 0.3, MemberMinScore: 0.4}).Scope("1", "10")
 	must(t, space.SetTag(ctx, "bread", "cooking / bread"))
 	must(t, space.SetTag(ctx, "japan", "travel / japan"))
 	must(t, space.SetItem(ctx, "doc", "Croissant dough with cold butter"))
@@ -1364,6 +1367,43 @@ func TestSuggest_OtherErrorsReturnNoIDs(t *testing.T) {
 		ids, err := space.Suggest(ctx, tc.itemID)
 		if ids != nil || !errors.Is(err, tc.want) || errors.Is(err, ErrNotRebuilt) {
 			t.Errorf("Suggest when %s = %v, %v; want no ids and %v, and not ErrNotRebuilt", tc.name, ids, err, tc.want)
+		}
+	}
+}
+
+// TestSuggest_OneTagPerPathUnlessAllPathLevels: "dev" and "dev / go" both
+// clear their cutoffs, "dev / go" by more, so Suggest returns it alone and
+// Scores says "dev" is shadowed by it; with AllPathLevels both come back.
+func TestSuggest_OneTagPerPathUnlessAllPathLevels(t *testing.T) {
+	ctx := context.Background()
+	emb := stubEmbedder{dims: 3, vecs: map[string][]float32{
+		"dev":      unitVec(0.60, 0.80, 0),
+		"dev / go": unitVec(0.70, 0, math.Sqrt(1-0.70*0.70)),
+		"query":    unitVec(1, 0, 0),
+	}}
+	for _, tc := range []struct {
+		all  bool
+		want []string
+	}{{false, []string{"go"}}, {true, []string{"go", "dev"}}} {
+		space := mustNew(t, emb, NewMemStore(), TaggerConfig{Model: "stub", AllPathLevels: tc.all}).Scope("1", "10")
+		must(t, space.SetTag(ctx, "dev", "dev"))
+		must(t, space.SetTag(ctx, "go", "dev / go"))
+		must(t, space.SetItem(ctx, "q", "query"))
+		if got := suggest(t, space, "q"); !slices.Equal(got, tc.want) {
+			t.Errorf("AllPathLevels %v: Suggest = %v, want %v", tc.all, got, tc.want)
+		}
+		scores, err := space.Scores(ctx, "q")
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantShadow := "go"
+		if tc.all {
+			wantShadow = ""
+		}
+		for _, s := range scores {
+			if s.ID == "dev" && (s.ShadowedBy != wantShadow || s.Picked() == !tc.all) {
+				t.Errorf("AllPathLevels %v: Scores has dev %+v, want ShadowedBy %q", tc.all, s, wantShadow)
+			}
 		}
 	}
 }

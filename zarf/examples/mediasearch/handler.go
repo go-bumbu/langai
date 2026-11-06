@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"net/http"
 	"strconv"
+
+	"github.com/go-bumbu/langai/search"
 )
 
 //go:embed ui
@@ -54,7 +56,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrNotFound), errors.Is(err, search.ErrNotIndexed):
 		status = http.StatusNotFound
 	case errors.Is(err, ErrNotVideo), errors.Is(err, ErrUnsupported):
 		status = http.StatusBadRequest
@@ -93,7 +95,8 @@ func limitOf(r *http.Request) int {
 }
 
 func (h *handler) similar(w http.ResponseWriter, r *http.Request) {
-	res, err := h.lib.Similar(r.Context(), r.PathValue("id"), limitOf(r))
+	// embed=1 embeds the file again instead of reusing its stored vectors
+	res, err := h.lib.Similar(r.Context(), r.PathValue("id"), limitOf(r), r.URL.Query().Get("embed") == "1")
 	if err != nil {
 		writeError(w, err)
 		return

@@ -42,10 +42,14 @@ type ScopeFilter struct {
 // isolation boundary) and located within it by two opaque coordinates,
 // partition and collection. Implementations must return results ordered by
 // descending score and must never let one index's data appear in another's.
+// Chunks returns a document's stored chunks, vectors included, ordered by
+// Seq, so a caller can search with what is already indexed instead of
+// embedding it again; an unknown document has none (nil, no error).
 type Store interface {
 	Upsert(ctx context.Context, index, partition, collection, docID, contentHash string, chunks []Chunk) error
 	Delete(ctx context.Context, index, partition, collection, docID string) error
 	ContentHash(ctx context.Context, index, partition, collection, docID string) (string, error)
+	Chunks(ctx context.Context, index, partition, collection, docID string) ([]Chunk, error)
 	Search(ctx context.Context, index, partition, collection string, vector []float32, limit int) ([]Match, error)
 	SearchScope(ctx context.Context, index string, f ScopeFilter, vector []float32, limit int) ([]Match, error)
 }

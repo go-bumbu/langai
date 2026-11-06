@@ -6,12 +6,14 @@
 // learns from: an app reports its tags and its items, by id and text, and the
 // tags a person put on items by hand, and asks for suggestions.
 //
-// Each tag's vector blends an embedding of its name (a prior) with the
-// centroid of the items tagged with it by hand, its members (see blend), so a
+// Each tag's vector blends an embedding of its name (a prior) with the mean
+// of the items tagged with it by hand, its members (see blend), so a
 // brand-new tag with no members yet still tags by its name, and a tag that
 // accumulates members gradually tags by example instead. An item gets every
 // tag whose score reaches that tag's own cutoff (see tagCutoff), with no limit
-// on how many.
+// on how many, except that tag names are paths of a tree ("dev / go" under
+// "dev") and of the tags on one path only the one the item clears the cutoff
+// of by most is picked (see TaggerConfig.AllPathLevels).
 //
 // A Store keeps the tags, the items with their embeddings and the hand-made
 // links of every scope. Every change rebuilds the vectors of the tags it

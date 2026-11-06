@@ -72,19 +72,33 @@ func TestHandler_PageInfoAndItems(t *testing.T) {
 	}
 }
 
+func TestHandler_SimilarStoredOrReembedded(t *testing.T) {
+	_, srv := serve(t)
+	status, body, _ := get(t, srv.URL+"/api/similar/sub%20dir/green%20blue.png?limit=2&embed=1")
+	var res Result
+	decode(t, body, &res)
+	if status != 200 || len(res.Hits) != 2 || !res.Hits[0].Self || res.Stored || res.Frames != 1 {
+		t.Errorf("similar, re-embedded: %d %+v", status, res)
+	}
+	// the broken file has no stored vectors, and fails to decode when re-embedded
+	if status, body, _ := get(t, srv.URL+"/api/similar/broken.jpg"); status != 404 || !bytes.Contains(body, []byte("no stored vectors")) {
+		t.Errorf("broken, stored: %d %s", status, body)
+	}
+	if status, _, _ := get(t, srv.URL+"/api/similar/broken.jpg?embed=1"); status != 500 {
+		t.Errorf("broken, re-embedded: %d", status)
+	}
+}
+
 func TestHandler_SimilarAndPictures(t *testing.T) {
 	_, srv := serve(t)
 	status, body, _ := get(t, srv.URL+"/api/similar/sub%20dir/green%20blue.png?limit=2")
 	var res Result
 	decode(t, body, &res)
-	if status != 200 || len(res.Hits) != 2 || !res.Hits[0].Self {
+	if status != 200 || len(res.Hits) != 2 || !res.Hits[0].Self || !res.Stored {
 		t.Errorf("similar: %d %+v", status, res)
 	}
 	if status, body, _ := get(t, srv.URL+"/api/similar/nope.png"); status != 404 || !bytes.Contains(body, []byte("error")) {
 		t.Errorf("unknown: %d %s", status, body)
-	}
-	if status, _, _ := get(t, srv.URL+"/api/similar/broken.jpg"); status != 500 {
-		t.Errorf("broken: %d", status)
 	}
 
 	if status, _, ct := get(t, srv.URL+"/thumb/sub%20dir/green%20blue.png"); status != 200 || ct != "image/jpeg" {

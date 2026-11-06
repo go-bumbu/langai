@@ -304,6 +304,59 @@ func TestMediaIndex_VideoQueryFindsImagesAndVideos(t *testing.T) {
 	}
 }
 
+func TestMediaIndex_SearchIndexedReusesTheStoredVectors(t *testing.T) {
+	sampler := &countingSampler{frames: clipFrames()}
+	ix, emb, _ := newMediaIndex(t, WithSampler(sampler))
+	ctx := context.Background()
+	if err := ix.IndexVideo(ctx, "clip", tempFile(t, "clip.mp4", []byte("clip"))); err != nil {
+		t.Fatal(err)
+	}
+	for id, img := range map[string]image.Image{"a": pic(64, 48, green, red), "far": pic(64, 48, green, green)} {
+		if err := ix.IndexImage(ctx, id, bytes.NewReader(encoded(t, img))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := emb.calls.Load()
+
+	// an image: itself first, then the clip by its frame at 4 s
+	hits, err := ix.SearchIndexed(ctx, "a", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 3 || hits[0].DocID != "a" || hits[0].Score < 0.999 {
+		t.Fatalf("hits = %+v, want a itself first of 3", hits)
+	}
+	if hits[1].DocID != "clip" || hits[1].At != 4*time.Second || hits[1].QueryAt != 0 {
+		t.Errorf("hits[1] = %+v, want clip by its 4 s frame", hits[1])
+	}
+
+	// a video: every stored frame is a query, QueryAt its time
+	hits, err = ix.SearchIndexed(ctx, "clip", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]MediaMatch{}
+	for _, h := range hits {
+		byID[h.DocID] = h
+	}
+	if h := byID["clip"]; h.Score < 0.999 {
+		t.Errorf("clip = %+v, want itself at ~1", h)
+	}
+	if h := byID["a"]; h.Score < 0.999 || h.QueryAt != 4*time.Second {
+		t.Errorf("a = %+v, want found by the query frame at 4 s", h)
+	}
+
+	if got := emb.calls.Load(); got != calls {
+		t.Errorf("SearchIndexed ran the embedder %d times, want none", got-calls)
+	}
+	if sampler.calls != 1 {
+		t.Errorf("sampler ran %d times, want only the indexing", sampler.calls)
+	}
+	if _, err := ix.SearchIndexed(ctx, "missing", 10); !errors.Is(err, ErrNotIndexed) {
+		t.Errorf("unknown id: %v, want ErrNotIndexed", err)
+	}
+}
+
 func TestMediaIndex_MinScoreLimitAndEmptyQueries(t *testing.T) {
 	ix, _, _ := newMediaIndex(t, WithMediaMinScore(0.999))
 	ctx := context.Background()

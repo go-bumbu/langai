@@ -27,7 +27,7 @@ func scanned(t *testing.T) *fixture {
 
 func TestSimilar_ImageFindsItselfAndTheClipFrame(t *testing.T) {
 	f := scanned(t)
-	res, err := f.lib.Similar(context.Background(), "red.png", 0)
+	res, err := f.lib.Similar(context.Background(), "red.png", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestSimilar_ImageFindsItselfAndTheClipFrame(t *testing.T) {
 	if h := res.Hits[len(res.Hits)-1]; h.Item.ID != "sub dir/green blue.png" || h.Score > 0.99 {
 		t.Errorf("last hit = %+v, want the other photo lower", h)
 	}
-	limited, err := f.lib.Similar(context.Background(), "red.png", 1)
+	limited, err := f.lib.Similar(context.Background(), "red.png", 1, true)
 	if err != nil || len(limited.Hits) != 1 {
 		t.Errorf("limit 1: %d hits, err %v", len(limited.Hits), err)
 	}
@@ -51,7 +51,7 @@ func TestSimilar_ImageFindsItselfAndTheClipFrame(t *testing.T) {
 
 func TestSimilar_VideoFindsItsPictures(t *testing.T) {
 	f := scanned(t)
-	res, err := f.lib.Similar(context.Background(), "clip.mp4", 0)
+	res, err := f.lib.Similar(context.Background(), "clip.mp4", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,17 +73,56 @@ func TestSimilar_VideoFindsItsPictures(t *testing.T) {
 	}
 }
 
+func TestSimilar_StoredVectorsRunNoModel(t *testing.T) {
+	f := scanned(t)
+	ctx := context.Background()
+	calls := f.emb.calls.Load()
+	samples := f.sampler.calls.Load()
+	res, err := f.lib.Similar(ctx, "red.png", 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Stored || res.Frames != 0 || res.Query == nil || res.Query.ID != "red.png" || len(res.Hits) < 2 {
+		t.Fatalf("result = %+v", res)
+	}
+	if h := res.Hits[0]; !h.Self || h.Item.ID != "red.png" || h.Score < 0.999 {
+		t.Errorf("first hit = %+v, want self with score ~1", h)
+	}
+	// a video too, by its stored frames, with no sampler either
+	f.lib.cfg.Sampler = nil
+	res, err = f.lib.Similar(ctx, "clip.mp4", 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Hit{}
+	for _, h := range res.Hits {
+		byID[h.Item.ID] = h
+	}
+	if h := byID["sub dir/green blue.png"]; h.Score < 0.99 || h.QueryAtMs != 2000 {
+		t.Errorf("green blue = %+v, want found by the stored frame at 2 s", h)
+	}
+	if got := f.emb.calls.Load(); got != calls {
+		t.Errorf("embedder ran %d times, want none", got-calls)
+	}
+	if got := f.sampler.calls.Load(); got != samples {
+		t.Errorf("sampler ran %d times, want none", got-samples)
+	}
+	if _, err := f.lib.Similar(ctx, "broken.jpg", 0, false); !errors.Is(err, search.ErrNotIndexed) {
+		t.Errorf("unindexed item: %v, want search.ErrNotIndexed", err)
+	}
+}
+
 func TestSimilar_Errors(t *testing.T) {
 	f := scanned(t)
 	ctx := context.Background()
-	if _, err := f.lib.Similar(ctx, "nope.png", 0); !errors.Is(err, ErrNotFound) {
+	if _, err := f.lib.Similar(ctx, "nope.png", 0, true); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown id: %v", err)
 	}
-	if _, err := f.lib.Similar(ctx, "broken.jpg", 0); err == nil {
+	if _, err := f.lib.Similar(ctx, "broken.jpg", 0, true); err == nil {
 		t.Error("broken image: want error")
 	}
 	f.lib.cfg.Sampler = nil
-	if _, err := f.lib.Similar(ctx, "clip.mp4", 0); err == nil || !strings.Contains(err.Error(), "sampler") {
+	if _, err := f.lib.Similar(ctx, "clip.mp4", 0, true); err == nil || !strings.Contains(err.Error(), "sampler") {
 		t.Errorf("no sampler: %v", err)
 	}
 }
@@ -180,7 +219,7 @@ func TestSimilar_SegmentsModeSearchesWholeSegments(t *testing.T) {
 	if _, err := f.lib.Scan(ctx); err != nil {
 		t.Fatal(err)
 	}
-	res, err := f.lib.Similar(ctx, "clip.mp4", 0)
+	res, err := f.lib.Similar(ctx, "clip.mp4", 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +239,7 @@ func TestSimilar_SegmentsModeSearchesWholeSegments(t *testing.T) {
 	}
 	// without a measuring sampler the count is unknown
 	f.lib.cfg.Sampler = f.sampler
-	if res, err := f.lib.Similar(ctx, "clip.mp4", 0); err != nil || res.Frames != 0 {
+	if res, err := f.lib.Similar(ctx, "clip.mp4", 0, true); err != nil || res.Frames != 0 {
 		t.Errorf("unmeasured: frames %d, %v", res.Frames, err)
 	}
 }

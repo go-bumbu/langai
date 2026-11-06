@@ -280,6 +280,7 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 		b.close()
 		return nil, err
 	}
+	e.accel = b.accel
 	if spec.Dims != 0 && e.Dimensions() != spec.Dims {
 		_ = e.Close()
 		return nil, fmt.Errorf("yzma: model %q produces %d-dimensional vectors, its spec says %d", spec.Name, e.Dimensions(), spec.Dims)
@@ -314,6 +315,7 @@ type Embedder struct {
 	// prefixes per role, "" for symmetric models (see ModelSpec)
 	queryPrefix    string
 	documentPrefix string
+	accel          string // what runs the model, see Accel
 }
 
 // verify the interface is actually satisfied
@@ -337,6 +339,10 @@ func newEmbedder(b backend, name, queryPrefix, documentPrefix string) (*Embedder
 
 // Dimensions implements langai.Embedder.
 func (e *Embedder) Dimensions() int { return e.dims }
+
+// Accel says what runs the model, as the load log line does: "cpu" or the
+// GPU device.
+func (e *Embedder) Accel() string { return e.accel }
 
 // Embed implements langai.Embedder: each text gets the role's prefix and
 // is encoded on its own.

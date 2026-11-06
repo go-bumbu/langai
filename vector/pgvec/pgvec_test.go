@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -114,6 +115,33 @@ func TestUpsertReplacesChunks(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Text != "new-0" {
 		t.Fatalf("expected only the replacement chunk, got %#v", got)
+	}
+}
+
+func TestChunks(t *testing.T) {
+	store := newStore(t, 3)
+	ctx := context.Background()
+	if err := store.Upsert(ctx, "idx", "p", "c", "doc", "h", []vector.Chunk{
+		{Seq: 4000, Text: "b", Vector: []float32{0, 0.5, -1.25}},
+		{Seq: 0, Text: "a", Vector: []float32{1, 0, 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Chunks(ctx, "idx", "p", "c", "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []vector.Chunk{{Seq: 0, Text: "a", Vector: []float32{1, 0, 0}}, {Seq: 4000, Text: "b", Vector: []float32{0, 0.5, -1.25}}}
+	if len(got) != len(want) {
+		t.Fatalf("chunks = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i].Seq != want[i].Seq || got[i].Text != want[i].Text || !slices.Equal(got[i].Vector, want[i].Vector) {
+			t.Errorf("chunk %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if got, err := store.Chunks(ctx, "idx", "p", "c", "missing"); err != nil || got != nil {
+		t.Errorf("unknown doc: %v, %v; want nothing", got, err)
 	}
 }
 

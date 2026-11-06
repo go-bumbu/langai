@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/eval"
+	"github.com/go-bumbu/langai/zarf/eval"
 	"github.com/go-bumbu/langai/provider/yzma"
 )
 
@@ -93,7 +93,7 @@ type compareSettings struct {
 	jsonOut string  // SEMEVAL_JSON: also write the full results to this file as JSON
 	dir     string  // SEMSEARCH_YZMA_TEST_DIR: the cache for models and the llama.cpp libraries; required
 	threads int     // SEMEVAL_THREADS: threads per model; 0 picks the yzma default (at most four)
-	floor   float64 // SEMEVAL_FLOOR: the tagging cutoff to report at (the Tagger's NameMinScore); 0 means 0.46
+	floor   float64 // SEMEVAL_FLOOR: the tagging cutoff to report at; 0 means 0.46 (see eval.Options.Floor)
 }
 
 // compareSettingsFromEnv reads compareSettings. A number that does not parse

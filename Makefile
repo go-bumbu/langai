@@ -88,22 +88,22 @@ cover-report: ## generate a coverage report
 #==========================================================================================
 ##@ Evaluation
 #==========================================================================================
-# semeval runs TestCompareModels (eval/compare_test.go) over every model in
-# eval/testdata/models.yaml, sharing SEMSEARCH_YZMA_TEST_DIR with the real-model
+# semeval runs TestCompareModels (zarf/eval/compare_test.go) over every model in
+# zarf/eval/testdata/models.yaml, sharing SEMSEARCH_YZMA_TEST_DIR with the real-model
 # tests. Optional settings, with paths relative to the repository root:
 #   SEMEVAL_ONLY=org/a,org/b      run only these models
 #   SEMEVAL_DATASET=export.yaml   another dataset in the eval format (default: the golden set)
 #   SEMEVAL_MODELS=models.yaml    another models file
 #   SEMEVAL_JSON=results.json     also write every metric to this file
 #   SEMEVAL_THREADS=4             threads per model (default: yzma's, at most four)
-#   SEMEVAL_FLOOR=0.5             tagging cutoff to report at (default: 0.46, the Tagger's NameMinScore)
+#   SEMEVAL_FLOOR=0.5             tagging cutoff to report at (default: 0.46, the best name cutoff when every tag is judged on its own)
 # -timeout 0: downloading and running every candidate can outlast go test's default 10 minutes.
 semeval: ## compare embedding models on the golden set (downloads candidates into ~/.cache/semsearch-yzma; needs libffi8 libgomp1 libstdc++6)
 	@SEMEVAL=1 SEMSEARCH_YZMA_TEST_DIR='$(abspath $(SEMSEARCH_YZMA_TEST_DIR))' \
 		SEMEVAL_ONLY='$(SEMEVAL_ONLY)' SEMEVAL_THREADS='$(SEMEVAL_THREADS)' SEMEVAL_FLOOR='$(SEMEVAL_FLOOR)' \
 		SEMEVAL_DATASET='$(abspath $(SEMEVAL_DATASET))' SEMEVAL_MODELS='$(abspath $(SEMEVAL_MODELS))' \
 		SEMEVAL_JSON='$(abspath $(SEMEVAL_JSON))' \
-		go test ./eval/ -run '^TestCompareModels$$' -v -count=1 -timeout 0
+		go test ./zarf/eval/ -run '^TestCompareModels$$' -v -count=1 -timeout 0
 
 #==========================================================================================
 ##@ Release

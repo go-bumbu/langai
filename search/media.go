@@ -336,6 +336,31 @@ func (ix *MediaIndex) SearchText(ctx context.Context, text string, limit int) ([
 	return ix.search(ctx, []queryVector{{vector: vectors[0]}}, limit)
 }
 
+// ErrNotIndexed is returned by SearchIndexed for an id with no stored
+// vectors: never indexed, deleted, or indexed with nothing to embed.
+var ErrNotIndexed = errors.New("search: no stored vectors for this id")
+
+// SearchIndexed returns the items that look most like the already indexed
+// item docID, best first, at most limit (10 when <= 0), searching with its
+// stored vectors instead of embedding the file again: no model runs, so it
+// costs only the store lookups. For a video every stored frame or segment
+// is a query and QueryAt is its time, as with SearchVideo. The item itself
+// comes first with a score of about 1.
+func (ix *MediaIndex) SearchIndexed(ctx context.Context, docID string, limit int) ([]MediaMatch, error) {
+	chunks, err := ix.store.Chunks(ctx, ix.index, ix.partition, ix.collection, docID)
+	if err != nil {
+		return nil, fmt.Errorf("search: read stored vectors: %w", err)
+	}
+	if len(chunks) == 0 {
+		return nil, ErrNotIndexed
+	}
+	queries := make([]queryVector, len(chunks))
+	for i, c := range chunks {
+		queries[i] = queryVector{vector: c.Vector, at: time.Duration(c.Seq) * time.Millisecond}
+	}
+	return ix.search(ctx, queries, limit)
+}
+
 // SearchFrames is the search behind SearchImage and SearchVideo for frames
 // the caller extracted itself. Every frame is embedded and looked up; each
 // item is scored by its best frame against any query frame, and the hits

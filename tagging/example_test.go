@@ -22,7 +22,7 @@ func ExampleTagger() {
 	tagger, err := tagging.NewTagger(langaitest.FakeEmbedder{}, tagging.NewMemStore(), tagging.TaggerConfig{
 		Model:          "fake",
 		NameMinScore:   0.3,
-		MemberMinScore: 0.5,
+		MemberMinScore: 0.4,
 	})
 	if err != nil {
 		log.Fatal(err)

@@ -12,12 +12,13 @@ import (
 )
 
 // Options tunes the tagging report. The tagging pass judges each tag by its
-// name alone, the Tagger's rule for a tag with no hand-tagged examples, and the
-// zero value is that rule's default, so the gated test measures production
-// behaviour for such tags.
+// name alone, every tag on its own: it measures the embedding model, not the
+// Tagger, which also weighs the tags of one path against each other (see
+// tagging.TaggerConfig) and so picks at a lower name cutoff
+// (tagging.DefaultNameMinScore, 0.42).
 type Options struct {
-	// Floor is the cutoff precision/recall are reported at; 0 means 0.46,
-	// tagging.DefaultNameMinScore (keep in sync).
+	// Floor is the cutoff precision/recall are reported at; 0 means 0.46, the
+	// default model's best name cutoff when every tag is judged on its own.
 	Floor float64
 }
 

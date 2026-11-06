@@ -1,16 +1,17 @@
 package tagging
 
 import (
+	"maps"
 	"math"
 	"math/rand"
 	"slices"
 	"testing"
 )
 
-// TestBlend_ShiftsFromNamePriorToMemberCentroid pins the smoothing contract:
+// TestBlend_ShiftsFromNamePriorToTheMembers pins the smoothing contract:
 // with k members' worth of smoothing, one member barely moves the vector off
-// the name prior, while many members pull it onto the centroid.
-func TestBlend_ShiftsFromNamePriorToMemberCentroid(t *testing.T) {
+// the name prior, while many members pull it onto them.
+func TestBlend_ShiftsFromNamePriorToTheMembers(t *testing.T) {
 	const k = 3.0
 	name := []float32{1, 0}
 	member := []float32{0, 1}
@@ -20,23 +21,23 @@ func TestBlend_ShiftsFromNamePriorToMemberCentroid(t *testing.T) {
 		t.Fatalf("with no members the blend must be the name prior, got %v", noMembers)
 	}
 
-	// n=1: centroid weight 1/(1+3) = 0.25, so the name still dominates
+	// n=1: members' weight 1/(1+3) = 0.25, so the name still dominates
 	one := blend(name, [][]float32{member}, k)
 	if one[0] <= one[1] {
 		t.Fatalf("one member should stay name-dominated, got %v", one)
 	}
-	// n=9: centroid weight 9/(9+3) = 0.75, so the centroid dominates
+	// n=9: members' weight 9/(9+3) = 0.75, so they dominate
 	many := make([][]float32, 9)
 	for i := range many {
 		many[i] = member
 	}
 	nine := blend(name, many, k)
 	if nine[1] <= nine[0] {
-		t.Fatalf("nine members should be centroid-dominated, got %v", nine)
+		t.Fatalf("nine members should dominate, got %v", nine)
 	}
-	// more members must move strictly further toward the centroid
+	// more members must move strictly further toward them
 	if nine[1] <= one[1] {
-		t.Fatalf("centroid weight did not grow with members: one=%v nine=%v", one, nine)
+		t.Fatalf("members' weight did not grow with them: one=%v nine=%v", one, nine)
 	}
 	for _, v := range [][]float32{noMembers, one, nine} {
 		if l := length(v); math.Abs(l-1) > 1e-6 {
@@ -52,8 +53,8 @@ func TestTagCutoff_NoMembersIsTheNameMinimum(t *testing.T) {
 }
 
 // Comparing a document against the blended vector with tagCutoff must decide
-// exactly like judging the name against nameMin and the members' centroid
-// against memberMin, mixed by the blend weight.
+// exactly like judging the name against nameMin and the mean of the cosines to
+// the members against memberMin, mixed by the blend weight.
 func TestTagCutoff_MatchesTheTwoScaleRule(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	const dims, k, a, b = 16, 3.0, 0.46, 0.70
@@ -65,7 +66,6 @@ func TestTagCutoff_MatchesTheTwoScaleRule(t *testing.T) {
 		}
 		vec := blend(name, members, k)
 		cut := tagCutoff(name, members, k, a, b)
-		c := centroid(members, dims)
 		w := float64(n) / (float64(n) + k)
 		// queries from far away to right on top of the tag, so both
 		// outcomes are exercised
@@ -77,7 +77,11 @@ func TestTagCutoff_MatchesTheTwoScaleRule(t *testing.T) {
 				mix[i] = beta*float64(vec[i]) + (1-beta)*float64(noise[i])
 			}
 			q := unitVec(mix...)
-			margin := (1-w)*(dot(q, name)-a) + w*(dot(q, c)-b)
+			var mean float64
+			for _, m := range members {
+				mean += dot(q, m) / float64(n)
+			}
+			margin := (1-w)*(dot(q, name)-a) + w*(mean-b)
 			if math.Abs(margin) < 1e-5 {
 				continue // float32 rounding decides the tie
 			}
@@ -100,10 +104,32 @@ func TestTagCutoff_ApproachesTheMemberMinimumWithManyMembers(t *testing.T) {
 	}
 }
 
-// TestTagCutoff_OpposedNameAndCentroidMatchNothing: a centroid pointing
-// exactly away from the name cancels it out at equal weights, and a blend of
-// nothing has no direction any document could score against.
-func TestTagCutoff_OpposedNameAndCentroidMatchNothing(t *testing.T) {
+// TestTagCutoff_MembersCountAsTheMeanOfTheirCosines: a document that is one of
+// two orthogonal members scores 1 against it and 0 against the other, a mean
+// of 0.5, below a member minimum of 0.6, though its cosine to the two
+// members' centroid is 0.71. With many members of each kind the cutoff is
+// all but the members' one, and the document stays below it: the mean, unlike
+// the centroid, is no closer to a member for there being more of them.
+func TestTagCutoff_MembersCountAsTheMeanOfTheirCosines(t *testing.T) {
+	a, b := unitVec(1, 0, 0), unitVec(0, 1, 0)
+	var members [][]float32
+	for range 500 {
+		members = append(members, a, b)
+	}
+	name := unitVec(0, 0, 1)
+	vec, cut := blend(name, members, 3), tagCutoff(name, members, 3, 0.46, 0.60)
+	if got := cosine(a, vec); got >= cut {
+		t.Fatalf("a member of two orthogonal kinds scores %.4f against cutoff %.4f, want below", got, cut)
+	}
+	if got := cosine(unitVec(1, 1, 0), vec); got < cut {
+		t.Fatalf("a document between both kinds scores %.4f against cutoff %.4f, want above", got, cut)
+	}
+}
+
+// TestTagCutoff_OpposedNameAndMembersMatchNothing: members pointing exactly
+// away from the name cancel it out at equal weights, and a blend of nothing
+// has no direction any document could score against.
+func TestTagCutoff_OpposedNameAndMembersMatchNothing(t *testing.T) {
 	members := [][]float32{unitVec(-1, 0), unitVec(-1, 0), unitVec(-1, 0)}
 	if got := tagCutoff(unitVec(1, 0), members, 3, 0.46, 0.70); !math.IsInf(got, 1) {
 		t.Fatalf("cutoff = %v, want +Inf", got)
@@ -185,7 +211,7 @@ func TestRank_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			given := ids(tc.tags)
-			got := rank(q, tc.tags, "m")
+			got := rank(q, tc.tags, "m", true)
 			// nil, not just empty, when nothing qualifies
 			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
 				t.Fatalf("rank = %#v, want %#v", got, tc.want)
@@ -194,6 +220,97 @@ func TestRank_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
 				t.Fatalf("rank reordered the caller's tags: %v, was %v", after, given)
 			}
 		})
+	}
+}
+
+// TestRank_AlongAPathTheBetterFitWins: among the tags that reach their
+// cutoff, each ancestor meets each descendant by margin. A descendant at
+// least as wide as its ancestor shadows it, a narrower one is shadowed by it,
+// so two children that both beat their parent are both picked and a child the
+// parent beats is not; the tag with the widest margin of a family always
+// stays, tags on other paths are judged on their own, a tag below its cutoff
+// takes no part, and without onePath every tag that reaches its cutoff is
+// picked.
+func TestRank_AlongAPathTheBetterFitWins(t *testing.T) {
+	const dims = 6
+	q := unitVec(1, 0, 0, 0, 0, 0)
+	tag := func(id, name string, axis int, score, cutoff float64) TagRecord {
+		return TagRecord{ID: id, Name: name, Vec: scoreVec(dims, axis, score), Cutoff: cutoff, Model: "m"}
+	}
+	shadowed := func(tags []TagRecord) map[string]string {
+		out := map[string]string{}
+		for _, s := range scores(q, tags, "m", true) {
+			out[s.ID] = s.ShadowedBy
+		}
+		return out
+	}
+	tags := []TagRecord{
+		tag("dev", "dev", 1, 0.70, 0.46),                 // margin 0.24
+		tag("go", "Dev/Go", 2, 0.66, 0.40),               // margin 0.26: beats dev
+		tag("goerr", "dev / go / errors", 3, 0.62, 0.50), // margin 0.12: beaten by dev and go
+		tag("web", "dev / web", 4, 0.80, 0.50),           // margin 0.30: beats dev too
+		tag("cook", "cooking", 5, 0.50, 0.46),            // margin 0.04: another path
+		tag("devops", "devops", 1, 0.45, 0.46),           // below its cutoff; not on dev's path anyway
+	}
+	for _, tc := range []struct {
+		name   string
+		web    TagRecord
+		want   []string
+		shadow map[string]string
+	}{
+		{"two children that beat their parent are both picked", tags[3], []string{"web", "go", "cook"},
+			map[string]string{"dev": "web", "go": "", "goerr": "go", "web": "", "cook": "", "devops": ""}},
+		{"a child its parent beats is not", tag("web", "dev / web", 4, 0.60, 0.50), // margin 0.10
+			[]string{"go", "cook"}, map[string]string{"dev": "go", "go": "", "goerr": "go", "web": "dev", "cook": "", "devops": ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tags[3] = tc.web
+			if got := rank(q, tags, "m", true); !slices.Equal(got, tc.want) {
+				t.Fatalf("rank = %v, want %v", got, tc.want)
+			}
+			if got := shadowed(tags); !maps.Equal(got, tc.shadow) {
+				t.Fatalf("ShadowedBy = %v, want %v", got, tc.shadow)
+			}
+		})
+	}
+	if got, want := rank(q, tags, "m", false), []string{"dev", "go", "goerr", "web", "cook"}; !slices.Equal(got, want) {
+		t.Fatalf("rank without onePath = %v, want %v", got, want)
+	}
+	// a parent cleared by more than every child is what the item is about
+	tags[0] = tag("dev", "dev", 1, 0.80, 0.46) // margin 0.34
+	if got, want := rank(q, tags, "m", true), []string{"dev", "cook"}; !slices.Equal(got, want) {
+		t.Fatalf("with dev cleared by most, rank = %v, want %v", got, want)
+	}
+	// on a tie the descendant stays
+	tie := []TagRecord{tag("a", "a", 1, 0.60, 0.40), tag("b", "a / b", 2, 0.60, 0.40)}
+	if got, want := rank(q, tie, "m", true), []string{"b"}; !slices.Equal(got, want) {
+		t.Fatalf("on a tie, rank = %v, want %v", got, want)
+	}
+}
+
+func TestTagPath(t *testing.T) {
+	for name, want := range map[string][]string{
+		"dev / go":          {"dev", "go"},
+		" Dev/GO ":          {"dev", "go"},
+		"dev // go /":       {"dev", "go"},
+		"cooking":           {"cooking"},
+		"":                  nil,
+		"a / b / c / d / e": {"a", "b", "c", "d", "e"},
+	} {
+		if got := tagPath(name); !slices.Equal(got, want) {
+			t.Errorf("tagPath(%q) = %q, want %q", name, got, want)
+		}
+	}
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"dev", "dev / go", true}, {"dev / go", "dev", true}, {"dev / go", "dev / go", false},
+		{"dev", "devops", false}, {"dev / go", "dev / web", false}, {"go", "dev / go", false},
+	} {
+		if got := onPath(tagPath(tc.a), tagPath(tc.b)); got != tc.want {
+			t.Errorf("onPath(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
 	}
 }
 

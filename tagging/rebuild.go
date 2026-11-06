@@ -106,8 +106,8 @@ func (s *Scope) currentMembers(ctx context.Context, id string) (rec TagRecord, m
 }
 
 // otherModel reports whether the member's vector comes from another model than
-// the Tagger's.
-func (t *Tagger) otherModel(m Member) bool { return m.Model != t.cfg.Model }
+// the Tagger's, or was embedded with another ChunkBytes (see itemModel).
+func (t *Tagger) otherModel(m Member) bool { return m.Model != t.itemModel }
 
 // refreshMembers re-embeds, from the text the store keeps, the members whose
 // vectors come from another model than the Tagger's, so that rebuild can blend
@@ -123,7 +123,7 @@ func (s *Scope) refreshMembers(ctx context.Context, members []Member) error {
 		if err != nil {
 			return err
 		}
-		if !ok || item.Model == s.tg.cfg.Model {
+		if !ok || item.Model == s.tg.itemModel {
 			continue // deleted or re-embedded meanwhile
 		}
 		// not stored: the item was edited or deleted meanwhile by a writer that

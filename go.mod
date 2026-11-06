@@ -12,6 +12,7 @@ require (
 	github.com/yalue/onnxruntime_go v1.38.0
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/image v0.47.0
+	golang.org/x/text v0.43.0
 )
 
 require (
@@ -85,7 +86,6 @@ require (
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gorm.io/driver/mysql v1.5.7 // indirect
 	gorm.io/driver/postgres v1.5.11 // indirect

@@ -9,6 +9,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"golang.org/x/text/language"
+	"golang.org/x/text/language/display"
+
 	"github.com/go-bumbu/langai"
 )
 
@@ -55,14 +58,82 @@ type GeneratorConfig struct {
 
 // Generator writes and scores tags with one Completer and one Embedder.
 type Generator struct {
-	llm langai.Completer
-	emb langai.Embedder
-	cfg GeneratorConfig
+	llm    langai.Completer
+	emb    langai.Embedder
+	cfg    GeneratorConfig
+	opts   generatorOptions
+	prompt string // the system prompt, built once from cfg and opts
 }
 
+// generatorOptions are what the GeneratorOptions set.
+type generatorOptions struct {
+	// language is the BCP 47 tag the tags are written in; empty: the text's own
+	language string
+	tree     bool
+	existing []string // tree paths to extend
+	err      error    // a bad option, reported by NewGenerator
+}
+
+// GeneratorOption sets how a Generator writes its tags: in which language
+// (WithNativeLanguageTags, the default, or WithLanguageTags) and in what shape
+// (one to three words, the default, or paths of a tree, WithTreeTags). When
+// two options set the same thing, the later one wins.
+type GeneratorOption func(*generatorOptions)
+
+// WithNativeLanguageTags has every tag written in the language of the text it
+// tags, so a Spanish text gets Spanish tags. It is the default.
+func WithNativeLanguageTags() GeneratorOption {
+	return func(o *generatorOptions) { o.language = "" }
+}
+
+// WithLanguageTags has every tag written in one language, whatever the
+// language of the text: lang is a BCP 47 language tag such as "en", "es" or
+// "pt-BR". A multilingual embedder scores a tag in one language against a text
+// in another, so the cutoff still applies, a little lower across languages.
+// NewGenerator refuses a tag it cannot parse.
+func WithLanguageTags(lang string) GeneratorOption {
+	return func(o *generatorOptions) {
+		tag, err := language.Parse(lang)
+		if err != nil {
+			o.err = fmt.Errorf("tagging: WithLanguageTags(%q): %w", lang, err)
+			return
+		}
+		o.language = tag.String()
+	}
+}
+
+// WithTreeTags has every tag written as a path of a tree, from a broad
+// category down to the topic, its levels joined by " / " ("cooking / baking /
+// sourdough"), at most MaxTreeLevels deep, and the tags of one text sharing
+// their upper levels where they belong together: a recommendation is a small
+// tree, not a list of words. The name a tag is scored by is its whole path.
+//
+// existing are the paths an application has already, the tree to extend: the
+// model is asked to start from one of them, written exactly as it is, where the
+// text fits it, to add a level below it only when the text is more specific,
+// and to start a new top-level category only when none fits. The first ones up
+// to MaxTreeBytes in all are shown to the model; with none, it writes a tree of
+// its own.
+func WithTreeTags(existing ...string) GeneratorOption {
+	return func(o *generatorOptions) {
+		o.tree = true
+		o.existing = slices.Clone(existing)
+	}
+}
+
+const (
+	// MaxTreeLevels is how deep a tree tag may go; a deeper path the model
+	// writes is cut to it.
+	MaxTreeLevels = 4
+	// MaxTreeBytes caps the existing paths WithTreeTags shows the model, so
+	// they, the text and the reply fit the model's context.
+	MaxTreeBytes = 1500
+)
+
 // NewGenerator returns a Generator that has llm write the tags and emb score
-// them.
-func NewGenerator(llm langai.Completer, emb langai.Embedder, cfg GeneratorConfig) (*Generator, error) {
+// them. Without options, it writes tags of one to three words in the language
+// of the text.
+func NewGenerator(llm langai.Completer, emb langai.Embedder, cfg GeneratorConfig, opts ...GeneratorOption) (*Generator, error) {
 	if llm == nil {
 		return nil, errors.New("tagging: nil Completer")
 	}
@@ -74,16 +145,82 @@ func NewGenerator(llm langai.Completer, emb langai.Embedder, cfg GeneratorConfig
 	}
 	cfg.Candidates = cmp.Or(cfg.Candidates, DefaultCandidates)
 	cfg.MaxBytes = cmp.Or(cfg.MaxBytes, DefaultMaxBytes)
-	return &Generator{llm: llm, emb: emb, cfg: cfg}, nil
+	var o generatorOptions
+	for _, opt := range opts {
+		opt(&o)
+		if o.err != nil {
+			return nil, o.err
+		}
+	}
+	return &Generator{llm: llm, emb: emb, cfg: cfg, opts: o, prompt: systemPrompt(cfg.Candidates, o)}, nil
 }
 
-// systemPrompt sets the task; %d is the number of tags asked for. The text
-// itself is the user message, so a text that talks to the model is still only
-// the thing being tagged.
-const systemPrompt = "You write tags for texts. Reply with up to %d tags for the text you are given: " +
-	"one tag per line, the most relevant first, and nothing else (no numbers, no bullets, no explanations). " +
-	"A tag is one to three words naming a topic, a thing or a kind of content the text is about. " +
-	"Write every tag in the language of the text."
+// systemPrompt sets the task. The text itself is the user message, so a text
+// that talks to the model is still only the thing being tagged.
+func systemPrompt(candidates int, o generatorOptions) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You write tags for texts. Reply with up to %d tags for the text you are given: "+
+		"one tag per line, the most relevant first, and nothing else (no numbers, no bullets, no explanations). ", candidates)
+	if o.language != "" {
+		// first and last: a small model copies the text's own words unless the
+		// language is the rule it reads before anything else
+		fmt.Fprintf(&b, "Every tag must be in %[1]s. The text may be in another language: translate its topics into %[1]s "+
+			"and do not copy its words, except proper names such as places, people, products and dishes. ", languageName(o.language))
+	}
+	if !o.tree {
+		b.WriteString("A tag is one to three words naming a topic, a thing or a kind of content the text is about. ")
+	} else {
+		fmt.Fprintf(&b, "Write every tag as a path from a broad category down to a topic, a thing or a kind of content the text is about, "+
+			"its levels separated by \" / \", two or three levels and never more than %d, each level one to three words, "+
+			"such as \"cooking / baking / sourdough\". Tags that belong together share their upper levels, so that together they form a small tree. ", MaxTreeLevels)
+		if paths := treeShown(o.existing); len(paths) > 0 {
+			b.WriteString("These tags exist already, one per line:\n")
+			for _, p := range paths {
+				b.WriteString(p)
+				b.WriteByte('\n')
+			}
+			b.WriteString("Where the text fits one of them, start from its path, written exactly as above, and add a level below it only when the text is more specific. " +
+				"Start a new top-level category only when none of them fits. ")
+		}
+	}
+	if o.language == "" {
+		b.WriteString("Write every tag in the language of the text.")
+	} else {
+		if o.tree {
+			b.WriteString("Existing paths keep their words as they are. ")
+		}
+		fmt.Fprintf(&b, "Remember: write every tag in %s, whatever the language of the text.", languageName(o.language))
+	}
+	return b.String()
+}
+
+// treeShown returns the existing paths the model is shown: the non-blank ones,
+// trimmed, in order, up to MaxTreeBytes in all.
+func treeShown(existing []string) []string {
+	var out []string
+	size := 0
+	for _, p := range existing {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if size += len(p) + 1; size > MaxTreeBytes {
+			break
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// languageName names a BCP 47 tag in English for the prompt ("es" is
+// "Spanish (es)"), or gives the tag alone when it has no English name.
+func languageName(code string) string {
+	tag := language.Make(code)
+	if name := display.English.Tags().Name(tag); name != "" {
+		return fmt.Sprintf("%s (%s)", name, code)
+	}
+	return "the language " + code
+}
 
 // Generate returns the tags for text that score at least minScore, best score
 // first and equal scores in the order the model wrote them, or nil when none
@@ -102,11 +239,15 @@ func (g *Generator) Generate(ctx context.Context, text string, minScore float64)
 	if text == "" {
 		return nil, nil
 	}
-	answer, err := g.llm.Complete(ctx, fmt.Sprintf(systemPrompt, g.cfg.Candidates), text)
+	answer, err := g.llm.Complete(ctx, g.prompt, text)
 	if err != nil {
 		return nil, fmt.Errorf("tagging: write tags: %w", err)
 	}
-	names := parseTags(answer, g.cfg.Candidates)
+	clean := cleanTag
+	if g.opts.tree {
+		clean = cleanPath
+	}
+	names := parseTags(answer, g.cfg.Candidates, clean)
 	if len(names) == 0 {
 		return nil, nil
 	}

@@ -179,6 +179,33 @@ func (s *Store) ContentHash(ctx context.Context, index, partition, collection, d
 	return h, err
 }
 
+// Chunks implements vector.Store.
+func (s *Store) Chunks(ctx context.Context, index, partition, collection, docID string) ([]vector.Chunk, error) {
+	if err := s.ensure(ctx, index); err != nil {
+		return nil, err
+	}
+	chunksT, _ := tablename.For(s.generation, index, "chunks")
+	//nolint:gosec // table name is a hex sha256 of the index (injection-safe); all values are bound $n parameters
+	q := fmt.Sprintf(`SELECT seq, text, embedding FROM %s
+		WHERE partition = $1 AND collection = $2 AND doc_id = $3 ORDER BY seq, id`, chunksT)
+	rows, err := s.db.QueryContext(ctx, q, partition, collection, docID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []vector.Chunk
+	for rows.Next() {
+		var c vector.Chunk
+		var v pgvector.Vector
+		if err := rows.Scan(&c.Seq, &c.Text, &v); err != nil {
+			return nil, err
+		}
+		c.Vector = v.Slice()
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // Search implements vector.Store.
 func (s *Store) Search(ctx context.Context, index, partition, collection string, query []float32, limit int) ([]vector.Match, error) {
 	return s.SearchScope(ctx, index, vector.ScopeFilter{Partition: partition, Collection: collection}, query, limit)

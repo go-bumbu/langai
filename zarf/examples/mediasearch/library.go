@@ -268,7 +268,7 @@ func (l *Library) Scan(ctx context.Context) (ScanStats, error) {
 		}
 		it := found[i]
 		seen[it.ID] = true
-		l.indexOne(ctx, &it, &stats)
+		l.indexOne(ctx, &it, &stats, len(found)-i-1)
 		l.mu.Lock()
 		l.items[it.ID] = &it
 		l.mu.Unlock()
@@ -286,8 +286,9 @@ func (l *Library) Scan(ctx context.Context) (ScanStats, error) {
 	return stats, nil
 }
 
-// indexOne hashes and indexes one file and fills in the item's index fields.
-func (l *Library) indexOne(ctx context.Context, it *Item, stats *ScanStats) {
+// indexOne hashes and indexes one file and fills in the item's index fields;
+// remaining is how many items of the scan still wait after this one, for the log.
+func (l *Library) indexOne(ctx context.Context, it *Item, stats *ScanStats, remaining int) {
 	path := filepath.Join(l.cfg.Dir, filepath.FromSlash(it.ID))
 	start := time.Now()
 	hash, err := fileHash(path)
@@ -301,18 +302,18 @@ func (l *Library) indexOne(ctx context.Context, it *Item, stats *ScanStats) {
 		it.Error = err.Error()
 		delete(l.hashes, it.ID)
 		stats.Failed++
-		l.logger.Warn("index failed", "id", it.ID, "err", err)
+		l.logger.Warn("index failed", "id", it.ID, "err", err, "remaining", remaining)
 		return
 	}
 	it.Skipped = l.hashes[it.ID] == hash
 	l.hashes[it.ID] = hash
 	if it.Skipped {
 		stats.Skipped++
-		l.logger.Info("unchanged", "id", it.ID)
+		l.logger.Info("unchanged", "id", it.ID, "remaining", remaining)
 		return
 	}
 	stats.Indexed++
-	l.logger.Info("indexed", "id", it.ID, "kind", it.Kind, "took", time.Duration(it.IndexedMs)*time.Millisecond)
+	l.logger.Info("indexed", "id", it.ID, "kind", it.Kind, "took", time.Duration(it.IndexedMs)*time.Millisecond, "remaining", remaining)
 }
 
 func (l *Library) index(ctx context.Context, it *Item, path string) error {

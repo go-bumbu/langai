@@ -35,6 +35,8 @@ header h1 { font-size: 16px; margin: 0; font-weight: 600; }
 .info { color: var(--muted); font-size: 12px; flex: 1; min-width: 200px; }
 .info b { color: var(--text); font-weight: 500; }
 .actions { display: flex; gap: 8px; align-items: center; }
+.check { display: flex; gap: 4px; align-items: center; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.check input { accent-color: var(--accent); margin: 0; }
 .textsearch { display: flex; gap: 4px; }
 .textsearch[hidden] { display: none; }
 .textsearch input {

@@ -36,8 +36,12 @@ type Result struct {
 	Query *Item `json:"query,omitempty"`
 	// Text is the query text, for a text search.
 	Text string `json:"text,omitempty"`
-	// Frames is how many query frames were embedded: 1 for an image.
-	Frames    int   `json:"frames"`
+	// Frames is how many query frames were embedded: 1 for an image, 0
+	// when Stored.
+	Frames int `json:"frames"`
+	// Stored says the query was the item's vectors from the index, so
+	// nothing was embedded.
+	Stored    bool  `json:"stored,omitempty"`
 	ElapsedMs int64 `json:"elapsedMs"`
 	Hits      []Hit `json:"hits"`
 }
@@ -51,7 +55,10 @@ var ErrUnsupported = errors.New("mediasearch: not an image or a video")
 
 // Similar returns the items that look most like the catalog item id, the
 // item itself first and marked. limit <= 0 means the Library's default.
-func (l *Library) Similar(ctx context.Context, id string, limit int) (Result, error) {
+// By default it searches with the vectors the scan stored, so no model
+// runs; embed embeds the file again instead, as an upload would be, which
+// shows what a query costs with the model.
+func (l *Library) Similar(ctx context.Context, id string, limit int, embed bool) (Result, error) {
 	it, ok := l.Item(id)
 	if !ok {
 		return Result{}, ErrNotFound
@@ -59,9 +66,16 @@ func (l *Library) Similar(ctx context.Context, id string, limit int) (Result, er
 	path := filepath.Join(l.cfg.Dir, filepath.FromSlash(id))
 	var r Result
 	var err error
-	if it.Kind == KindVideo {
+	switch {
+	case !embed:
+		start := time.Now()
+		var hits []search.MediaMatch
+		hits, err = l.cfg.Index.SearchIndexed(ctx, id, l.limit(limit))
+		r = l.result(hits, 0, start)
+		r.Stored = true
+	case it.Kind == KindVideo:
 		r, err = l.searchVideo(ctx, path, limit)
-	} else {
+	default:
 		var f *os.File
 		f, err = os.Open(path) //nolint:gosec // the id is a catalog key, so path is a file the scan found under the media directory
 		if err != nil {

@@ -11,20 +11,27 @@ import (
 )
 
 // Defaults for the zero values of TaggerConfig. The two minimums are the
-// default yzma model's values on the eval golden set (see TestGoldenTagging);
-// that model's scores sit in a narrow band, so another model needs them
-// measured again.
+// default yzma model's values on the eval golden set (see TestGoldenTagging),
+// measured with the one-tag-per-path rule; that model's scores sit in a
+// narrow band, so another model needs them measured again.
 const (
-	DefaultNameMinScore   = 0.46
-	DefaultMemberMinScore = 0.70
+	DefaultNameMinScore   = 0.42
+	DefaultMemberMinScore = 0.58
 	DefaultSmoothingK     = 3
 )
+
+// scoringRule names how tag vectors are computed, for the params
+// fingerprint: tags a Tagger built with another rule are stale and rebuilt
+// (from the vectors the store keeps; nothing is embedded again). "mean" blends
+// the mean of the members' vectors (see memberMean); the rule before it, the
+// cosine to their centroid, had no name in the fingerprint.
+const scoringRule = "mean"
 
 // TaggerConfig tunes a Tagger. Model is the identity of the embedding model,
 // and NewTagger requires it: every vector a Store holds is kept with the model it came
 // from, so a Tagger of another model re-embeds the stored texts it needs
 // rather than mix two models' vectors. NameMinScore and MemberMinScore are the
-// minimum cosine scores against a tag's name and against the centroid of its
+// minimum cosine scores against a tag's name and, on average, against its
 // members. The two score on different scales, so each has its own minimum,
 // mixed per tag by the blend weight (see tagCutoff); 0 defaults them to
 // DefaultNameMinScore and DefaultMemberMinScore, and NewTagger refuses one that is
@@ -32,6 +39,25 @@ const (
 // a tag's members weigh as much as its name at SmoothingK members, and
 // outweigh it beyond that (<=0 defaults to DefaultSmoothingK; NewTagger refuses NaN
 // and +Inf). There is no limit on how many tags an item gets.
+//
+// ChunkBytes, when above zero, has an item longer than that embedded in
+// pieces of at most ChunkBytes bytes (see Chunk), its vector the mean of
+// theirs. An embedder reads a window of tokens and silently drops the rest
+// (512 tokens, some 2 KB of prose, for the default yzma model), so without it
+// only the start of a long item counts. Set it a little under what the
+// embedder reads. Zero, the default, embeds every item whole, as the golden
+// numbers were measured. Items are stored under the model marked with the
+// chunk size, so a change of ChunkBytes re-embeds them as a change of Model
+// does. NewTagger refuses a negative one.
+//
+// Tag names are read as paths of a tree, levels separated by "/" ("dev / go"
+// is a child of "dev"). Of the tags an item reaches the cutoff of on one path,
+// Suggest returns only the one that clears its cutoff by most: a path implies
+// its ancestors, so "dev" next to "dev / go" says nothing more, and of a
+// parent and a child, the one cleared by more is what the item is about.
+// Tags on different paths, siblings among them, are judged on their own.
+// AllPathLevels turns that off: every tag that reaches its cutoff is
+// returned, ancestors and descendants together.
 //
 // Every Tagger that shares a Store must use one Model and one set of scoring
 // settings. A Tagger takes a tag built under another model or with other
@@ -48,6 +74,8 @@ type TaggerConfig struct {
 	NameMinScore   float64
 	MemberMinScore float64
 	SmoothingK     float64
+	ChunkBytes     int
+	AllPathLevels  bool
 }
 
 // Tagger suggests tags for the items of every scope of one Store. It keeps no
@@ -60,6 +88,8 @@ type Tagger struct {
 	// params fingerprints cfg's scoring settings, for TagVectors.Params: a tag
 	// built with others is stale (see stale)
 	params string
+	// itemModel is what item vectors are stored under (see itemModel)
+	itemModel string
 }
 
 // NewTagger returns a Tagger that embeds text with emb and keeps every scope's
@@ -78,6 +108,8 @@ func NewTagger(emb langai.Embedder, store Store, cfg TaggerConfig) (*Tagger, err
 		return nil, errors.New("tagging: no store")
 	case cfg.Model == "":
 		return nil, errors.New("tagging: no TaggerConfig.Model")
+	case cfg.ChunkBytes < 0:
+		return nil, fmt.Errorf("tagging: TaggerConfig.ChunkBytes is %d, want 0 or more", cfg.ChunkBytes)
 	}
 	if cfg.NameMinScore == 0 {
 		cfg.NameMinScore = DefaultNameMinScore
@@ -96,8 +128,13 @@ func NewTagger(emb langai.Embedder, store Store, cfg TaggerConfig) (*Tagger, err
 			return nil, fmt.Errorf("tagging: TaggerConfig.%s is %v, want a finite number", s.name, s.value)
 		}
 	}
-	params := fmt.Sprintf("k=%g name=%g member=%g", cfg.SmoothingK, cfg.NameMinScore, cfg.MemberMinScore)
-	return &Tagger{emb: emb, store: store, cfg: cfg, params: params}, nil
+	params := fmt.Sprintf("%s k=%g name=%g member=%g", scoringRule, cfg.SmoothingK, cfg.NameMinScore, cfg.MemberMinScore)
+	if cfg.ChunkBytes > 0 {
+		// a tag's vectors blend its members', which chunking changes; without
+		// it the fingerprint stays what stores built before ChunkBytes hold
+		params += fmt.Sprintf(" chunk=%d", cfg.ChunkBytes)
+	}
+	return &Tagger{emb: emb, store: store, cfg: cfg, params: params, itemModel: itemModel(cfg)}, nil
 }
 
 // ErrNotRebuilt is wrapped, together with its cause, by the error of a write
@@ -175,7 +212,7 @@ func (s *Scope) SetItem(ctx context.Context, itemID, text string) error {
 	if err != nil {
 		return err
 	}
-	if ok && item.Text == text && item.Model == s.tg.cfg.Model {
+	if ok && item.Text == text && item.Model == s.tg.itemModel {
 		return nil
 	}
 	linked, err := s.putItem(ctx, itemID, text)
@@ -247,22 +284,61 @@ func (s *Scope) UntagByHand(ctx context.Context, itemID, tagID string) error {
 // vectors of, the tags that could not be rebuilt. Any other error returns no
 // ids.
 func (s *Scope) Suggest(ctx context.Context, itemID string) ([]string, error) {
-	item, ok, err := s.tg.store.Item(ctx, s.index, s.partition, itemID)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, unknownItem(itemID)
-	}
-	vec, err := s.itemVector(ctx, item)
-	if err != nil {
-		return nil, err
-	}
-	tags, err := s.rebuildStale(ctx)
+	vec, tags, err := s.scoring(ctx, itemID)
 	if err != nil && !errors.Is(err, ErrNotRebuilt) {
 		return nil, err
 	}
-	return rank(vec, tags, s.tg.cfg.Model), err
+	return rank(vec, tags, s.tg.cfg.Model, !s.tg.cfg.AllPathLevels), err
+}
+
+// TagScore is how an item scores against one tag: the cosine between the
+// item's vector and the tag's blended one, and the cutoff the tag picks at.
+// ShadowedBy, when not empty, is the id of a tag on the same path that the
+// item clears the cutoff of by more: the score reaches this tag's cutoff, but
+// Suggest returns that tag instead (see TaggerConfig).
+type TagScore struct {
+	ID         string
+	Score      float64
+	Cutoff     float64
+	ShadowedBy string
+}
+
+// Picked reports whether Suggest returns the tag: the score reaches the cutoff
+// and no tag on its path shadows it. A NaN score or cutoff picks nothing.
+func (t TagScore) Picked() bool { return t.Score >= t.Cutoff && t.ShadowedBy == "" }
+
+// Scores returns the item's score against every tag of the scope, the ones
+// Suggest leaves out included, best score first and equal scores by id: what
+// Suggest decides from, for a page that shows why a tag was or was not
+// picked. It rebuilds stale tags and handles errors as Suggest does.
+func (s *Scope) Scores(ctx context.Context, itemID string) ([]TagScore, error) {
+	vec, tags, err := s.scoring(ctx, itemID)
+	if err != nil && !errors.Is(err, ErrNotRebuilt) {
+		return nil, err
+	}
+	return scores(vec, tags, s.tg.cfg.Model, !s.tg.cfg.AllPathLevels), err
+}
+
+// scoring returns what an item is scored with: its vector (see itemVector)
+// and the scope's tags, stale ones rebuilt first (see rebuildStale). An error
+// that wraps ErrNotRebuilt comes with both; any other comes with neither.
+func (s *Scope) scoring(ctx context.Context, itemID string) ([]float32, []TagRecord, error) {
+	item, ok, err := s.tg.store.Item(ctx, s.index, s.partition, itemID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		return nil, nil, unknownItem(itemID)
+	}
+	vec, err := s.itemVector(ctx, item)
+	if err != nil {
+		return nil, nil, err
+	}
+	tags, err := s.rebuildStale(ctx)
+	if err != nil && !errors.Is(err, ErrNotRebuilt) {
+		return nil, nil, err
+	}
+	return vec, tags, err
 }
 
 // Rebuild rebuilds every stale tag of the scope now, rather than at the next
@@ -299,17 +375,17 @@ func (t *Tagger) embedOne(ctx context.Context, role langai.Role, text string) ([
 	return vs[0], nil
 }
 
-// putItem embeds the item's text as a query, the way Suggest scores an item
-// against the tag vectors, and stores the item under the Tagger's model. It
-// returns the ids of the tags the item is linked to, whose Versions the store
-// bumped.
+// putItem embeds the item's text as a query (see embedItem), the way Suggest
+// scores an item against the tag vectors, and stores the item under the
+// Tagger's item model. It returns the ids of the tags the item is linked to,
+// whose Versions the store bumped.
 func (s *Scope) putItem(ctx context.Context, itemID, text string) (linked []string, err error) {
-	vec, err := s.tg.embedOne(ctx, langai.RoleQuery, text)
+	vec, err := s.tg.embedItem(ctx, text)
 	if err != nil {
 		return nil, err
 	}
 	return s.tg.store.PutItem(ctx, s.index, s.partition,
-		ItemRecord{ID: itemID, Text: text, Vec: vec, Model: s.tg.cfg.Model})
+		ItemRecord{ID: itemID, Text: text, Vec: vec, Model: s.tg.itemModel})
 }
 
 // reembedItem embeds the item's stored text again under the Tagger's model,
@@ -318,11 +394,11 @@ func (s *Scope) putItem(ctx context.Context, itemID, text string) (linked []stri
 // item was read. stored is false when the item is gone or its text changed;
 // the store then bumped no tag, and its writer bumped them instead.
 func (s *Scope) reembedItem(ctx context.Context, item ItemRecord) (vec []float32, stored bool, err error) {
-	vec, err = s.tg.embedOne(ctx, langai.RoleQuery, item.Text)
+	vec, err = s.tg.embedItem(ctx, item.Text)
 	if err != nil {
 		return nil, false, err
 	}
-	_, stored, err = s.tg.store.SetItemVector(ctx, s.index, s.partition, item.ID, item.Text, vec, s.tg.cfg.Model)
+	_, stored, err = s.tg.store.SetItemVector(ctx, s.index, s.partition, item.ID, item.Text, vec, s.tg.itemModel)
 	if err != nil {
 		return nil, false, err
 	}
@@ -337,7 +413,7 @@ func (s *Scope) reembedItem(ctx context.Context, item ItemRecord) (vec []float32
 // embedded for this call alone and not stored, so the edit stays as its writer
 // stored it.
 func (s *Scope) itemVector(ctx context.Context, item ItemRecord) ([]float32, error) {
-	if item.Model == s.tg.cfg.Model {
+	if item.Model == s.tg.itemModel {
 		return item.Vec, nil
 	}
 	vec, stored, err := s.reembedItem(ctx, item)
@@ -353,10 +429,10 @@ func (s *Scope) itemVector(ctx context.Context, item ItemRecord) ([]float32, err
 		return nil, err
 	case !ok:
 		return nil, unknownItem(item.ID)
-	case edited.Model == s.tg.cfg.Model:
+	case edited.Model == s.tg.itemModel:
 		return edited.Vec, nil
 	}
-	return s.tg.embedOne(ctx, langai.RoleQuery, edited.Text)
+	return s.tg.embedItem(ctx, edited.Text)
 }
 
 // unknownItem is the error for an item the scope does not hold.

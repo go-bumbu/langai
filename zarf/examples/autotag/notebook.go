@@ -1,0 +1,730 @@
+// Package autotag is the automatic-tagging page of the example service: a
+// notebook of notes and tags. Every note shows the tags a tagging.Tagger picks
+// for it among the notebook's own (option one: an existing set of tags, which
+// learns from the tags a person puts on notes by hand), and on demand the new
+// tags a tagging.Generator writes for it, each with its score (option two:
+// recommended tags).
+//
+// The notebook owns the notes and tags in a JSON file. The Tagger's Store is
+// derived data: the notebook replays itself into it at start, so a deleted or
+// fresh store (another embedding model, say) is rebuilt from the notebook.
+package autotag
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+
+	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/langai/tagging"
+)
+
+// Errors the handler maps to statuses.
+var (
+	ErrNotFound  = errors.New("autotag: no such note or tag")
+	ErrBadInput  = errors.New("autotag: bad input")
+	ErrNoSamples = errors.New("autotag: no samples file configured")
+)
+
+// Info is what the page says about the models and the cutoffs.
+type Info struct {
+	Embedder       string  `json:"embedder"`
+	Completer      string  `json:"completer"`
+	Accel          string  `json:"accel"`
+	NameMinScore   float64 `json:"nameMinScore"`
+	MemberMinScore float64 `json:"memberMinScore"`
+	MinScore       float64 `json:"minScore"` // the Generator's cutoff
+	// ChunkBytes is the Tagger's TaggerConfig.ChunkBytes: a longer note is
+	// read in pieces
+	ChunkBytes int  `json:"chunkBytes"`
+	Samples    bool `json:"samples"`
+}
+
+// Config wires a Notebook.
+type Config struct {
+	// Scope is the Tagger scope the notes and tags are mirrored into.
+	Scope *tagging.Scope
+	// Chat writes the recommended tags and Embedder scores them: Recommend
+	// builds a tagging.Generator over them with the options of each request.
+	Chat     langai.Completer
+	Embedder langai.Embedder
+	// File is the notebook's JSON file; empty keeps it in memory only.
+	File string
+	// SamplesFile is an eval dataset (zarf/eval/testdata/golden.yaml) that
+	// LoadSamples imports; empty disables it.
+	SamplesFile string
+	// ChatState says whether the chat model is loaded yet ("not loaded",
+	// "loading", "ready" or an error); nil leaves it out.
+	ChatState func() string
+	Info      Info
+	Logger    *slog.Logger
+}
+
+// Tag is one of the notebook's tags.
+type Tag struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Note is one text of the notebook and the tags a person put on it.
+type Note struct {
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
+	Text  string `json:"text"`
+	// Tags are the ids of the tags put on it by hand.
+	Tags []string `json:"tags"`
+	// Expected are the tag names a labelled sample carries, for comparison.
+	Expected []string `json:"expected,omitempty"`
+}
+
+type catalog struct {
+	Tags  []Tag  `json:"tags"`
+	Notes []Note `json:"notes"`
+	Next  int    `json:"next"`
+}
+
+// Notebook keeps the notes and tags, mirrors them into the Tagger and asks
+// it and the Generator for tags.
+type Notebook struct {
+	cfg    Config
+	logger *slog.Logger
+	mu     sync.RWMutex
+	cat    catalog
+}
+
+// New loads the notebook file, if there is one, and replays it into the
+// Tagger scope: what the store has already is a no-op, what it lacks (a new
+// store, another model) is embedded.
+func New(ctx context.Context, cfg Config) (*Notebook, error) {
+	if cfg.Scope == nil || cfg.Chat == nil || cfg.Embedder == nil {
+		return nil, errors.New("autotag: Config needs a Scope, a Chat model and an Embedder")
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	cfg.Info.Samples = cfg.SamplesFile != ""
+	nb := &Notebook{cfg: cfg, logger: logger}
+	if cfg.File != "" {
+		data, err := os.ReadFile(cfg.File)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+		case err != nil:
+			return nil, fmt.Errorf("autotag: read notebook: %w", err)
+		default:
+			if err := json.Unmarshal(data, &nb.cat); err != nil {
+				return nil, fmt.Errorf("autotag: read notebook %s: %w", cfg.File, err)
+			}
+		}
+	}
+	if err := nb.replay(ctx); err != nil {
+		return nil, err
+	}
+	return nb, nil
+}
+
+// replay mirrors the catalog into the scope.
+func (nb *Notebook) replay(ctx context.Context) error {
+	start := time.Now()
+	for _, t := range nb.cat.Tags {
+		if err := soft(nb.cfg.Scope.SetTag(ctx, t.ID, t.Name)); err != nil {
+			return fmt.Errorf("autotag: replay tag %q: %w", t.ID, err)
+		}
+	}
+	for _, n := range nb.cat.Notes {
+		if err := soft(nb.cfg.Scope.SetItem(ctx, n.ID, itemText(n))); err != nil {
+			return fmt.Errorf("autotag: replay note %q: %w", n.ID, err)
+		}
+		for _, tagID := range n.Tags {
+			if err := soft(nb.cfg.Scope.TagByHand(ctx, n.ID, tagID)); err != nil {
+				return fmt.Errorf("autotag: replay note %q tag %q: %w", n.ID, tagID, err)
+			}
+		}
+	}
+	nb.logger.Info("notebook loaded", "tags", len(nb.cat.Tags), "notes", len(nb.cat.Notes), "elapsed", time.Since(start).Round(time.Millisecond))
+	return nil
+}
+
+// soft drops tagging.ErrNotRebuilt: the change is stored and the next Suggest
+// rebuilds the tag.
+func soft(err error) error {
+	if errors.Is(err, tagging.ErrNotRebuilt) {
+		return nil
+	}
+	return err
+}
+
+// itemText is what the Tagger and the Generator read for a note.
+func itemText(n Note) string {
+	return strings.TrimSpace(n.Title + "\n" + n.Text)
+}
+
+// Info describes the models and cutoffs.
+func (nb *Notebook) Info() Info { return nb.cfg.Info }
+
+// ChatState says whether the chat model is loaded.
+func (nb *Notebook) ChatState() string {
+	if nb.cfg.ChatState == nil {
+		return ""
+	}
+	return nb.cfg.ChatState()
+}
+
+// TagView is a tag with how many notes carry it by hand and how many the
+// Tagger picks it for.
+type TagView struct {
+	Tag
+	Hand int `json:"hand"`
+	Auto int `json:"auto"`
+}
+
+// NoteView is a note with the tags the Tagger picks for it, best first, and
+// its score against every tag.
+type NoteView struct {
+	Note
+	Auto   []string `json:"auto"`
+	Scores []Score  `json:"scores"`
+	// Bytes is the length of what the Tagger reads, and Parts how many pieces
+	// it is embedded in (see Info.ChunkBytes).
+	Bytes int    `json:"bytes"`
+	Parts int    `json:"parts"`
+	Error string `json:"error,omitempty"`
+}
+
+// Score is a note's score against one tag and the cutoff the tag picks at.
+// ShadowedBy is the id of a tag on its path the note fits better, when the
+// score reaches the cutoff and the Tagger picks that tag instead (see
+// tagging.TagScore).
+type Score struct {
+	TagID      string  `json:"tagId"`
+	Score      float64 `json:"score"`
+	Cutoff     float64 `json:"cutoff"`
+	ShadowedBy string  `json:"shadowedBy,omitempty"`
+}
+
+// View is the whole notebook with every note's automatic tags.
+type View struct {
+	Tags      []TagView  `json:"tags"`
+	Notes     []NoteView `json:"notes"`
+	SuggestMs int64      `json:"suggestMs"`
+}
+
+// View returns every tag and note, asking the Tagger for each note's scores.
+// Scores reads stored vectors only, so this embeds nothing unless a tag is
+// stale or a note was embedded under another model or chunk size.
+func (nb *Notebook) View(ctx context.Context) (View, error) {
+	nb.mu.RLock()
+	defer nb.mu.RUnlock()
+	known := make(map[string]int, len(nb.cat.Tags))
+	v := View{Tags: make([]TagView, len(nb.cat.Tags)), Notes: make([]NoteView, 0, len(nb.cat.Notes))}
+	for i, t := range nb.cat.Tags {
+		known[t.ID] = i
+		v.Tags[i] = TagView{Tag: t}
+	}
+	start := time.Now()
+	for _, n := range nb.cat.Notes {
+		text := itemText(n)
+		nv := NoteView{Note: n, Auto: []string{}, Scores: []Score{}, Bytes: len(text), Parts: len(tagging.Chunk(text, nb.cfg.Info.ChunkBytes))}
+		for _, id := range n.Tags {
+			if i, ok := known[id]; ok {
+				v.Tags[i].Hand++
+			}
+		}
+		scores, err := nb.cfg.Scope.Scores(ctx, n.ID)
+		if err != nil && !errors.Is(err, tagging.ErrNotRebuilt) {
+			if ctx.Err() != nil {
+				return View{}, ctx.Err()
+			}
+			nv.Error = err.Error()
+		}
+		for _, s := range scores {
+			// a tag the store has and the notebook does not (a crash between
+			// the two writes) is left out
+			i, ok := known[s.ID]
+			if !ok {
+				continue
+			}
+			nv.Scores = append(nv.Scores, Score{TagID: s.ID, Score: s.Score, Cutoff: s.Cutoff, ShadowedBy: s.ShadowedBy})
+			if s.Picked() {
+				nv.Auto = append(nv.Auto, s.ID)
+				v.Tags[i].Auto++
+			}
+		}
+		v.Notes = append(v.Notes, nv)
+	}
+	v.SuggestMs = time.Since(start).Milliseconds()
+	return v, nil
+}
+
+// AddTag creates a tag, or returns the one with that name (case does not
+// matter), so accepting a recommended tag twice makes one tag. With parents,
+// a path's missing ancestors are created too: "dev / go / errors" makes
+// "dev" and "dev / go" when they are not tags yet, so an accepted tree
+// recommendation leaves the whole branch. A new level takes the spelling of
+// the existing ancestors: "cooking / baking" under the tag "Cooking" becomes
+// "Cooking / baking".
+func (nb *Notebook) AddTag(ctx context.Context, name string, parents bool) (Tag, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Tag{}, fmt.Errorf("%w: blank tag name", ErrBadInput)
+	}
+	nb.mu.Lock()
+	defer nb.mu.Unlock()
+	if !parents {
+		t, err := nb.addTag(ctx, name, nb.tagByName)
+		if err != nil {
+			return Tag{}, err
+		}
+		return t, nb.save()
+	}
+	var t Tag
+	for _, level := range pathPrefixes(name) {
+		next := leaf(level)
+		if t.Name != "" {
+			next = t.Name + " / " + next
+		}
+		var err error
+		// levels match exactly: a root "web" is not the tag "dev / web"
+		if t, err = nb.addTag(ctx, next, nb.tagByPath); err != nil {
+			return Tag{}, err
+		}
+	}
+	return t, nb.save()
+}
+
+// addTag is AddTag for one name, reusing the tag find finds; the caller holds
+// the lock and saves.
+func (nb *Notebook) addTag(ctx context.Context, name string, find func(string) (Tag, bool)) (Tag, error) {
+	if t, ok := find(name); ok {
+		return t, nil
+	}
+	t := Tag{ID: nb.uniqueTagID(slug(name)), Name: name}
+	if err := soft(nb.cfg.Scope.SetTag(ctx, t.ID, t.Name)); err != nil {
+		return Tag{}, err
+	}
+	nb.cat.Tags = append(nb.cat.Tags, t)
+	return t, nil
+}
+
+// pathPrefixes returns a path's ancestors and the path itself, root first:
+// "a / b / c" gives "a", "a / b" and "a / b / c".
+func pathPrefixes(path string) []string {
+	var levels, out []string
+	for _, l := range strings.Split(path, "/") {
+		if l = strings.TrimSpace(l); l != "" {
+			levels = append(levels, l)
+			out = append(out, strings.Join(levels, " / "))
+		}
+	}
+	return out
+}
+
+// RenameTag gives a tag a new name, which the Tagger embeds as its prior.
+func (nb *Notebook) RenameTag(ctx context.Context, id, name string) (Tag, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Tag{}, fmt.Errorf("%w: blank tag name", ErrBadInput)
+	}
+	nb.mu.Lock()
+	defer nb.mu.Unlock()
+	i := nb.tagIndex(id)
+	if i < 0 {
+		return Tag{}, ErrNotFound
+	}
+	if other, ok := nb.tagByName(name); ok && other.ID != id {
+		return Tag{}, fmt.Errorf("%w: a tag named %q exists", ErrBadInput, other.Name)
+	}
+	if err := soft(nb.cfg.Scope.SetTag(ctx, id, name)); err != nil {
+		return Tag{}, err
+	}
+	nb.cat.Tags[i].Name = name
+	return nb.cat.Tags[i], nb.save()
+}
+
+// DeleteTag deletes a tag and takes it off every note.
+func (nb *Notebook) DeleteTag(ctx context.Context, id string) error {
+	nb.mu.Lock()
+	defer nb.mu.Unlock()
+	i := nb.tagIndex(id)
+	if i < 0 {
+		return ErrNotFound
+	}
+	if err := nb.cfg.Scope.DeleteTag(ctx, id); err != nil {
+		return err
+	}
+	nb.cat.Tags = slices.Delete(nb.cat.Tags, i, i+1)
+	for j := range nb.cat.Notes {
+		nb.cat.Notes[j].Tags = slices.DeleteFunc(nb.cat.Notes[j].Tags, func(t string) bool { return t == id })
+	}
+	return nb.save()
+}
+
+// AddNote adds a note and embeds it.
+func (nb *Notebook) AddNote(ctx context.Context, title, text string) (Note, error) {
+	title, text = strings.TrimSpace(title), strings.TrimSpace(text)
+	if text == "" {
+		return Note{}, fmt.Errorf("%w: blank note text", ErrBadInput)
+	}
+	nb.mu.Lock()
+	defer nb.mu.Unlock()
+	nb.cat.Next++
+	n := Note{ID: "n" + strconv.Itoa(nb.cat.Next), Title: title, Text: text, Tags: []string{}}
+	for nb.noteIndex(n.ID) >= 0 {
+		nb.cat.Next++
+		n.ID = "n" + strconv.Itoa(nb.cat.Next)
+	}
+	if err := soft(nb.cfg.Scope.SetItem(ctx, n.ID, itemText(n))); err != nil {
+		return Note{}, err
+	}
+	nb.cat.Notes = append(nb.cat.Notes, n)
+	return n, nb.save()
+}
+
+// DeleteNote deletes a note; the tags it carried by hand forget it.
+func (nb *Notebook) DeleteNote(ctx context.Context, id string) error {
+	nb.mu.Lock()
+	defer nb.mu.Unlock()
+	i := nb.noteIndex(id)
+	if i < 0 {
+		return ErrNotFound
+	}
+	if err := soft(nb.cfg.Scope.DeleteItem(ctx, id)); err != nil {
+		return err
+	}
+	nb.cat.Notes = slices.Delete(nb.cat.Notes, i, i+1)
+	return nb.save()
+}
+
+// TagNote puts a tag on a note by hand, which teaches the tag.
+func (nb *Notebook) TagNote(ctx context.Context, noteID, tagID string) error {
+	nb.mu.Lock()
+	defer nb.mu.Unlock()
+	i := nb.noteIndex(noteID)
+	if i < 0 || nb.tagIndex(tagID) < 0 {
+		return ErrNotFound
+	}
+	if slices.Contains(nb.cat.Notes[i].Tags, tagID) {
+		return nil
+	}
+	if err := soft(nb.cfg.Scope.TagByHand(ctx, noteID, tagID)); err != nil {
+		return err
+	}
+	nb.cat.Notes[i].Tags = append(nb.cat.Notes[i].Tags, tagID)
+	return nb.save()
+}
+
+// UntagNote takes a hand-made tag off a note.
+func (nb *Notebook) UntagNote(ctx context.Context, noteID, tagID string) error {
+	nb.mu.Lock()
+	defer nb.mu.Unlock()
+	i := nb.noteIndex(noteID)
+	if i < 0 {
+		return ErrNotFound
+	}
+	if err := soft(nb.cfg.Scope.UntagByHand(ctx, noteID, tagID)); err != nil {
+		return err
+	}
+	nb.cat.Notes[i].Tags = slices.DeleteFunc(nb.cat.Notes[i].Tags, func(t string) bool { return t == tagID })
+	return nb.save()
+}
+
+// Recommended is one tag the Generator wrote for a note.
+type Recommended struct {
+	Name  string  `json:"name"`
+	Score float64 `json:"score"`
+	// Above says the score reaches the cutoff.
+	Above bool `json:"above"`
+	// TagID is the notebook's tag of that name (or, for a flat name, leaf
+	// name), if one exists.
+	TagID string `json:"tagId,omitempty"`
+	// Known is how many leading levels of a tree tag are a tag of the
+	// notebook already, compared as whole paths: 2 for "dev / go / errors"
+	// when "dev / go" exists, whether or not "dev" does.
+	Known int `json:"known"`
+}
+
+// RecommendOptions say how the tags are written (see tagging.GeneratorOption).
+type RecommendOptions struct {
+	// Language is the BCP 47 tag of the language the tags are written in, such
+	// as "en"; empty writes them in the note's own language.
+	Language string `json:"language"`
+	// Tree writes paths that extend the notebook's tags, as a small tree.
+	Tree bool `json:"tree"`
+}
+
+// Recommendation is what Recommend found for a note.
+type Recommendation struct {
+	Tags     []Recommended    `json:"tags"`
+	MinScore float64          `json:"minScore"`
+	Ms       int64            `json:"ms"`
+	Options  RecommendOptions `json:"options"`
+}
+
+// Recommend has a Generator write new tags for a note, as opts say. Every tag
+// the model wrote comes back, best first, those under the cutoff marked: a
+// debug view wants to see what was dropped. The first call loads the chat
+// model. A Generator keeps no state, so each call builds its own: in tree mode
+// the notebook's tags as they are now are the tree it extends.
+func (nb *Notebook) Recommend(ctx context.Context, noteID string, opts RecommendOptions) (Recommendation, error) {
+	nb.mu.RLock()
+	i := nb.noteIndex(noteID)
+	if i < 0 {
+		nb.mu.RUnlock()
+		return Recommendation{}, ErrNotFound
+	}
+	text := itemText(nb.cat.Notes[i])
+	genOpts := []tagging.GeneratorOption{tagging.WithNativeLanguageTags()}
+	if opts.Language != "" {
+		genOpts = []tagging.GeneratorOption{tagging.WithLanguageTags(opts.Language)}
+	}
+	if opts.Tree {
+		paths := make([]string, len(nb.cat.Tags))
+		for j, t := range nb.cat.Tags {
+			paths[j] = t.Name
+		}
+		slices.Sort(paths) // siblings next to each other: the model reads a tree
+		genOpts = append(genOpts, tagging.WithTreeTags(paths...))
+	}
+	nb.mu.RUnlock()
+
+	gen, err := tagging.NewGenerator(nb.cfg.Chat, nb.cfg.Embedder, tagging.GeneratorConfig{}, genOpts...)
+	if err != nil {
+		return Recommendation{}, fmt.Errorf("%w: %w", ErrBadInput, err)
+	}
+	start := time.Now()
+	tags, err := gen.Generate(ctx, text, -1)
+	if err != nil {
+		return Recommendation{}, err
+	}
+	res := Recommendation{Tags: make([]Recommended, 0, len(tags)), MinScore: nb.cfg.Info.MinScore, Ms: time.Since(start).Milliseconds(), Options: opts}
+	nb.mu.RLock()
+	defer nb.mu.RUnlock()
+	for _, t := range tags {
+		r := Recommended{Name: t.Name, Score: t.Score, Above: t.Score >= nb.cfg.Info.MinScore}
+		if existing, ok := nb.tagByName(t.Name); ok {
+			r.TagID = existing.ID
+		}
+		if strings.Contains(t.Name, "/") {
+			for k, p := range pathPrefixes(t.Name) {
+				if _, ok := nb.tagByPath(p); ok {
+					r.Known = k + 1
+				}
+			}
+		}
+		res.Tags = append(res.Tags, r)
+	}
+	return res, nil
+}
+
+// SampleStats says what LoadSamples imported.
+type SampleStats struct {
+	Tags     int   `json:"tags"`
+	Notes    int   `json:"notes"`
+	HandTags int   `json:"handTags"`
+	Ms       int64 `json:"ms"`
+}
+
+// LoadSamples imports the labelled samples: their tag taxonomy as tags, and
+// their documents as notes, the expected tags kept for comparison. What the
+// notebook has already is skipped. With perTag above zero, each tag is also
+// put by hand on the first perTag documents that expect it, in file order, so
+// the tags start with examples to learn from; the rest of the notes show what
+// the Tagger makes of them. A sample note imported earlier gets its hand tags
+// too, so the baseline can be trained in place.
+func (nb *Notebook) LoadSamples(ctx context.Context, perTag int) (SampleStats, error) {
+	if nb.cfg.SamplesFile == "" {
+		return SampleStats{}, ErrNoSamples
+	}
+	if perTag < 0 {
+		return SampleStats{}, fmt.Errorf("%w: negative examples per tag", ErrBadInput)
+	}
+	ds, err := eval.Load(nb.cfg.SamplesFile)
+	if err != nil {
+		return SampleStats{}, fmt.Errorf("autotag: samples: %w", err)
+	}
+	start := time.Now()
+	var st SampleStats
+	nb.mu.Lock()
+	defer nb.mu.Unlock()
+	// save what was imported even when a later step fails
+	defer func() { _ = nb.save() }()
+	for _, name := range ds.Tags {
+		if _, ok := nb.tagByName(name); ok {
+			continue
+		}
+		t := Tag{ID: nb.uniqueTagID(slug(name)), Name: name}
+		if err := soft(nb.cfg.Scope.SetTag(ctx, t.ID, t.Name)); err != nil {
+			return st, err
+		}
+		nb.cat.Tags = append(nb.cat.Tags, t)
+		st.Tags++
+	}
+	for _, d := range ds.Documents {
+		if nb.noteIndex(d.ID) >= 0 {
+			continue
+		}
+		n := Note{ID: d.ID, Title: d.Title, Text: strings.TrimSpace(d.Excerpt + "\n\n" + d.Text), Tags: []string{}, Expected: d.Tags}
+		if err := soft(nb.cfg.Scope.SetItem(ctx, n.ID, itemText(n))); err != nil {
+			return st, err
+		}
+		nb.cat.Notes = append(nb.cat.Notes, n)
+		st.Notes++
+	}
+	if err := nb.handTagSamples(ctx, ds.Documents, perTag, &st); err != nil {
+		return st, err
+	}
+	st.Ms = time.Since(start).Milliseconds()
+	nb.logger.Info("samples loaded", "tags", st.Tags, "notes", st.Notes, "handTags", st.HandTags, "elapsed", time.Since(start).Round(time.Millisecond))
+	return st, nil
+}
+
+// handTagSamples puts each tag by hand on the first perTag documents that
+// expect it. The caller holds the lock.
+func (nb *Notebook) handTagSamples(ctx context.Context, docs []eval.Document, perTag int, st *SampleStats) error {
+	used := map[string]int{}
+	for _, d := range docs {
+		i := nb.noteIndex(d.ID)
+		if i < 0 {
+			continue
+		}
+		for _, name := range d.Tags {
+			if used[name] >= perTag {
+				continue
+			}
+			used[name]++
+			tag, ok := nb.tagByName(name)
+			if !ok || slices.Contains(nb.cat.Notes[i].Tags, tag.ID) {
+				continue
+			}
+			if err := soft(nb.cfg.Scope.TagByHand(ctx, d.ID, tag.ID)); err != nil {
+				return err
+			}
+			nb.cat.Notes[i].Tags = append(nb.cat.Notes[i].Tags, tag.ID)
+			st.HandTags++
+		}
+	}
+	return nil
+}
+
+// tagByName finds a tag by its name or, for a name that is not a path,
+// failing that by its leaf: a generated "baking" matches the tag "cooking /
+// baking", while the path "dev / go / errors" matches only itself. Case and
+// the spacing around slashes do not matter. The caller holds the lock.
+func (nb *Notebook) tagByName(name string) (Tag, bool) {
+	if t, ok := nb.tagByPath(name); ok {
+		return t, true
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	if strings.Contains(name, "/") {
+		return Tag{}, false
+	}
+	for _, t := range nb.cat.Tags {
+		if strings.ToLower(leaf(t.Name)) == name {
+			return t, true
+		}
+	}
+	return Tag{}, false
+}
+
+// tagByPath finds the tag whose whole name is name, compared by pathKey:
+// no leaf matching. The caller holds the lock.
+func (nb *Notebook) tagByPath(name string) (Tag, bool) {
+	key := pathKey(name)
+	for _, t := range nb.cat.Tags {
+		if pathKey(t.Name) == key {
+			return t, true
+		}
+	}
+	return Tag{}, false
+}
+
+// pathKey is how two tag names compare: lowercased, levels trimmed, so
+// "Dev/Go" and "dev / go" are one tag.
+func pathKey(name string) string {
+	p := pathPrefixes(name)
+	if len(p) == 0 {
+		return ""
+	}
+	return strings.ToLower(p[len(p)-1])
+}
+
+func leaf(name string) string {
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		return strings.TrimSpace(name[i+1:])
+	}
+	return name
+}
+
+func (nb *Notebook) tagIndex(id string) int {
+	return slices.IndexFunc(nb.cat.Tags, func(t Tag) bool { return t.ID == id })
+}
+
+func (nb *Notebook) noteIndex(id string) int {
+	return slices.IndexFunc(nb.cat.Notes, func(n Note) bool { return n.ID == id })
+}
+
+// uniqueTagID returns base, or base-2, base-3... if it is taken.
+func (nb *Notebook) uniqueTagID(base string) string {
+	if base == "" {
+		base = "tag"
+	}
+	id := base
+	for i := 2; nb.tagIndex(id) >= 0; i++ {
+		id = base + "-" + strconv.Itoa(i)
+	}
+	return id
+}
+
+// slug turns a tag name into an id: "cooking / baking" becomes
+// "cooking-baking". Letters of any script stay.
+func slug(name string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(name) {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			dash = b.Len() > 0
+			continue
+		}
+		if dash {
+			b.WriteByte('-')
+			dash = false
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// save writes the catalog, if there is a file; the caller holds the lock.
+// It writes a temporary file and renames it, so a crash never leaves half a
+// notebook.
+func (nb *Notebook) save() error {
+	if nb.cfg.File == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(nb.cat, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(nb.cfg.File), 0o750); err != nil {
+		return fmt.Errorf("autotag: save notebook: %w", err)
+	}
+	tmp := nb.cfg.File + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("autotag: save notebook: %w", err)
+	}
+	if err := os.Rename(tmp, nb.cfg.File); err != nil {
+		return fmt.Errorf("autotag: save notebook: %w", err)
+	}
+	return nil
+}

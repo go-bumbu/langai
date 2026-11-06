@@ -23,11 +23,13 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/examples/mediasearch"
+	"github.com/go-bumbu/langai/zarf/examples/autotag"
+	"github.com/go-bumbu/langai/zarf/examples/mediasearch"
 	"github.com/go-bumbu/langai/media/ffmpeg"
 	"github.com/go-bumbu/langai/provider/onnx"
 	"github.com/go-bumbu/langai/provider/yzma"
 	"github.com/go-bumbu/langai/search"
+	"github.com/go-bumbu/langai/tagging"
 	"github.com/go-bumbu/langai/vector/sqlitevec"
 )
 
@@ -54,6 +56,8 @@ func run() error {
 		segment   = flag.Duration("segment", yzma.DefaultSegmentLength, "how much of a video goes through the vision model at once")
 		limit     = flag.Int("limit", 12, "hits per search")
 		minScore  = flag.Float64("min-score", 0, "drop hits scoring below this; 0 shows everything")
+		samples   = flag.String("samples", filepath.Join("..", "eval", "testdata", "golden.yaml"), "labelled texts the auto tagging page can import; empty or missing hides the button")
+		tagScore  = flag.Float64("tag-min-score", tagging.DefaultGeneratorMinScore, "the cutoff of the recommended tags; the page shows the ones under it greyed")
 	)
 	flag.Parse()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -149,9 +153,23 @@ func run() error {
 		return fmt.Errorf("scan: %w", err)
 	}
 
+	llama := yzma.Config{
+		ModelsDir:     filepath.Join(*llamaDir, "models"),
+		LibDir:        filepath.Join(*llamaDir, "llama-cpp", yzma.LibTag),
+		ManagedLibDir: true,
+		Accel:         yzma.Accel(*accel),
+		Logger:        logger,
+	}
+	notebook, closeTagging, err := openTagging(ctx, llama, *dataDir, *samples, *tagScore, logger)
+	if err != nil {
+		return err
+	}
+	defer closeTagging()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", home)
 	mux.Handle("/mediasearch/", http.StripPrefix("/mediasearch", mediasearch.Handler(lib)))
+	mux.Handle("/autotag/", http.StripPrefix("/autotag", autotag.Handler(notebook)))
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -186,6 +204,7 @@ a{color:#5aa9ff}li{margin:8px 0}</style></head><body>
 <h1>langai examples</h1>
 <ul>
 <li><a href="/mediasearch/">Media search</a> — images and videos that look like an image, a video or a text</li>
+<li><a href="/autotag/">Auto tagging</a> — tags for notes, picked among your own tags or written new by a chat model</li>
 </ul>
 </body></html>`)
 }

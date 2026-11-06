@@ -8,8 +8,10 @@ package sqlitevec
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 
@@ -221,6 +223,50 @@ func (s *Store) ContentHash(ctx context.Context, index, partition, collection, d
 		return "", nil
 	}
 	return h, err
+}
+
+// Chunks implements vector.Store, reading each vector back from the vec0
+// table by its chunk's rowid.
+func (s *Store) Chunks(ctx context.Context, index, partition, collection, docID string) ([]vector.Chunk, error) {
+	if err := s.ensure(ctx, index); err != nil {
+		return nil, err
+	}
+	chunksT, _ := tablename.For(s.generation, index, "chunks")
+	vecT, _ := tablename.For(s.generation, index, "vec")
+	//nolint:gosec // table names are hex sha256 of the index (injection-safe); all values are bound ? parameters
+	q := fmt.Sprintf(`SELECT c.seq, c.text, v.embedding FROM %s c JOIN %s v ON v.rowid = c.id
+		WHERE c.partition=? AND c.collection=? AND c.doc_id=? ORDER BY c.seq, c.id`, chunksT, vecT)
+	rows, err := s.db.QueryContext(ctx, q, partition, collection, docID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []vector.Chunk
+	for rows.Next() {
+		var c vector.Chunk
+		var blob []byte
+		if err := rows.Scan(&c.Seq, &c.Text, &blob); err != nil {
+			return nil, err
+		}
+		if c.Vector, err = deserializeFloat32(blob); err != nil {
+			return nil, fmt.Errorf("chunk %d: %w", c.Seq, err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// deserializeFloat32 is the inverse of sqlite_vec.SerializeFloat32: packed
+// little-endian float32s.
+func deserializeFloat32(blob []byte) ([]float32, error) {
+	if len(blob)%4 != 0 {
+		return nil, fmt.Errorf("vector blob of %d bytes is not a float32 array", len(blob))
+	}
+	v := make([]float32, len(blob)/4)
+	for i := range v {
+		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(blob[i*4:]))
+	}
+	return v, nil
 }
 
 // Search implements vector.Store.

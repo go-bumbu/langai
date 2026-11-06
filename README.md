@@ -19,7 +19,7 @@ models run in-process through llama.cpp and ONNX Runtime.
 | `vector/pgvec` | `Store` on Postgres with pgvector. |
 | `provider/yzma` | `Embedder` that runs a GGUF sentence-embedding model, `Completer` that runs a GGUF chat model (the one the `Generator` writes tags with), and `Vision`, which runs Qwen3-VL-Embedding as a text, image and video embedder in one space, through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Downloads and verifies the pinned llama.cpp build and models on first use, and picks the build and the GPU offload from the hardware (`Config.Accel`). |
 | `provider/onnx` | `ImageEmbedder` that runs an ONNX vision model through [ONNX Runtime](https://onnxruntime.ai) (CGO, via [onnxruntime_go](https://github.com/yalue/onnxruntime_go)): SigLIP 2 base by default, DINOv2 base as the other pinned model, any other through a `ModelSpec`. CPU by default, CUDA or CoreML by configuration. Downloads and verifies the pinned runtime build and model on first use. |
-| `eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. `make semeval` compares embedding models side by side on it. |
+| `zarf/eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. `make semeval` compares embedding models side by side on it. |
 | `langaitest` | `FakeEmbedder` and `FakeImageEmbedder`, deterministic, for tests. |
 
 Every package stands alone and you only compile the dependencies of the packages you
@@ -57,11 +57,13 @@ langai/                 the shared ports: Embedder, Completer, Role
 ├── media/              video input: the Sampler port and Frame
 │   └── ffmpeg/         video → frames via the ffmpeg binary
 │
-├── eval/               golden-set evaluation of embedding models
 ├── langaitest/         fakes of the ports, for tests
 ├── internal/           tablename: SQL table names; fetch: verified downloads and release
 │                       archives for the providers; planned: rank, score roll-up
-└── examples/           the example service: a page per feature, media search first
+│
+└── zarf/               tooling around the library, not part of it
+    ├── eval/           golden-set evaluation of embedding models
+    └── examples/       the example service: a page per feature, media search and auto tagging
 ```
 
 - **The root is the front door:** the shared ports and the capabilities (`search`,
@@ -185,6 +187,7 @@ err = ix.IndexImage(ctx, "photo-42", file)             // JPEG, PNG, GIF, WebP, 
 err = ix.IndexVideo(ctx, "clip-7", "/media/clip-7.mp4") // one vector per sampled frame; a no-op while the file is unchanged
 hits, err := ix.SearchImage(ctx, file, 10)              // []search.MediaMatch: DocID, Score, At (the matching frame's time)
 hits, err := ix.SearchVideo(ctx, "/media/query.mp4", 10) // and QueryAt, the query frame that matched
+hits, err := ix.SearchIndexed(ctx, "clip-7", 10)         // "more like this" with the stored vectors: no model runs
 err = ix.Delete(ctx, "photo-42")
 ```
 
@@ -278,6 +281,7 @@ space.SetItem(ctx, "item-42", essence)          // create or edit; embeds only w
 space.TagByHand(ctx, "item-42", "bread")        // a person tagged it: teaches the tag
 space.UntagByHand(ctx, "item-42", "bread")
 ids, err := space.Suggest(ctx, "item-42")       // auto tags, best first; never stored as links
+scores, err := space.Scores(ctx, "item-42")     // every tag's score and cutoff: why a tag was or was not picked
 space.DeleteItem(ctx, "item-42"); space.DeleteTag(ctx, "bread")
 space.Rebuild(ctx)                              // optional warm-up, e.g. after switching models
 ```
@@ -289,6 +293,16 @@ boundary (a tenant) and the second a space within it; scopes never see each othe
 items or links. Use a tag's full path as its name (`colors / warm / red` says more than
 `red`). `TaggerConfig.Model` names the embedding model, and every stored vector is kept with the
 model it came from.
+
+**Long items.** An embedder reads a window of tokens and silently drops the rest: the
+default yzma model reads 512 tokens, some 2 KB of prose, so only the start of a longer item
+counts. `TaggerConfig.ChunkBytes` (off by default) embeds a longer item in pieces of about
+equal size cut at whitespace (`tagging.Chunk`) and stores the mean of their vectors; set
+it a little under the window, 2000 for the default model. A mean of pieces lies closer to
+every tag than one piece does: on a 4.9 KB note every score rose by 0.04 to 0.05, so a
+chunked item clears a cutoff more easily, and the cutoffs were measured on unchunked
+items. Items are stored under the model marked with the chunk size, so changing
+`ChunkBytes` re-embeds them as switching models does.
 
 **Storage.** A `Store` keeps the tags, the items with their embeddings and the hand-made
 links. `tagging.NewMemStore()` keeps them in memory, for tests and tiny corpora.
@@ -311,17 +325,26 @@ a `Store` of your own.
 
 How a tag is judged:
 
-- **Its vector** blends an embedding of its name with the centroid of its members,
-  weighted by member count: `w = n/(n+SmoothingK)`. A brand-new tag tags by its name
-  alone, and shifts toward "tag by example" as members accumulate.
-- **Its cutoff** mixes `NameMinScore` (default 0.46) and `MemberMinScore` (default
-  0.70) by the same weight. A document scores ~0.49 on average against a right tag's
-  name but ~0.75 against its members' centroid, because documents resemble each other
-  far more than they resemble a short tag path, so each part is judged on its own scale:
-  scoring the blended vector against the cutoff is exactly
-  `(1-w)·(cos(name) - NameMinScore) + w·(cos(centroid) - MemberMinScore) >= 0`.
+- **Its vector** blends an embedding of its name with the mean of its members'
+  vectors, weighted by member count: `w = n/(n+SmoothingK)`. A brand-new tag tags by
+  its name alone, and shifts toward "tag by example" as members accumulate.
+- **Its cutoff** mixes `NameMinScore` (default 0.42) and `MemberMinScore` (default
+  0.58) by the same weight. Documents resemble each other far more than they resemble a
+  short tag path, so each part is judged on its own scale: scoring the blended vector
+  against the cutoff is exactly
+  `(1-w)·(cos(name) - NameMinScore) + w·(mean cos(member) - MemberMinScore) >= 0`.
+  The mean of a document's cosines to the members stays put as members are added,
+  where its cosine to their centroid rises with every one, so one `MemberMinScore`
+  holds for a tag with two examples and for one with fifty.
 - **Every tag that clears its own cutoff is suggested**, best score first, with no limit
-  on how many. A suggestion is never stored as a link: only `TagByHand` teaches a tag.
+  on how many, but along a path of the tag tree (names split on `/`: `dev / go` is a
+  child of `dev`) the better fit wins. Every ancestor meets every descendant by margin
+  (score minus cutoff): a descendant at least as wide shadows the ancestor, and a
+  narrower one is shadowed by it. A Go page gets `dev / go` and not also `dev`, which
+  the path implies; a general programming page gets `dev` and not the `dev / web` it
+  clears by less; two children that both beat their parent are both suggested.
+  `TagScore.ShadowedBy` names the winner; `TaggerConfig.AllPathLevels` turns the rule
+  off. A suggestion is never stored as a link: only `TagByHand` teaches a tag.
 - **Changes rebuild the affected tags right away.** Every change to what a tag's vectors
   depend on bumps the tag's version, and a rebuild stores its result only while the tag
   is still at the version it read, so a hand tag that lands mid-rebuild is never
@@ -336,8 +359,9 @@ How a tag is judged:
   of its members, so importing n hand tags of one tag reads its members n times (about
   n²/2 rows), and every edit of an item rebuilds each tag it carries.
 - **One model and one set of scoring settings per store:** every Tagger that shares a
-  `Store` must use the same `TaggerConfig.Model`, `NameMinScore`, `MemberMinScore` and
-  `SmoothingK`. A Tagger takes tags built under another model or with other settings for
+  `Store` must use the same `TaggerConfig.Model`, `NameMinScore`, `MemberMinScore`,
+  `SmoothingK` and `ChunkBytes` (`AllPathLevels` only filters what is returned, and may
+  differ). A Tagger takes tags built under another model or with other settings for
   stale and rebuilds them, re-embedding their members when the model differs, so two
   Taggers that differ rebuild each other's tags at every `Suggest` and never settle.
 - **Switching models:** the Tagger stores each item's text next to its embedding, so after
@@ -350,9 +374,13 @@ How a tag is judged:
   cutover.
 - **Rejected alternatives:** kNN voting on its own (it never abstains); a kNN agreement
   check (it blocks second tags on two-topic pages); one global cutoff (it fits only one
-  stage, names or examples); examples only with one cutoff (closeness to examples
-  drifts with their number); a cap on tags per document (every qualifying tag is
-  wanted).
+  stage, names or examples); the cosine to the members' centroid (it drifts with their
+  number, so a cutoff right for five examples is too strict for two); centering the
+  vectors on the scope's mean, or keeping only each document's best tags (both lift
+  single-topic F1 and lose most second topics); EmbeddingGemma's classification or
+  clustering prompts, and bge-m3, multilingual-e5-small and nomic-embed-text-v2 (all
+  below EmbeddingGemma with its search prompts); a cap on tags per document (every
+  qualifying tag is wanted).
 
 The golden numbers below measure tagging over *essences*: a page's title, excerpt and
 site name followed by the first 2 KB of its text, one per line
@@ -362,13 +390,16 @@ the numbers say.
 ### Known limitations
 
 - **Second and side topics.** A page is one embedding of its first ~2 KB. When pairs of
-  single-tag golden documents are stitched into one page, both tags are assigned a bit
-  more than half the time (0.59, 60 of 102 pages); a minor side topic is rarely found.
-- **Documents that fit no tag** can still get one, at most about 1 time in 4: with a
-  document's own tags removed, 0.75 of the golden documents stay untagged. That is an
-  upper bound on wrong tags, not a measured rate: the rest of the tag family stays, and
-  some picks are related tags.
-- **Tags that mix unrelated topics** average their members into one centroid that
+  single-tag golden documents are stitched into one page, both tags are assigned 0.80 of
+  the time; a minor side topic is rarely found.
+- **Documents that fit no tag** can still get one: with a document's own tags removed,
+  0.64 of the golden documents get no tag, and 0.81 none but an ancestor of their own
+  tags (`cooking` for a recipe once `cooking / recipes` is gone), which the path
+  implies. The rest get a sibling or a child, a related tag but a wrong one.
+- **Siblings are the usual mistake.** Nearly every wrong suggestion is a tag of the
+  right family: `cooking / baking` for a recipe, a parent next to its child. Unrelated
+  tags are all but never suggested.
+- **Tags that mix unrelated topics** average their members into one vector that
   matches neither topic well.
 - **The two cutoffs come from a small golden set** (84 documents, 15 tags, one model);
   the model's scores sit in a narrow band, so ±0.04 on the name cutoff already costs a
@@ -382,7 +413,29 @@ emb, err := yzma.New(ctx, cfg)          // the embedding model scores the tags
 llm, err := yzma.NewCompleter(ctx, cfg) // the chat model writes them
 gen, err := tagging.NewGenerator(llm, emb, tagging.GeneratorConfig{})
 tags, err := gen.Generate(ctx, essence, tagging.DefaultGeneratorMinScore) // []tagging.Tag{Name, Score}, best first
+
+// options: the language of the tags, and tags as paths of a tree
+gen, err = tagging.NewGenerator(llm, emb, tagging.GeneratorConfig{},
+	tagging.WithLanguageTags("en"),                       // or WithNativeLanguageTags(), the default
+	tagging.WithTreeTags("dev / go", "cooking / baking")) // extend these paths; none: a tree of its own
 ```
+
+**Options.** `WithNativeLanguageTags()` (the default) writes the tags in the language of the
+text; `WithLanguageTags(lang)` in one language whatever the text's, `lang` a BCP 47 tag
+(`en`, `es`, `pt-BR`); the prompt opens with that rule, asks the model to translate the
+text's topics rather than copy its words (proper names stay), and repeats the rule last.
+A 4B model copies a text's words readily: with the rule stated once, last, English tags
+for the 55 German and Spanish golden documents had 88 of 550 tags still in the text's
+language; stated first and last, 28, most of them place and dish names. `WithTreeTags(existing...)` writes each tag as a path from a broad
+category down (`dev / go / error wrapping`, at most `MaxTreeLevels` deep) and the tags of a
+text as a small tree sharing upper levels. With existing paths, the model is shown them (up
+to `MaxTreeBytes`) and asked to extend them, written as they are, and to start a new
+top-level category only when none fits; a tag is scored by its whole path. On a Spanish
+text about Go errors, with the golden tags as the tree, it wrote `dev / go / error wrapping`
+and three siblings, in English although the text is Spanish: the tree's language wins over
+`WithNativeLanguageTags`, so set `WithLanguageTags` to the tree's. On a text that fits no
+branch it opened new roots (`tech / agentic web`) rather than reaching for `dev / web`. A
+Generator keeps no state, so building one per call, with the tree as it is now, is cheap.
 
 The Tagger picks among tags your application already has. The Generator needs none: it writes them
 for one text, stores nothing, and returns the tags that score at least the cutoff you pass.
@@ -390,7 +443,7 @@ Hand it a text built like the essences above.
 
 - **The model writes, the embedder scores.** The chat model (Qwen3 4B Instruct, Apache-2.0)
   is asked for up to `GeneratorConfig.Candidates` (10) tags of one to three words, in the text's
-  language. A model's own confidence is poorly calibrated, so each tag is scored by the
+  language unless the options above say otherwise. A model's own confidence is poorly calibrated, so each tag is scored by the
   cosine between the embedding of the text (as a query) and of the tag (as a document):
   the roles, and so the scale, of the Tagger's `NameMinScore`. One cutoff then means the same
   on every text, and a tag the model invented falls under it.
@@ -413,13 +466,13 @@ Hand it a text built like the essences above.
 ## Evaluating embedding models
 
 `eval` scores an embedding model on a labelled, multilingual golden set
-(`eval/testdata/golden.yaml`, English, Spanish and German): free-text retrieval
+(`zarf/eval/testdata/golden.yaml`, English, Spanish and German): free-text retrieval
 (recall@k, MRR, nDCG) over the queries in their documents' language and, separately,
 over the queries that must cross a language; tagging by tag name (precision, recall and
-F1 at `NameMinScore`, plus the floor each model would need); and timings. tagging's
+F1 at 0.46, each tag judged on its own, plus the floor each model would need); and timings. tagging's
 `TestGoldenTagging` replays the same set through a `Tagger` with simulated hand-tagging
 (a tag's members are up to every other document carrying it) and checks tagging by name
-only and with members, how many documents stay untagged once their own tags are removed,
+only and with members, how many documents get no unrelated tag once their own tags are removed,
 and two-topic pages. Both need the runtime libraries above and cache the downloads in
 `~/.cache/semsearch-yzma`:
 
@@ -428,11 +481,11 @@ and two-topic pages. Both need the runtime libraries above and cache the downloa
 # (provider/yzma/golden_test.go and tagging/golden_test.go)
 make test-models
 
-# every candidate in eval/testdata/models.yaml, side by side
+# every candidate in zarf/eval/testdata/models.yaml, side by side
 make semeval
 ```
 
-Add a candidate to `eval/testdata/models.yaml` with its pooling and prefixes;
+Add a candidate to `zarf/eval/testdata/models.yaml` with its pooling and prefixes;
 run `make semeval SEMEVAL_ONLY=<its name>` once without a digest and paste the one it
 prints. The dataset format is plain YAML, so an export of your own documents can be
 scored the same way (`make semeval SEMEVAL_DATASET=export.yaml`); `SEMEVAL_JSON=out.json`
@@ -440,13 +493,13 @@ keeps every metric, and the Makefile lists the other settings.
 
 ## Examples
 
-`examples/` is a single-user web service that exercises the features by hand,
-one page per feature. Media search is the first: `cd examples && make prepare`
+`zarf/examples/` is a single-user web service that exercises the features by hand,
+one page per feature. Media search is the first: `cd zarf/examples && make prepare`
 fetches sample photos and renders two slideshow clips, `make run` indexes them
 and serves a grid of thumbnails on http://127.0.0.1:8085/mediasearch/; click one
 to see the items that look like it with their scores, the frame of a video that
 matched and when, the frames the index saw of a video, and how long the search
-took; or search with a file of your own. See [examples/README.md](examples/README.md).
+took; or search with a file of your own. See [zarf/examples/README.md](zarf/examples/README.md).
 
 ## Development
 

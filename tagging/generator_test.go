@@ -357,7 +357,7 @@ func TestParseTags(t *testing.T) {
 		{"nothing", " \n\n ", 10, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := parseTags(tc.answer, tc.limit); !slices.Equal(got, tc.want) {
+			if got := parseTags(tc.answer, tc.limit, cleanTag); !slices.Equal(got, tc.want) {
 				t.Errorf("parseTags(%q) = %q, want %q", tc.answer, got, tc.want)
 			}
 		})

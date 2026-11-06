@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/eval"
+	"github.com/go-bumbu/langai/zarf/eval"
 	"github.com/go-bumbu/langai/provider/yzma"
 )
 
@@ -39,37 +39,45 @@ func TestGoldenTagging(t *testing.T) {
 	if err != nil {
 		t.Fatalf("yzma.New: %v", err)
 	}
-	ds, err := eval.Load(filepath.Join("..", "eval", "testdata", "golden.yaml"))
+	ds, err := eval.Load(filepath.Join("..", "zarf", "eval", "testdata", "golden.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	w := newGoldenWorld(ctx, t, emb, ds)
+	untagged, unrelated := w.untagged(ctx, t)
 	got := map[string]float64{
-		// no examples anywhere, so every tag is judged by its name alone, as in the
-		// eval's name-only f1@0.46 (0.7071 in both when last measured; only the
-		// floor below is enforced)
+		// no examples anywhere, so every tag is judged by its name alone (the
+		// eval's name-only f1@0.46, without the path rule, was 0.7071 when last
+		// measured; only the floor below is enforced)
 		"names only": w.tagging(ctx, t, func(int) int { return 0 }).f1(),
 		// tags at different stages: 0, 1, 2, 3 or all examples, rotated
 		"mixed examples": w.mixed(ctx, t).f1(),
 		// the document's own tags don't exist, but the rest of their tag family
-		// does: share that gets no tag. The share that gets one is an upper bound
-		// on wrong tags (some picks are related family tags)
-		"fits nothing, untagged": w.untagged(ctx, t),
+		// does: share that gets no tag but ancestors of its own, which its path
+		// implies ("cooking" for a recipe when "cooking / recipes" is gone)
+		"fits nothing, no unrelated tag": unrelated,
 		// two documents stitched into one page: share that gets both tags
 		"two topics, both tags": w.bothTags(ctx, t),
 	}
+	// the share that gets no tag at all, ancestors included: logged, not
+	// enforced (0.7500 under the centroid rule without the path rule, 0.6429
+	// under this one, which gives a recipe "cooking" once "cooking / recipes" is
+	// gone)
+	t.Logf("%-30s %.4f", "fits nothing, no tag at all", untagged)
 	floors := []struct {
 		name  string
 		floor float64
 	}{
-		// measured 2026-10-22 with embeddinggemma-300m Q8_0: 0.7071, 0.7515, 0.7500, 0.5882
-		{"names only", 0.65},
-		{"mixed examples", 0.70},
-		{"fits nothing, untagged", 0.70},
-		{"two topics, both tags", 0.48},
+		// measured 2026-11-06 with embeddinggemma-300m Q8_0, the mean rule and
+		// the path rule: 0.7889, 0.8597, 0.8095, 0.8039. The centroid rule
+		// before them, at 0.46 and 0.70: 0.7071, 0.7561, 0.8333, 0.5882
+		{"names only", 0.74},
+		{"mixed examples", 0.78},
+		{"fits nothing, no unrelated tag", 0.75},
+		{"two topics, both tags", 0.70},
 	}
 	for _, f := range floors {
-		t.Logf("%-24s %.4f (floor %.2f)", f.name, got[f.name], f.floor)
+		t.Logf("%-30s %.4f (floor %.2f)", f.name, got[f.name], f.floor)
 		// "not at or above", not "below": a scenario with nothing to count (no
 		// documents, or no pairs to stitch) is 0/0, a NaN, and every comparison
 		// with a NaN is false
@@ -232,9 +240,10 @@ func (w *goldenWorld) mixed(ctx context.Context, t *testing.T) tagCounts {
 }
 
 // untagged deletes each document's own tags, asks for its suggestions and
-// puts the tags back, and reports the share of documents that get none.
-func (w *goldenWorld) untagged(ctx context.Context, t *testing.T) float64 {
-	n := 0
+// puts the tags back. It reports the share of documents that get none, and the
+// share that get none but ancestors of their own tags.
+func (w *goldenWorld) untagged(ctx context.Context, t *testing.T) (none, noUnrelated float64) {
+	n, ok := 0, 0
 	for _, doc := range w.ds.Documents {
 		own := w.truth(doc)
 		for _, id := range own {
@@ -245,14 +254,25 @@ func (w *goldenWorld) untagged(ctx context.Context, t *testing.T) float64 {
 			delete(w.present, id)
 		}
 		w.setMembers(ctx, t, map[string]bool{doc.ID: true}, func(int) int { return math.MaxInt })
-		if len(w.suggest(ctx, t, doc.ID)) == 0 {
+		got := w.suggest(ctx, t, doc.ID)
+		if len(got) == 0 {
 			n++
+		}
+		if !slices.ContainsFunc(got, func(id string) bool { return !w.ancestorOfOwn(doc, id) }) {
+			ok++
 		}
 		for _, id := range own {
 			w.setTag(ctx, t, id)
 		}
 	}
-	return float64(n) / float64(len(w.ds.Documents))
+	all := float64(len(w.ds.Documents))
+	return float64(n) / all, float64(ok) / all
+}
+
+// ancestorOfOwn reports whether the tag is an ancestor of one of the
+// document's own tags.
+func (w *goldenWorld) ancestorOfOwn(doc eval.Document, tagID string) bool {
+	return slices.ContainsFunc(doc.Tags, func(own string) bool { return strings.HasPrefix(own, w.names[tagID]+" / ") })
 }
 
 // bothTags stitches pairs of single-tag documents with different leaf tags

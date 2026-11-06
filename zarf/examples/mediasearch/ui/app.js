@@ -82,7 +82,7 @@
     mark(id);
     const it = items.find((x) => x.id === id);
     detail.replaceChildren(preview(it), facts(it), el('p', { class: 'hint' }, 'searching…'));
-    const jobs = [api('api/similar/' + enc(id))];
+    const jobs = [api('api/similar/' + enc(id) + ($('#reembed').checked ? '?embed=1' : ''))];
     if (it.kind === 'video') jobs.push(api('api/frames/' + enc(id)).catch((e) => ({ error: e.message })));
     try {
       const [res, board] = await Promise.all(jobs);
@@ -134,7 +134,9 @@
   function hits(res, query) {
     const list = el('div', { class: 'hits' },
       el('h3', {}, 'looks like'),
-      el('div', { class: 'summary' }, `${res.frames} query frame${res.frames === 1 ? '' : 's'} embedded, ${res.hits.length} hits in ${res.elapsedMs} ms`));
+      el('div', { class: 'summary' }, res.stored
+        ? `stored vectors reused, nothing embedded, ${res.hits.length} hits in ${res.elapsedMs} ms`
+        : `${res.frames} query frame${res.frames === 1 ? '' : 's'} embedded, ${res.hits.length} hits in ${res.elapsedMs} ms`));
     if (!res.hits.length) list.append(el('p', { class: 'hint' }, 'nothing above the min score'));
     for (const h of res.hits) {
       const times = [];
@@ -192,6 +194,8 @@
   }
 
   $('#textsearch').addEventListener('submit', (e) => { e.preventDefault(); const q = $('#q').value.trim(); if (q) searchText(q); });
+  // switching the mode runs the open item's search again, to compare
+  $('#reembed').addEventListener('change', () => { if (active) open(active); });
   $('#upload').addEventListener('change', (e) => { if (e.target.files[0]) upload(e.target.files[0]); e.target.value = ''; });
   $('#rescan').addEventListener('click', async (e) => {
     e.target.disabled = true;
