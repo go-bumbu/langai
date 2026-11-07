@@ -17,16 +17,28 @@ var errBoom = errors.New("boom")
 
 type prompt struct{ system, user string }
 
-// stubLLM answers every prompt with answer, or fails with err, and records what
-// it was asked.
+// stubLLM answers a prompt with byUser[user] when it holds the user message
+// and with answer otherwise, or fails with err, and records what it was asked.
+// hook, when set, runs first with the prompt's number (1 for the first), and
+// an error from it fails that prompt.
 type stubLLM struct {
 	answer string
+	byUser map[string]string
 	err    error
+	hook   func(n int) error
 	asked  []prompt
 }
 
 func (s *stubLLM) Complete(_ context.Context, system, user string) (string, error) {
 	s.asked = append(s.asked, prompt{system, user})
+	if s.hook != nil {
+		if err := s.hook(len(s.asked)); err != nil {
+			return "", err
+		}
+	}
+	if a, ok := s.byUser[user]; ok {
+		return a, s.err
+	}
 	return s.answer, s.err
 }
 
@@ -117,6 +129,17 @@ func TestNew_RejectsNegativeSettings(t *testing.T) {
 		if _, err := NewGenerator(&stubLLM{}, &vecEmbedder{}, cfg); err == nil {
 			t.Errorf("%+v accepted", cfg)
 		}
+	}
+}
+
+func TestNew_FillsInTheDefaults(t *testing.T) {
+	if DefaultMaxBytes != 65536 || DefaultChunkBytes != 2048 {
+		t.Fatalf("DefaultMaxBytes %d, DefaultChunkBytes %d, want 65536 and 2048", DefaultMaxBytes, DefaultChunkBytes)
+	}
+	g, _, _ := newGenerator(t, "alpha", angled(), GeneratorConfig{})
+	want := GeneratorConfig{Candidates: DefaultCandidates, MaxBytes: DefaultMaxBytes, ChunkBytes: DefaultChunkBytes}
+	if g.cfg != want {
+		t.Errorf("config %+v, want %+v", g.cfg, want)
 	}
 }
 

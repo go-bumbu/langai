@@ -44,7 +44,12 @@
 // A Generator starts from nothing: a language model (a langai.Completer)
 // proposes tags for the text, an embedding model (a langai.Embedder) scores
 // each one by how close it sits to the text, and Generate returns the ones
-// that reach the caller's cutoff, best first.
+// that reach the caller's cutoff, best first. A short text (up to
+// GeneratorConfig.ChunkBytes, 2 KB by default) takes one model call and is
+// scored whole. A longer one, up to GeneratorConfig.MaxBytes (64 KB), is read
+// in windows of about 6 KB, one model call each, so the topics of later
+// sections get tags too, and each tag is scored by the chunk of the text it
+// fits best; that costs a call per window, about eleven for 64 KB.
 //
 // The model supplies the words and the embedder the score. A model's own
 // confidence is poorly calibrated and moves from run to run, while the cosine

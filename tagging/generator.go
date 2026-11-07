@@ -30,10 +30,15 @@ const (
 	// GeneratorConfig.Candidates is zero.
 	DefaultCandidates = 10
 	// DefaultMaxBytes is how much of a text is read when GeneratorConfig.MaxBytes
-	// is zero: about the 2 KB a Tagger item is judged on, and about what the
-	// default embedding model reads (its 512-token window). The model then
-	// writes tags about the words they are scored against.
-	DefaultMaxBytes = 2048
+	// is zero: 64 KB, a long article whole. Past DefaultChunkBytes a text is
+	// read in windows, one model call per ~6 KB, so the limit is also what
+	// bounds the cost: about eleven calls for a text this long.
+	DefaultMaxBytes = 65536
+	// DefaultChunkBytes is GeneratorConfig.ChunkBytes when it is zero: about
+	// the 2 KB a Tagger item is judged on, and about what the default
+	// embedding model reads (its 512-token window), so a tag is scored
+	// against words the embedder reads whole.
+	DefaultChunkBytes = 2048
 )
 
 // Tag is one generated tag and how well it fits the text.
@@ -42,18 +47,30 @@ type Tag struct {
 	// trailing punctuation. Its case is the model's.
 	Name string
 	// Score is the cosine between the embeddings of the text and of the name:
-	// 1 for identical vectors and about 0 for unrelated ones.
+	// 1 for identical vectors and about 0 for unrelated ones. For a text read
+	// in chunks (see GeneratorConfig.ChunkBytes) it is the best cosine between
+	// the name and one chunk, on the same scale.
 	Score float64
 }
 
 // GeneratorConfig tunes a Generator. The zero value is valid.
 type GeneratorConfig struct {
-	// Candidates is how many tags the model is asked for, and the most that
-	// are scored. Zero means DefaultCandidates.
+	// Candidates is how many tags the model is asked for, in each window of a
+	// long text (see ChunkBytes), and the most that are returned. Zero means
+	// DefaultCandidates.
 	Candidates int
 	// MaxBytes is how much of a text is read, cut on a rune boundary: the model
-	// and the embedder both see exactly this prefix. Zero means DefaultMaxBytes.
+	// and the embedder both see exactly this prefix, and nothing after it.
+	// Zero means DefaultMaxBytes.
 	MaxBytes int
+	// ChunkBytes is the longest text read in one piece. A text of at most this
+	// many bytes, after the MaxBytes cut, is written about in one model call
+	// and scored as a whole. A longer one is read in windows of about 6 KB,
+	// one model call each, and its tags are scored against chunks of this
+	// size (see Chunk), each tag by the chunk it fits best, so a topic of one
+	// section is not diluted by the rest of the text. Zero means
+	// DefaultChunkBytes.
+	ChunkBytes int
 }
 
 // Generator writes and scores tags with one Completer and one Embedder.
@@ -140,11 +157,12 @@ func NewGenerator(llm langai.Completer, emb langai.Embedder, cfg GeneratorConfig
 	if emb == nil {
 		return nil, errors.New("tagging: nil Embedder")
 	}
-	if cfg.Candidates < 0 || cfg.MaxBytes < 0 {
-		return nil, fmt.Errorf("tagging: Candidates and MaxBytes must not be negative, got %d and %d", cfg.Candidates, cfg.MaxBytes)
+	if cfg.Candidates < 0 || cfg.MaxBytes < 0 || cfg.ChunkBytes < 0 {
+		return nil, fmt.Errorf("tagging: Candidates, MaxBytes and ChunkBytes must not be negative, got %d, %d and %d", cfg.Candidates, cfg.MaxBytes, cfg.ChunkBytes)
 	}
 	cfg.Candidates = cmp.Or(cfg.Candidates, DefaultCandidates)
 	cfg.MaxBytes = cmp.Or(cfg.MaxBytes, DefaultMaxBytes)
+	cfg.ChunkBytes = cmp.Or(cfg.ChunkBytes, DefaultChunkBytes)
 	var o generatorOptions
 	for _, opt := range opts {
 		opt(&o)
@@ -229,8 +247,20 @@ func languageName(code string) string {
 // first GeneratorConfig.MaxBytes bytes of text are read, and a blank text asks
 // nobody. A model that writes no usable tag is not an error.
 //
-// Every call has the model write its tags afresh, which takes seconds on a CPU
-// and is deterministic only as far as the Completer is.
+// A text of at most GeneratorConfig.ChunkBytes is written about in one model
+// call and every tag is scored against the whole of it. A longer one is read
+// in windows of about 6 KB, one model call each, so that topics of later
+// sections get tags too: the names the windows propose are merged (names that
+// differ only in case are one, the first spelling wins), each is scored by its
+// best cosine to a chunk of ChunkBytes, and at most GeneratorConfig.Candidates
+// are returned. One call per window, not one smaller window per chunk, is what
+// measured best: a model that reads 6 KB names the topics of a section, while
+// one that reads 2 KB writes near-duplicates and costs nearly three times the
+// calls.
+//
+// Every model call writes its tags afresh, which takes seconds on a CPU, so a
+// long text costs that once per window; the result is deterministic only as
+// far as the Completer is.
 func (g *Generator) Generate(ctx context.Context, text string, minScore float64) ([]Tag, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -239,15 +269,14 @@ func (g *Generator) Generate(ctx context.Context, text string, minScore float64)
 	if text == "" {
 		return nil, nil
 	}
+	if len(text) > g.cfg.ChunkBytes {
+		return g.generateLong(ctx, text, minScore)
+	}
 	answer, err := g.llm.Complete(ctx, g.prompt, text)
 	if err != nil {
 		return nil, fmt.Errorf("tagging: write tags: %w", err)
 	}
-	clean := cleanTag
-	if g.opts.tree {
-		clean = cleanPath
-	}
-	names := parseTags(answer, g.cfg.Candidates, clean)
+	names := parseTags(answer, g.cfg.Candidates, g.clean())
 	if len(names) == 0 {
 		return nil, nil
 	}
@@ -274,6 +303,15 @@ func (g *Generator) Generate(ctx context.Context, text string, minScore float64)
 	}
 	slices.SortStableFunc(tags, func(a, b Tag) int { return cmp.Compare(b.Score, a.Score) })
 	return tags, nil
+}
+
+// clean returns how a name the model wrote is cleaned: as a tree path with
+// WithTreeTags, as a tag otherwise.
+func (g *Generator) clean() func(string) string {
+	if g.opts.tree {
+		return cleanPath
+	}
+	return cleanTag
 }
 
 // embed embeds texts as role and checks that every one was answered.

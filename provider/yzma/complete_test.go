@@ -681,7 +681,7 @@ func TestOpenCompleter_RejectsAContextOfNoTokens(t *testing.T) {
 	}
 }
 
-// TestOpenCompleter_SizesTheContext: the context is the spec's size (2048 by
+// TestOpenCompleter_SizesTheContext: the context is the spec's size (4096 by
 // default) within the model's training window, batches are 512 tokens within
 // the context, and what llama.cpp grants below that wins.
 func TestOpenCompleter_SizesTheContext(t *testing.T) {
@@ -693,11 +693,11 @@ func TestOpenCompleter_SizesTheContext(t *testing.T) {
 		askCtx, askBatch       int32
 		wantCtx, wantBatchSize int
 	}{
-		{"defaults", 32768, 0, 0, 0, 2048, 512, 2048, 512},
+		{"defaults", 32768, 0, 0, 0, 4096, 512, 4096, 512},
 		{"the spec's size", 32768, 1024, 0, 0, 1024, 512, 1024, 512},
 		{"a small context shrinks the batch", 32768, 300, 0, 0, 300, 300, 300, 300},
 		{"the training window caps it", 1000, 4096, 0, 0, 1000, 512, 1000, 512},
-		{"granted less", 32768, 0, 700, 100, 2048, 512, 700, 100},
+		{"granted less", 32768, 0, 700, 100, 4096, 512, 700, 100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeChat()

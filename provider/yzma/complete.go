@@ -20,9 +20,11 @@ const DefaultCompleterModel = "Qwen/Qwen3-4B-Instruct-2507"
 
 const (
 	// defaultContextTokens is the context a CompleterSpec asks for when it
-	// sets none. A prompt about a ~2 KB text and a short reply take well under
-	// half of it.
-	defaultContextTokens = 2048
+	// sets none. A tagging.Generator sends a long text in windows of about
+	// 6 KB, roughly 1,500 to 2,500 tokens of prose depending on the language,
+	// and such a window, the system prompt and a short reply fit in it with
+	// room to spare, where 2048 tokens would not always hold them.
+	defaultContextTokens = 4096
 	// completerBatch is the most tokens one decode takes while the prompt is
 	// fed in. llama.cpp aborts the process on a larger batch, so a longer
 	// prompt goes in as several.
@@ -58,7 +60,7 @@ type CompleterSpec struct {
 	// still answers, only worse, so it is never guessed.
 	Template string
 	// ContextTokens is the context window, the prompt and the reply together,
-	// capped at the model's training window; 0 means 2048.
+	// capped at the model's training window; 0 means 4096.
 	ContextTokens int
 	// MaxNewTokens caps one reply; 0 means 128.
 	MaxNewTokens int
