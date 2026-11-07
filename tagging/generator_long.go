@@ -19,16 +19,37 @@ import (
 // Completer.
 const windowBytes = 6144
 
+// maxTitleBytes is the longest first line of a text that is read as its title.
+// A window past the first, cut from the middle of the text, often cannot tell
+// what its section is about, so the title is repeated at its head. Measured on
+// the same 24 documents: side-topic recall 0.656 without, 0.733 with.
+const maxTitleBytes = 200
+
+// titleOf returns the first line of text, trimmed, when it is a title: at
+// most maxTitleBytes and followed by more text. Otherwise it is empty.
+func titleOf(text string) string {
+	line, rest, found := strings.Cut(text, "\n")
+	line = strings.TrimSpace(line)
+	if !found || len(line) > maxTitleBytes || strings.TrimSpace(rest) == "" {
+		return ""
+	}
+	return line
+}
+
 // generateLong is Generate for a text longer than ChunkBytes, already cut and
 // trimmed: the model writes tags for each window of it (see windowBytes), and
 // each name is scored by longScore over the text's chunks. The windows go to
-// the model exactly as Chunk returns them, so it reads the text's own words
-// and nothing else.
+// the model as Chunk returns them, the ones after the first headed by the
+// text's title (see maxTitleBytes); the chunks that score are the text's own.
 func (g *Generator) generateLong(ctx context.Context, text string, minScore float64) ([]Tag, error) {
 	clean := g.clean()
 	var names []string
 	seen := make(map[string]bool)
-	for _, w := range Chunk(text, windowBytes) {
+	title := titleOf(text)
+	for i, w := range Chunk(text, windowBytes) {
+		if i > 0 && title != "" {
+			w = title + "\n" + w
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

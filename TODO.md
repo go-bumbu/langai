@@ -55,6 +55,12 @@ and `todo list --json` cover the common actions — run `todo --help`.
   family, re-measure, and only then quote the result as a wrong-tag rate and
   set a new floor; until then 0.75 untagged only bounds that rate from above
   (at most about 1 document in 4 gets a wrong tag).
+- [ ] cachetest: check that Get refreshes the last-used time
+  The conformance suite never checks that Get rewrites an entry's last-used time once it is older than CacheRefreshAfter, so a backend that skips it still passes, and Prune then drops vectors still in use and they get embedded again. Needs an injectable clock or a time-shifted Prune cutoff in the suite.
+- [ ] try per-chunk max scoring for the Tagger's side topics
+  The Generator's long path found 0.71 of side topics against 0.25 by scoring each tag against its best 2 KB chunk; the Tagger's mean of chunks has the same dilution, see Known limitations.
+- [ ] try Generator windows of 8-12 KB
+  6 KB windows beat 2 KB ones (F1 0.84 vs 0.74) with fewer calls; larger windows need a bigger chat context and were not measured.
 
 ## upstream
 

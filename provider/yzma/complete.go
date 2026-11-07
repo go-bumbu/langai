@@ -23,7 +23,10 @@ const (
 	// sets none. A tagging.Generator sends a long text in windows of about
 	// 6 KB, roughly 1,500 to 2,500 tokens of prose depending on the language,
 	// and such a window, the system prompt and a short reply fit in it with
-	// room to spare, where 2048 tokens would not always hold them.
+	// room to spare, where 2048 tokens would not always hold them. The cost is
+	// memory: the KV cache roughly doubles, a few hundred MB for the default
+	// model. A window whose prompt does not fit the context fails the
+	// Generate call.
 	defaultContextTokens = 4096
 	// completerBatch is the most tokens one decode takes while the prompt is
 	// fed in. llama.cpp aborts the process on a larger batch, so a longer

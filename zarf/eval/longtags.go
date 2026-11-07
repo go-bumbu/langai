@@ -2,90 +2,12 @@ package eval
 
 import (
 	"math"
-	"sort"
 	"strings"
 	"unicode/utf8"
 )
 
 // minContainRunes is the shortest alias that can match a tag by containment.
 const minContainRunes = 4
-
-// Candidate is one tag name proposed for a long text, with its cosines to the
-// scoring chunks of that text.
-type Candidate struct {
-	Name string
-	// ProposedBy is how many LLM windows wrote the name (case-insensitive).
-	ProposedBy int
-	// Cos is the cosine to each scoring chunk, in text order.
-	Cos []float64
-	// Mean is the cosine to the unit centroid of the chunk vectors.
-	Mean float64
-}
-
-// Strategy decides which candidates survive (Gate against a cutoff) and in
-// which order they are kept (Rank, higher first).
-type Strategy struct {
-	Name       string
-	Gate, Rank func(Candidate) float64
-}
-
-// topK is the mean of the k best cosines; over fewer than k it is the mean
-// of what there is, and 0 for none.
-func topK(cos []float64, k int) float64 {
-	if len(cos) == 0 {
-		return 0
-	}
-	s := append([]float64(nil), cos...)
-	sort.Sort(sort.Reverse(sort.Float64Slice(s)))
-	if len(s) > k {
-		s = s[:k]
-	}
-	var sum float64
-	for _, v := range s {
-		sum += v
-	}
-	return sum / float64(len(s))
-}
-
-func maxCos(c Candidate) float64 { return topK(c.Cos, 1) }
-func top2(c Candidate) float64   { return topK(c.Cos, 2) }
-func top3(c Candidate) float64   { return topK(c.Cos, 3) }
-func meanCos(c Candidate) float64 {
-	return c.Mean
-}
-
-// LongStrategies returns the strategies under comparison, in a fixed order.
-func LongStrategies() []Strategy {
-	return []Strategy{
-		{"mean", meanCos, meanCos},
-		{"max", maxCos, maxCos},
-		{"top2", top2, top2},
-		{"top3", top3, top3},
-		{"max>top2", maxCos, top2},
-		{"max>top3", maxCos, top3},
-		{"max>mean", maxCos, meanCos},
-		{"max>top2+rec", maxCos, func(c Candidate) float64 {
-			rec := min(max(c.ProposedBy-1, 0), 5)
-			return top2(c) + 0.01*float64(rec)
-		}},
-	}
-}
-
-// Pick keeps the candidates whose gate reaches cutoff (a NaN gate is dropped),
-// sorts them by rank descending, stable on input order, and caps them at limit.
-func Pick(cands []Candidate, s Strategy, cutoff float64, limit int) []Candidate {
-	var kept []Candidate
-	for _, c := range cands {
-		if s.Gate(c) >= cutoff {
-			kept = append(kept, c)
-		}
-	}
-	sort.SliceStable(kept, func(i, j int) bool { return s.Rank(kept[i]) > s.Rank(kept[j]) })
-	if limit >= 0 && len(kept) > limit {
-		kept = kept[:limit]
-	}
-	return kept
-}
 
 // LongScore is how well a tag list covers the topics of one long document.
 type LongScore struct {

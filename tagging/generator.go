@@ -59,17 +59,20 @@ type GeneratorConfig struct {
 	// long text (see ChunkBytes), and the most that are returned. Zero means
 	// DefaultCandidates.
 	Candidates int
-	// MaxBytes is how much of a text is read, cut on a rune boundary: the model
-	// and the embedder both see exactly this prefix, and nothing after it.
-	// Zero means DefaultMaxBytes.
+	// MaxBytes is how much of a text is read, cut on a rune boundary: nothing
+	// after this prefix reaches the model or the embedder. A text longer than
+	// ChunkBytes sees them read it in windows and chunks of the prefix, not
+	// whole. Zero means DefaultMaxBytes.
 	MaxBytes int
 	// ChunkBytes is the longest text read in one piece. A text of at most this
 	// many bytes, after the MaxBytes cut, is written about in one model call
 	// and scored as a whole. A longer one is read in windows of about 6 KB,
-	// one model call each, and its tags are scored against chunks of this
+	// one model call each (a short first line is read as the title and
+	// repeated at the head of every window after the first), and its tags are scored against chunks of this
 	// size (see Chunk), each tag by the chunk it fits best, so a topic of one
-	// section is not diluted by the rest of the text. Zero means
-	// DefaultChunkBytes.
+	// section is not diluted by the rest of the text. Raising it above about
+	// 6 KB sends that much to the model in one call on the short path, which
+	// may not fit the default chat context. Zero means DefaultChunkBytes.
 	ChunkBytes int
 }
 
@@ -256,7 +259,9 @@ func languageName(code string) string {
 // are returned. One call per window, not one smaller window per chunk, is what
 // measured best: a model that reads 6 KB names the topics of a section, while
 // one that reads 2 KB writes near-duplicates and costs nearly three times the
-// calls.
+// calls. A first line of at most 200 bytes, with more text after it, is read
+// as the title and repeated at the head of every window after the first, so
+// pass a long text as "title\n" + body, as the essences are built.
 //
 // Every model call writes its tags afresh, which takes seconds on a CPU, so a
 // long text costs that once per window; the result is deterministic only as

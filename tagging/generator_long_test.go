@@ -437,3 +437,48 @@ func TestGenerate_LongTextRejectsVectorsOfAnotherLength(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerate_LongTextRepeatsTheTitleAtTheHeadOfLaterWindows(t *testing.T) {
+	text := "Harrowgate Vale\n" + threeWindows
+	ws := Chunk(text, windowBytes)
+	if len(ws) != 3 {
+		t.Fatalf("the text makes %d windows, want 3", len(ws))
+	}
+	llm, emb := &stubLLM{answer: "alpha"}, newFlat()
+	g := newLongGenerator(t, llm, emb, GeneratorConfig{})
+	if _, err := g.Generate(context.Background(), text, 0); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{ws[0], "Harrowgate Vale\n" + ws[1], "Harrowgate Vale\n" + ws[2]}
+	if got := users(llm.asked); !slices.Equal(got, want) {
+		t.Errorf("the user messages are not the first window and the later ones under the title: got %d messages", len(got))
+	}
+	if q := emb.calls[0].texts; !slices.Equal(q, Chunk(text, DefaultChunkBytes)) {
+		t.Errorf("the scoring chunks are not the text's own: got %d", len(q))
+	}
+}
+
+func TestGenerate_LongTextWithALongFirstLineHasNoTitle(t *testing.T) {
+	text := strings.Repeat("t", maxTitleBytes+1) + "\n" + threeWindows
+	ws := Chunk(text, windowBytes)
+	llm := &stubLLM{answer: "alpha"}
+	g := newLongGenerator(t, llm, newFlat(), GeneratorConfig{})
+	if _, err := g.Generate(context.Background(), text, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := users(llm.asked); !slices.Equal(got, ws) {
+		t.Errorf("the windows were changed although the first line is over %d bytes", maxTitleBytes)
+	}
+}
+
+func TestGenerate_LongTextWithoutANewlineHasNoTitle(t *testing.T) {
+	windows := windowsOf(t, threeWindows, 3)
+	llm := &stubLLM{answer: "alpha"}
+	g := newLongGenerator(t, llm, newFlat(), GeneratorConfig{})
+	if _, err := g.Generate(context.Background(), threeWindows, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := users(llm.asked); !slices.Equal(got, windows) {
+		t.Error("the windows were changed although the text has no first line")
+	}
+}

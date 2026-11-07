@@ -17,13 +17,17 @@
 // There is no per-language breakdown: the dataset is multilingual so that the
 // numbers already cover every language it holds. Tagging is reported once
 // over every document. Timing per short and per long text rides along.
+// A second set, testdata/long (LoadLong), holds long documents with labelled
+// main, side and passing-mention topics; MatchTopics and MeanLongScores score
+// the tags a tagging.Generator wrote for them against those topics.
 // Everything runs over the exact in-memory store, so the numbers reflect the
 // model, never an index.
 //
 // The checked-in dataset is testdata/golden.yaml (see golden_test.go for its
-// composition rules). Three callers drive this package: the gated
+// composition rules). Four callers drive this package: the gated
 // TestGoldenSetWithDefaultModel in provider/yzma, which asserts floors for
-// the default model, the gated TestGoldenTagging in tagging, which replays
+// the default model, the gated TestGenerateLongTags in provider/yzma, which
+// holds the long set's floors for the Generator, the gated TestGoldenTagging in tagging, which replays
 // the set through a Tagger with hand-tagged examples, and the gated
 // TestCompareModels in this package's own tests (make semeval), which
 // compares the models of testdata/models.yaml and prints a table. The

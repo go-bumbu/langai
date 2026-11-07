@@ -271,6 +271,53 @@ pictures and clips, and an image finds the stretch of a video it appears in.
   share a collection with one built on SigLIP 2 frames: different vectors for the same
   files.
 
+### Tagging flows
+
+1. **Suggest** (existing tags)
+   1. The app calls `Suggest` with the text and the space's revision.
+   2. The library embeds the text, using the cache with the text's hash as the key.
+   3. The library keeps an in-memory index of tag vectors. When the revision changes, it
+      rebuilds the changed tags from the `Catalog` and the cached embeddings.
+   4. A tag vector is its name blended with the average of its members' vectors, and
+      each tag has its own cutoff.
+   5. The library compares the text's vector with every tag vector by cosine.
+   6. Tags that reach their cutoff are picked, and on one path only the better fit is
+      kept.
+   7. The library returns the picked tag ids.
+2. **Scores** (the reasons behind Suggest)
+   1. The app calls `Scores` with the text and the space's revision.
+   2. It runs the same steps as `Suggest`.
+   3. It returns every tag with its score, its cutoff and the tag that shadowed it, if
+      any. The ones not picked are included.
+3. **Warm** (pre-compute)
+   1. The app calls `Warm` with the revision and some texts, for example on item save or
+      after a model switch.
+   2. The library rebuilds the space if the revision changed.
+   3. It embeds and caches any texts the cache doesn't have yet.
+4. **Generate** (new tags)
+   1. The app calls `Generate` with the text and a minimum score.
+   2. The library cuts the text to `MaxBytes` (64 KB by default).
+   3. A text of up to `ChunkBytes` (2 KB by default) goes to an LLM in one call. A longer
+      one is read in windows of about 6 KB, one LLM call each, with a short first line (the
+      title) repeated at the head of every window after the first, and the names of all
+      the windows are merged.
+   4. The LLM writes up to `Candidates` tags (10 by default) per call, either as short
+      words or as tree paths, optionally extending the app's existing paths.
+   5. The library embeds the text (in 2 KB chunks when it is long) and each candidate
+      tag. Nothing is cached.
+   6. Each candidate is scored by the cosine between its vector and the text's vector;
+      for a long text, by its best cosine over the chunks.
+   7. Candidates below the minimum score are dropped, and a long text's are capped at
+      `Candidates`.
+   8. The library returns the remaining tags with their scores, best first.
+5. **Cache maintenance** (the app calls these on the cache directly)
+   1. `Prune` deletes the embeddings not used since a given time, across all tenants.
+      The app runs it on a schedule.
+   2. `DeleteIndex` deletes all embeddings of one tenant, for example when the tenant is
+      removed.
+
+There's no "learn" call. The Tagger learns only when the app changes the revision.
+
 ### Automatic tagging
 
 ```go
@@ -452,8 +499,22 @@ Hand it a text built like the essences above.
   model's tags scored 0.31 to 0.68, the main topics at 0.5 and up, and what fell under
   0.45 was side detail (the steam for a loaf, a side salad). That is a judgment by eye on a
   small set, and another embedder scores on another scale, so choose again for it.
-- **Only the first 2 KB are read** (`GeneratorConfig.MaxBytes`), by the model and the embedder
-  alike, so a tag is never scored against words the embedder did not see.
+- **Up to 64 KB are read** (`GeneratorConfig.MaxBytes`); nothing after that reaches the
+  model or the embedder, so a tag is never scored against words the embedder did not see.
+- **Long texts.** A text over 2 KB (`GeneratorConfig.ChunkBytes`) is read in windows of
+  about 6 KB, one LLM call each, a short first line (the title) repeated at the head of
+  every window, so pass the text as `title\n` + body; the names merge, and each is scored by its best cosine
+  over the 2 KB chunks of the text. On 24 synthetic documents of 7 to 31 KB (93 side
+  topics, all past the first 2 KB) that scored F1 0.82 against 0.54 for reading the first
+  2 KB only: side-topic recall 0.71 against 0.25, main-topic recall 1.0 in both, and no
+  passing mention tagged. Scoring by the best chunk won because the mean of the chunks and
+  the top-k mean dilute exactly the section topics the windows find. 6 KB windows beat
+  2 KB ones (F1 0.84 against 0.74 in the experiment) because the model needs some context to name a
+  section's topic, and 2 KB windows give many near-duplicates at 2.7 times the calls.
+  The price is time: about 3 LLM calls and 15 s for a document of 16 KB on the test
+  laptop's iGPU, and a 64 KB text is about 11 calls. `zarf/examples`' autotag pays this
+  for long notes. The default chat context is 4096 tokens so that a window fits, which
+  roughly doubles the model's KV cache (a few hundred MB).
 - **Cost.** The chat model is a 2.5 GB download, and a process with it and the embedding
   model loaded holds about 5 GB. A text takes 7 to 13 s with the default 4 threads on an
   AMD Ryzen AI 9 HX PRO 370 (English about 7 s, German 11), nearly all of it writing the

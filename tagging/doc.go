@@ -46,8 +46,10 @@
 // each one by how close it sits to the text, and Generate returns the ones
 // that reach the caller's cutoff, best first. A short text (up to
 // GeneratorConfig.ChunkBytes, 2 KB by default) takes one model call and is
-// scored whole. A longer one, up to GeneratorConfig.MaxBytes (64 KB), is read
-// in windows of about 6 KB, one model call each, so the topics of later
+// scored whole. A longer one, up to GeneratorConfig.MaxBytes (64 KB by default), is read
+// in windows of about 6 KB, one model call each (a short first line is read
+// as the title and repeated at the head of every window, so pass "title\n" +
+// body), so the topics of later
 // sections get tags too, and each tag is scored by the chunk of the text it
 // fits best; that costs a call per window, about eleven for 64 KB.
 //
