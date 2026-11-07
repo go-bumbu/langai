@@ -24,7 +24,7 @@ text: |
 
   ## Torfabbau und Entwässerung
 
-  Seit dem Mittelalter wurde Torf in Moorgebieten gestochen, zunächst von Hand und als Brennmaterial für die Haushalte der umliegenden Dörfer. Im neunzehnten Jahrhundert kamen Entwässerungsgräben und Moorkolonien hinzu: Siedler erhielten kleine Parzellen, entwässerten den Torf, brannten die Oberfläche ab und bauten Buchweizen an. Die Arbeit war mühsam, der Ertrag gering. Die fiktive Moorkolonie Neuhaldern am Rand des Brunsmoores zählte um 1850 rund dreihundert Bewohner, von denen viele nach wenigen Jahren wieder wegzogen.
+  Seit dem Mittelalter wurde Torf in Moorgebieten gestochen, zunächst von Hand und als Brennmaterial für die Haushalte der umliegenden Dörfer. Im neunzehnten Jahrhundert kamen Entwässerungsgräben und Moorkolonien hinzu: Siedler erhielten kleine Parzellen, entwässerten den Torf, brannten die Oberfläche ab und bauten Buchweizen an. Die Arbeit war mühsam, der Ertrag gering. Die Moorkolonie Neuhaldern am Rand des Brunsmoores zählte um 1850 rund dreihundert Bewohner, von denen viele nach wenigen Jahren wieder wegzogen.
 
   Im zwanzigsten Jahrhundert wurde der Abbau industriell. Maschinen fräsen oder schälen den Torf in dünnen Schichten, der getrocknet und später als Gartenerde, Substrat im Gartenbau und Brennstoff verkauft wird. Dazu wird das Moor tief entwässert, wodurch der Torf sich zersetzt und sackt. Ein abgebautes Hochmoor ist kaum wiederzuerkennen: Zurück bleibt eine kahle schwarze Fläche, auf der nur Birken und Pfeifengras wachsen. Der Verbrauch war lange gewaltig, und er ist eine Ursache dafür, dass in Mitteleuropa mehr als neunzig Prozent der Hochmoore zerstört oder stark verändert wurden.
 
@@ -36,7 +36,7 @@ text: |
 
   Ein intaktes Hochmoor speichert Kohlenstoff in großem Maßstab. Obwohl Moore nur wenige Prozent der Landfläche bedecken, enthalten sie weltweit mehr Kohlenstoff als alle Wälder zusammen. Wird ein Moor entwässert, gelangt Sauerstoff in den Torf, der sich zersetzt und Kohlendioxid freisetzt. Trockengelegte Moore gehören deshalb zu den bedeutenden Treibhausgasquellen der Landwirtschaft.
 
-  Die Wiedervernässung soll diesen Prozess umkehren. Dazu werden Gräben mit Torfdämmen oder Spundwänden verschlossen, damit das Regenwasser wieder im Moor bleibt, Gehölze werden entfernt, die dem Moor Wasser entziehen, und kleine Polder halten das Wasser in der Fläche. Nach wenigen Jahren kehren Torfmoose zurück, und die Fläche beginnt wieder, Kohlenstoff zu binden. Das Projekt Brunsmoor-Renaturierung, das von einer fiktiven Stiftung getragen wird, hat seit 2009 rund vierhundert Hektar wiedervernässt.
+  Die Wiedervernässung soll diesen Prozess umkehren. Dazu werden Gräben mit Torfdämmen oder Spundwänden verschlossen, damit das Regenwasser wieder im Moor bleibt, Gehölze werden entfernt, die dem Moor Wasser entziehen, und kleine Polder halten das Wasser in der Fläche. Nach wenigen Jahren kehren Torfmoose zurück, und die Fläche beginnt wieder, Kohlenstoff zu binden. Das Projekt Brunsmoor-Renaturierung, das von einer Stiftung getragen wird, hat seit 2009 rund vierhundert Hektar wiedervernässt.
 
   Nicht alle Beteiligten sind begeistert. Landwirte in der Nachbarschaft fürchten, dass der steigende Wasserstand ihre Weiden vernässt, und Anwohner sorgen sich um Mücken. Deshalb werden Wiedervernässungen meist langsam und in Abstimmung mit den Eigentümern geplant: Pegelmessungen vor und nach dem Eingriff zeigen, wie sich das Wasser in der Umgebung bewegt, und Randstreifen dienen als Puffer. Wo Flächen getauscht oder entschädigt werden, verläuft das Vorhaben meist reibungsloser.
 
@@ -45,10 +45,10 @@ topics:
   - label: raised bogs
     kind: main
     aliases: [Hochmoor, Moor, raised bog, peatland]
-  - label: bog wildlife
+  - label: bog flora and fauna
     kind: side
     section: Tierwelt und Pflanzen
-    aliases: [Moorpflanzen, Sonnentau, bog plants, insectivorous plants]
+    aliases: [Moorfauna, Moorpflanzen, bog wildlife, bog plants]
   - label: peat extraction
     kind: side
     section: Torfabbau und Entwässerung

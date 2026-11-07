@@ -2,7 +2,7 @@ id: de-weinland-ostrau
 lang: de
 title: Das Weinland Ostrau
 text: |
-  Das Weinland Ostrau ist eine fiktive Weinregion im Osten eines mitteleuropäischen Binnenlandes, die sich über rund achtzig Kilometer entlang des Flusses Ostra erstreckt. Auf etwa viertausend Hektar Rebfläche wachsen hier überwiegend weiße Sorten, aus denen frische, mineralische Weine mit deutlicher Säure entstehen. Die Landschaft ist geprägt von steilen Hängen, die bis zum Fluss hinabfallen, von Trockenmauern, schmalen Wegen und kleinen Weinorten, in denen die Häuser dicht an dicht gebaut sind. Gut ein Dutzend davon tragen die Bezeichnung Weinort, einen Titel, der nur vergeben wird, wenn Reben die Ortsgrenze auf wenigstens der Hälfte der landwirtschaftlichen Fläche bedecken.
+  Das Weinland Ostrau ist eine Weinregion im Osten eines mitteleuropäischen Binnenlandes, die sich über rund achtzig Kilometer entlang des Flusses Ostra erstreckt. Auf etwa viertausend Hektar Rebfläche wachsen hier überwiegend weiße Sorten, aus denen frische, mineralische Weine mit deutlicher Säure entstehen. Die Landschaft ist geprägt von steilen Hängen, die bis zum Fluss hinabfallen, von Trockenmauern, schmalen Wegen und kleinen Weinorten, in denen die Häuser dicht an dicht gebaut sind. Gut ein Dutzend davon tragen die Bezeichnung Weinort, einen Titel, der nur vergeben wird, wenn Reben die Ortsgrenze auf wenigstens der Hälfte der landwirtschaftlichen Fläche bedecken.
 
   Der Weinbau ist hier seit vielen Jahrhunderten die wichtigste Erwerbsquelle. Rund zweitausend Betriebe bewirtschaften Weinberge, die meisten davon im Nebenerwerb. Neben wenigen großen Gütern gibt es zahlreiche Familienbetriebe, die ihre Trauben zu einer der Winzergenossenschaften bringen oder selbst keltern und ihre Weine direkt ab Hof verkaufen. Die Region ist bekannt für ihre Rieslinge, Müller-Thurgau und Silvaner, aber auch für Sekt, der in mehreren Kellereien nach traditionellem Verfahren hergestellt wird. Wer das Weinland besucht, begegnet einer lebendigen Kulturlandschaft, in der sich Arbeit, Brauchtum und Genuss auf engem Raum verbinden.
 
@@ -140,10 +140,7 @@ text: |
 topics:
   - label: wine region
     kind: main
-    aliases: [Weinland, Weinbau, Weinregion, winegrowing]
-  - label: Riesling
-    kind: main
-    aliases: [Riesling, Rebsorten, Weißwein, grape varieties]
+    aliases: [Weinland, Weinbau, Rebsorten, winegrowing]
   - label: dry stone terraces
     kind: side
     section: Terrassenbau an den Steillagen

@@ -8,7 +8,7 @@ text: |
 
   ## Origins of the standard box
 
-  The idea of a box that could move between modes of transport was tried in many forms during the early twentieth century, mostly on railways, where wooden or steel units were lifted onto flat wagons. What was missing was agreement. Each railway, shipping line and haulier used its own dimensions, and a box built for one fleet rarely fitted another. The turning point came when a small group of hauliers and shipowners, led by the fictional trader Matthias Orrell of the Calder Basin Freight Company, argued that the corner fitting mattered more than the box itself. If every container carried the same cast corner blocks, any crane, truck or ship could grip it.
+  The idea of a box that could move between modes of transport was tried in many forms during the early twentieth century, mostly on railways, where wooden or steel units were lifted onto flat wagons. What was missing was agreement. Each railway, shipping line and haulier used its own dimensions, and a box built for one fleet rarely fitted another. The turning point came when a small group of hauliers and shipowners, led by the trader Matthias Orrell of the Calder Basin Freight Company, argued that the corner fitting mattered more than the box itself. If every container carried the same cast corner blocks, any crane, truck or ship could grip it.
 
   After years of committee work, two lengths became dominant: the twenty-foot box and the forty-foot box. Traders still count cargo in twenty-foot equivalent units, a measure that treats the longer box as two. The standard height was fixed at eight and a half feet, and later a taller version was introduced for light, bulky goods. The agreement was so successful that even today the main features of the box would be familiar to its first users.
 
@@ -26,7 +26,7 @@ text: |
 
   A container terminal is a machine for changing the mode of transport. Ships tie up at the quay, where tall gantry cranes lift boxes from the deck and holds. The boxes are carried across the yard, stacked in blocks, and later taken away by train or lorry. The speed of this exchange sets the real capacity of a port, and for many years the limit was the number of skilled crane drivers and yard staff on a shift.
 
-  In the last few decades some terminals have introduced automation. At the fictional Skerrow Deep terminal, opened on the northern coast, driverless vehicles follow guide wires and transponders in the paving, carrying boxes between the quay and the stacking blocks. Rail-mounted cranes, operated from a control room, place the boxes in the yard and load them onto trucks at a gate where cameras read the number on each container and check it against the booking.
+  In the last few decades some terminals have introduced automation. At the Skerrow Deep terminal, opened on the northern coast, driverless vehicles follow guide wires and transponders in the paving, carrying boxes between the quay and the stacking blocks. Rail-mounted cranes, operated from a control room, place the boxes in the yard and load them onto trucks at a gate where cameras read the number on each container and check it against the booking.
 
   Supporters say that automation reduces accidents, makes the pace of work steadier, and cuts the energy used per box, since the electric vehicles can be charged overnight. Critics point out that the terminals are costly to build and slow to adapt, that a failure in the software can halt the whole yard, and that the jobs that remain demand technical skills that dockers of the older generation were never trained for. Unions have in many places negotiated retraining and a share of the gains, but the argument continues.
 
@@ -70,7 +70,7 @@ topics:
   - label: thriller novel
     kind: mention
     section: Safety and the human crew
-    aliases: [novel, thriller, fiction]
+    aliases: [novel, thriller]
   - label: cello concert
     kind: mention
     section: Freight rates and the shipping market
