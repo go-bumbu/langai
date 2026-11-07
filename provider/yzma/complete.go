@@ -63,7 +63,12 @@ type CompleterSpec struct {
 	// still answers, only worse, so it is never guessed.
 	Template string
 	// ContextTokens is the context window, the prompt and the reply together,
-	// capped at the model's training window; 0 means 4096.
+	// capped at the model's training window; 0 means 4096 (it was 2048). The
+	// default costs a few hundred MB more for the default model; set 2048 to
+	// keep the old memory if you never tag long texts. A tagging.Generator
+	// sends windows of about 6 KB, up to 2,500 tokens, so with a context under
+	// 4096 keep GeneratorConfig.MaxBytes at or under ChunkBytes, or a window
+	// that does not fit fails the whole Generate call.
 	ContextTokens int
 	// MaxNewTokens caps one reply; 0 means 128.
 	MaxNewTokens int

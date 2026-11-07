@@ -26,7 +26,7 @@ test-vision: ## run the vision embedder's real-model test: text, image and video
 # The chat model is ~2.5 GB on top of the above and a run takes minutes on a CPU, so
 # the tag Generator's real-model tests (golden documents, then the long set) have a target of its own. -timeout 0: the first run
 # downloads the model, and every golden document the model tags takes seconds.
-test-gentags: ## run the tag Generator's real-model test: the chat model writes tags for golden documents, the embedding model scores them
+test-gentags: ## run the tag Generator's real-model test: the chat model writes tags for golden and long documents, the embedding model scores them
 	@SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$(SEMSEARCH_YZMA_TEST_DIR) go test ./provider/yzma/ -run 'TestGenerateTags|TestGenerateLongTags' -v -count=1 -timeout 0
 
 # The image tests download the pinned ONNX Runtime build (~11 MB) and the default image

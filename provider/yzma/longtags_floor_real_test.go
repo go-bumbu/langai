@@ -32,7 +32,9 @@ import (
 // means at the default cutoff: main recall 1.000, side recall 0.708, late side
 // recall 0.708, mention rate 0.000, precision 0.882, F1 0.820, 10 tags per
 // document. Without the title at the head of each window side recall was 0.656.
-// The floors sit about 0.03 to 0.05 under these means.
+// The floors were set 0.05 under the experiment's numbers and sit 0.02 to 0.05
+// under this run's, so a different llama.cpp build or backend can tip side
+// recall or precision.
 //
 //nolint:gocyclo // one linear gated test: generate, score, assert floors
 func TestGenerateLongTags(t *testing.T) {

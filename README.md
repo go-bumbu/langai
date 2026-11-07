@@ -486,7 +486,10 @@ Generator keeps no state, so building one per call, with the tree as it is now, 
 
 The Tagger picks among tags your application already has. The Generator needs none: it writes them
 for one text, stores nothing, and returns the tags that score at least the cutoff you pass.
-Hand it a text built like the essences above.
+For a short text, hand it one built like the essences above; for a long page, pass the
+title, a newline and then the full body (see **Long texts**). A text just over
+`ChunkBytes` (2 KB) still costs one call, but its tags are scored per chunk, a scale
+measured on long documents and not on essences.
 
 - **The model writes, the embedder scores.** The chat model (Qwen3 4B Instruct, Apache-2.0)
   is asked for up to `GeneratorConfig.Candidates` (10) tags of one to three words, in the text's
@@ -515,6 +518,13 @@ Hand it a text built like the essences above.
   laptop's iGPU, and a 64 KB text is about 11 calls. `zarf/examples`' autotag pays this
   for long notes. The default chat context is 4096 tokens so that a window fits, which
   roughly doubles the model's KV cache (a few hundred MB).
+- **Upgrading.** The defaults changed: `MaxBytes` went from 2 KB to 64 KB, so a long text
+  that took one call now takes up to 11, and yzma's default chat context went from 2048
+  to 4096 tokens. `GeneratorConfig{MaxBytes: 2048}` restores today's behaviour: one call
+  on the first 2 KB. With a chat context under 4096 tokens keep `MaxBytes` at or under
+  `ChunkBytes`: a 6 KB window, in German about 2,500 tokens, may not fit, and then the
+  whole Generate call fails. If you never tag long texts, set
+  `CompleterSpec.ContextTokens` to 2048 to keep the smaller KV cache.
 - **Cost.** The chat model is a 2.5 GB download, and a process with it and the embedding
   model loaded holds about 5 GB. A text takes 7 to 13 s with the default 4 threads on an
   AMD Ryzen AI 9 HX PRO 370 (English about 7 s, German 11), nearly all of it writing the

@@ -62,7 +62,9 @@ type GeneratorConfig struct {
 	// MaxBytes is how much of a text is read, cut on a rune boundary: nothing
 	// after this prefix reaches the model or the embedder. A text longer than
 	// ChunkBytes sees them read it in windows and chunks of the prefix, not
-	// whole. Zero means DefaultMaxBytes.
+	// whole. Zero means DefaultMaxBytes. Set 2048 to read only the first 2 KB
+	// in one call, as before the long-text path: it also bounds the cost to one
+	// call, and it is the setting to keep with a chat context under 4096 tokens.
 	MaxBytes int
 	// ChunkBytes is the longest text read in one piece. A text of at most this
 	// many bytes, after the MaxBytes cut, is written about in one model call
