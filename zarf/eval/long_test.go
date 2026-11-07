@@ -59,9 +59,10 @@ func TestLoadLong_RejectsUnknownKeysAndSortsByID(t *testing.T) {
 	if len(docs) != 2 || docs[0].ID != "aaa" || docs[1].ID != "zzz" {
 		t.Fatalf("not sorted by id: %+v", docs)
 	}
-	write("c.yaml", "id: ccc\nbogus: 1\n")
-	if _, err := LoadLong(dir); err == nil {
-		t.Error("unknown key accepted")
+	// Otherwise valid, so only KnownFields can reject it.
+	write("c.yaml", strings.Replace(string(raw), "id: fixture-one", "id: ccc\nbogus: 1", 1))
+	if _, err := LoadLong(dir); err == nil || !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("err = %v, want unknown key bogus rejected", err)
 	}
 }
 
