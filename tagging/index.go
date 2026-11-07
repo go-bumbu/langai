@@ -34,7 +34,9 @@ type TagIndex interface {
 	// own choosing, and the next call diffs again. A state of "" records nothing
 	// and, when from matches, leaves the recorded state as it is.
 	Apply(ctx context.Context, index, partition, from, state string, put []TagVector, drop []string) error
-	// Candidates returns the tags to score vec against. The slice and the
-	// vectors in it are shared: callers must not modify them.
+	// Candidates returns the tags to score vec against: a text's vector, or
+	// for a text in several pieces (see TaggerConfig.ChunkBytes), the mean of
+	// theirs, which every piece is then scored against the candidates by. The
+	// slice and the vectors in it are shared: callers must not modify them.
 	Candidates(ctx context.Context, index, partition string, vec []float32) ([]TagVector, error)
 }

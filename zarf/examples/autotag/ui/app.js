@@ -120,7 +120,7 @@
     const size = `${(n.bytes / 1024).toFixed(1)} KB` + (n.parts > 1 ? ` · read in ${n.parts} parts` : '');
     return el('div', { class: 'note' },
       el('div', { class: 'head' }, el('span', { class: 'title' }, n.title || n.text.split('\n')[0]),
-        el('span', { class: 'id', title: n.parts > 1 ? 'longer than the embedder reads at once: each part is embedded and the note is their mean' : 'what the Tagger reads' }, size),
+        el('span', { class: 'id', title: n.parts > 1 ? 'longer than the embedder reads at once: each part is embedded and each tag scores by the two best parts' : 'what the Tagger reads' }, size),
         el('span', { class: 'id' }, n.id)),
       n.title ? text : null,
       el('div', { class: 'line' }, el('span', { class: 'label' }, 'by hand'), ...(hand.length ? hand : [el('span', { class: 'none' }, 'none')])),

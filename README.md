@@ -347,12 +347,21 @@ is kept under the model it came from.
 **Long items.** An embedder reads a window of tokens and silently drops the rest: the
 default yzma model reads 512 tokens, some 2 KB of prose, so only the start of a longer item
 counts. `TaggerConfig.ChunkBytes` (off by default) embeds a longer item in pieces of about
-equal size cut at whitespace (`tagging.Chunk`) and caches the mean of their vectors; set
-it a little under the window, 2000 for the default model. A mean of pieces lies closer to
-every tag than one piece does: on a 4.9 KB note every score rose by 0.04 to 0.05, so a
-chunked item clears a cutoff more easily, and the cutoffs were measured on unchunked
-items. Items are cached under the model marked with the chunk size, so changing
-`ChunkBytes` re-embeds them as switching models does.
+equal size cut at whitespace (`tagging.Chunk`), each cached on its own; set it a little
+under the window, 2000 for the default model. An item of three pieces or more scores
+against a tag by the mean of its two best pieces, so a topic one section is about counts
+in full and one paragraph alone does not carry a tag; an item of two pieces by the best of
+its two halves and their mean, since a short page's header and body land in different
+halves. A long member teaches its tag with its piece closest to the tag's name, not with
+the mean of all of them. On the 24 long golden documents (7 to 31 KB, 93 side topics past
+the first 2 KB), against a catalog of 158 name-only tags made of the topic labels of all
+of them, side topics were found 0.68 of the time, against 0.58 by the mean of the pieces
+and 0.45 without `ChunkBytes`, with precision unchanged (0.78) and one passing mention of
+54 tagged, as before (`TestTaggerLongTags`). The best piece alone found 0.74 but let single
+paragraphs pull in tags that match none of a document's topics (3.5 a document, against
+2.0). The two cutoffs
+hold unchanged: pieces score on the scale of short items. Changing `ChunkBytes` embeds only
+the pieces the cache does not hold.
 
 **Storage.** The Tagger keeps only derived data, and losing it costs time, never
 correctness. An `EmbeddingCache` holds every embedding, keyed by index, model, role and the
@@ -423,6 +432,12 @@ site name followed by the first 2 KB of its text, one per line
 (`eval.Document.Essence`). Pass `Suggest`, and your catalog's `Members`, your documents
 built the same way to get what the numbers say.
 
+**Upgrading long items.** With `ChunkBytes` set, a long item used to be cached as the mean
+of its pieces under the model marked with the chunk size (`<model>+chunks=<n>`); now each
+piece is cached under the model itself. The first call after the upgrade embeds the pieces
+of every long item once and rebuilds the tags that have long members; `Prune` later drops
+the old rows. Without `ChunkBytes` nothing changes.
+
 **Upgrading from the Store.** The Tagger used to keep its own copy of your tags, items and
 links in a `tagging.Store`; now it reads them from your `Catalog`, so the application's
 writes no longer go through it. `NewTagger(emb, store, cfg)` became
@@ -436,9 +451,11 @@ old `data/autotag-<model>.sqlite` files can be deleted.
 
 ### Known limitations
 
-- **Second and side topics.** A page is one embedding of its first ~2 KB. When pairs of
-  single-tag golden documents are stitched into one page, both tags are assigned 0.80 of
-  the time; a minor side topic is rarely found.
+- **Second and side topics.** Without `ChunkBytes` a page is one embedding of its first
+  ~2 KB. When pairs of single-tag golden documents are stitched into one page (2.3 to
+  2.9 KB), both tags are assigned 0.80 of the time, 0.87 with `ChunkBytes` 2000. On long
+  items a third of the side topics are still missed with `ChunkBytes` (see **Long items**),
+  and a topic a single paragraph covers rarely gets its tag, by design.
 - **Documents that fit no tag** can still get one: with a document's own tags removed,
   0.64 of the golden documents get no tag, and 0.81 none but an ancestor of their own
   tags (`cooking` for a recipe once `cooking / recipes` is gone), which the path
@@ -451,7 +468,9 @@ old `data/autotag-<model>.sqlite` files can be deleted.
 - **The two cutoffs come from a small golden set** (84 documents, 15 tags, one model);
   the model's scores sit in a narrow band, so ±0.04 on the name cutoff already costs a
   lot of precision or recall. Re-check them on real data, and measure them again for
-  another model.
+  another model. Both the essences and the long documents score a little better at a
+  name cutoff of 0.43 (F1 +0.02), which costs stitched two-topic pages 0.04; the default
+  stays 0.42.
 
 ### Generating tags
 

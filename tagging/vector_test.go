@@ -209,7 +209,7 @@ func TestScoreVectors_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			given := ids(tc.tags)
-			ss := scoreVectors(q, tc.tags, true)
+			ss := scoreVectors([][]float32{q}, tc.tags, true)
 			if len(ss) != tc.scored {
 				t.Fatalf("scoreVectors scored %d tags, want %d: %+v", len(ss), tc.scored, ss)
 			}
@@ -239,10 +239,12 @@ func TestScoreVectors_AlongAPathTheBetterFitWins(t *testing.T) {
 	tag := func(id, name string, axis int, score, cutoff float64) TagVector {
 		return TagVector{ID: id, Name: name, Vec: scoreVec(dims, axis, score), Cutoff: cutoff}
 	}
-	rank := func(tags []TagVector, onePath bool) []string { return picked(scoreVectors(q, tags, onePath)) }
+	rank := func(tags []TagVector, onePath bool) []string {
+		return picked(scoreVectors([][]float32{q}, tags, onePath))
+	}
 	shadowed := func(tags []TagVector) map[string]string {
 		out := map[string]string{}
-		for _, s := range scoreVectors(q, tags, true) {
+		for _, s := range scoreVectors([][]float32{q}, tags, true) {
 			out[s.ID] = s.ShadowedBy
 		}
 		return out

@@ -57,10 +57,16 @@ and `todo list --json` cover the common actions — run `todo --help`.
   (at most about 1 document in 4 gets a wrong tag).
 - [ ] cachetest: check that Get refreshes the last-used time
   The conformance suite never checks that Get rewrites an entry's last-used time once it is older than CacheRefreshAfter, so a backend that skips it still passes, and Prune then drops vectors still in use and they get embedded again. Needs an injectable clock or a time-shifted Prune cutoff in the suite.
-- [ ] try per-chunk max scoring for the Tagger's side topics
-  The Generator's long path found 0.71 of side topics against 0.25 by scoring each tag against its best 2 KB chunk; the Tagger's mean of chunks has the same dilution, see the README's "Long items" paragraph.
+- [x] per-chunk scoring for the Tagger's side topics
+  Done 2026-11-07 (docs/superpowers/specs/2026-11-07-tagger-long-items-results.md): with ChunkBytes an item of 3+ pieces scores by the mean of its two best pieces, one of 2 by the best of its halves and their centroid, and a long member enters its tag's blend as its piece closest to the name. Long set: side 0.68 vs 0.58 (mean), precision 0.78 both, mention 0.02; pure max found 0.74 but 3.5 off-label tags a doc vs 2.0, and lost stitched two-topic pages (0.77 vs 0.80). Title-per-chunk added nothing. Cutoffs 0.42/0.58 hold; floors in TestTaggerLongTags.
 - [ ] try Generator windows of 8-12 KB
   6 KB windows beat 2 KB ones (F1 0.84 vs 0.74) with fewer calls; larger windows need a bigger chat context and were not measured.
+- [ ] eval.MatchTopics: containment sends side tags to the main topic
+  A tag that contains a main alias ("housing cooperatives" holds "cooperatives") scores 1 against the main topic and ties go to the first topic, so a side topic picked by its exact label counts as missed: de-genossenschaften and es-cafe score side 0.00 with every side label picked. By exact label the Tagger's side recall is 0.89, not 0.68. Prefer the topic whose own label or alias is the longer containment match; re-measure the Generator and Tagger floors after.
+- [ ] re-measure NameMinScore at 0.43
+  Short essences (names only 0.81 vs 0.79, mixed 0.868 vs 0.860) and long items (F1 +0.02) both score a little better at 0.43; stitched two-topic pages lose 0.04 (0.83 vs 0.87 with ChunkBytes) and long-member pages 0.03. Weigh it on real data before moving the default.
+- [ ] turn ChunkBytes on by default
+  Every golden essence is one piece at 2000 bytes, so the short numbers do not move, two-topic pages gain (0.80 to 0.87) and long items find side topics (0.45 to 0.68). Costs a re-embed of long items for current users, and a default that depends on the embedder's window.
 
 ## upstream
 

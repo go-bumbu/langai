@@ -1,13 +1,10 @@
 package tagging
 
 import (
-	"context"
-	"fmt"
+	"math"
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/go-bumbu/langai"
 )
 
 // Chunk splits text into pieces of at most maxBytes bytes each, of about equal
@@ -60,40 +57,76 @@ func cutAt(text string, target int) int {
 	return cut
 }
 
-// itemModel is the model an item's vector is cached under: the Tagger's
-// model, marked with the chunk size when items are embedded in chunks, so a
-// change of ChunkBytes re-embeds every item as a change of model does.
-func itemModel(cfg TaggerConfig) string {
-	if cfg.ChunkBytes <= 0 {
-		return cfg.Model
+// itemPieces returns the texts an item's text is embedded as: the text itself,
+// as given, when it makes one chunk at most (or chunkBytes is zero or less),
+// and else its chunks (see Chunk). Each piece is embedded and cached on its
+// own, as a query, under the Tagger's model.
+func itemPieces(text string, chunkBytes int) []string {
+	if chunkBytes <= 0 {
+		return []string{text}
 	}
-	return fmt.Sprintf("%s+chunks=%d", cfg.Model, cfg.ChunkBytes)
-}
-
-// embedItem embeds an item's text with emb as a query, the way Suggest scores
-// it. With chunkBytes above zero, a longer text is embedded in pieces (see
-// Chunk), in one call, and its vector is the unit-length mean of theirs, so
-// all of it counts instead of the part an embedder reads before it truncates.
-func embedItem(ctx context.Context, emb langai.Embedder, chunkBytes int, text string) ([]float32, error) {
 	pieces := Chunk(text, chunkBytes)
 	if len(pieces) <= 1 {
-		return embedOne(ctx, emb, langai.RoleQuery, text)
+		return []string{text}
 	}
-	vs, err := emb.Embed(ctx, langai.RoleQuery, pieces)
-	if err != nil {
-		return nil, err
+	return pieces
+}
+
+// itemScore is an item's score against a tag's vector, from the vectors of
+// its pieces (see itemPieces; at least one): the cosine for an item of one,
+// the best of the two pieces' cosines and their centroid's for an item of two,
+// and the mean of the two best cosines for a longer one.
+//
+// Measured on 2026-11-07 (docs/superpowers/specs/2026-11-07-tagger-long-items-
+// results.md): against the centroid of the pieces, which dilutes a topic one
+// section is about with the sections that are not, the two best pieces found
+// side topics 0.68 of the time against 0.58 at no cost in precision. The best
+// piece alone found 0.74 but let one paragraph carry a tag: 3.5 tags a
+// document matched none of its topics, against 2.0. Two pieces are both "the
+// two best", so their mean would only dilute; a page of two, a header and two
+// halves, is best read whole as well as by halves, and their centroid scores
+// both of its topics where neither half holds one whole.
+func itemScore(pieces [][]float32, tag []float32) float64 {
+	switch len(pieces) {
+	case 1:
+		return cosine(pieces[0], tag)
+	case 2:
+		return max(cosine(pieces[0], tag), cosine(pieces[1], tag), cosine(centroid(pieces, len(tag)), tag))
 	}
-	if len(vs) != len(pieces) {
-		return nil, fmt.Errorf("tagging: embedder returned %d vectors for %d pieces of an item", len(vs), len(pieces))
-	}
-	dims := len(vs[0])
-	if d := emb.Dimensions(); d > 0 {
-		dims = d
-	}
-	for _, v := range vs {
-		if len(v) == 0 || len(v) != dims {
-			return nil, fmt.Errorf("tagging: embedder returned a vector of %d dimensions, want %d", len(v), dims)
+	first, second := math.Inf(-1), math.Inf(-1)
+	for _, p := range pieces {
+		switch c := cosine(p, tag); {
+		case c > first:
+			first, second = c, first
+		case c > second:
+			second = c
 		}
 	}
-	return centroid(vs, dims), nil
+	return (first + second) / 2
+}
+
+// queryVector is the vector an item is looked up by in a TagIndex (see
+// TagIndex.Candidates): its one piece's, or the centroid of its pieces.
+func queryVector(pieces [][]float32) []float32 {
+	if len(pieces) == 1 {
+		return pieces[0]
+	}
+	return centroid(pieces, len(pieces[0]))
+}
+
+// memberVector is the vector a member enters its tag's blend with, from the
+// vectors of its pieces (at least one): its one piece's, or the piece closest
+// to the tag's name. A long member is often about the tag in one section only,
+// and the centroid of its pieces sits nearer its other topics; measured over
+// long members (see itemScore), the best piece tagged 0.92 F1 against 0.77,
+// and its scores stay on the scale of a short member's, so one MemberMinScore
+// holds for both.
+func memberVector(pieces [][]float32, nameVec []float32) []float32 {
+	best, bestCos := pieces[0], cosine(pieces[0], nameVec)
+	for _, p := range pieces[1:] {
+		if c := cosine(p, nameVec); c > bestCos {
+			best, bestCos = p, c
+		}
+	}
+	return best
 }

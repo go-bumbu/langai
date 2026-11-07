@@ -105,11 +105,11 @@ both ways `tagging` tags a text:
   only, so the whole list takes milliseconds.
 - **Long notes.** EmbeddingGemma reads 512 tokens, about 2.2 KB of English, and
   drops the rest. A note over 2,000 bytes is embedded in parts
-  (`TaggerConfig.ChunkBytes`), its vector the mean of theirs, and its header
-  says *read in N parts*. On a 4.9 KB note that read only up to 2.5 KB before,
-  `dev / web` went from 0.590 to 0.638 and was picked; every other tag rose by
-  0.04 to 0.05 too, which is the mean pulling toward everything, so expect
-  a long note to clear cutoffs a little more easily than a short one.
+  (`TaggerConfig.ChunkBytes`), and its header says *read in N parts*. A note of
+  three parts or more scores each tag by its two best parts, so a section about
+  a tag counts in full and a passing paragraph does not; a note of two parts by
+  the better half or the two together. A long note tagged by hand teaches the
+  tag with its part closest to the tag's name.
 - **Recommended tags** (`tagging.Generator`). **recommend new tags** has Qwen3 4B
   Instruct (2.5 GB, loaded on the first click, about 4 s per note on the laptop's
   iGPU) write up to ten tags, each scored by the embedder against the note:

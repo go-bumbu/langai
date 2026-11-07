@@ -163,22 +163,23 @@ func cosine(a, b []float32) float64 {
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
-// scoreVectors returns vec's score against every tag that has a vector, with
-// the tag's cutoff, best score first and equal scores by id. Each tag has its
-// own cutoff, so a tag below its cutoff says nothing about the next: every tag
-// is scored, and a tag with no vector, which has nothing to compare vec with,
-// is skipped. A NaN score sorts last, and a NaN score or cutoff picks nothing.
-// It sorts a slice of its own, so tags keeps its order and its vectors. With
-// onePath, a tag that reaches its cutoff but is shadowed on its path says by
-// which tag (see shadowOnPaths).
-func scoreVectors(vec []float32, tags []TagVector, onePath bool) []TagScore {
+// scoreVectors returns the score of an item, by the vectors of its pieces (see
+// itemScore), against every tag that has a vector, with the tag's cutoff, best
+// score first and equal scores by id. Each tag has its own cutoff, so a tag
+// below its cutoff says nothing about the next: every tag is scored, and a tag
+// with no vector, which has nothing to compare the item with, is skipped. A
+// NaN score sorts last, and a NaN score or cutoff picks nothing. It sorts a
+// slice of its own, so tags keeps its order and its vectors. With onePath, a
+// tag that reaches its cutoff but is shadowed on its path says by which tag
+// (see shadowOnPaths).
+func scoreVectors(pieces [][]float32, tags []TagVector, onePath bool) []TagScore {
 	var out []TagScore
 	paths := map[string][]string{}
 	for _, tg := range tags {
 		if tg.Vec == nil {
 			continue
 		}
-		out = append(out, TagScore{ID: tg.ID, Score: cosine(vec, tg.Vec), Cutoff: tg.Cutoff})
+		out = append(out, TagScore{ID: tg.ID, Score: itemScore(pieces, tg.Vec), Cutoff: tg.Cutoff})
 		paths[tg.ID] = tagPath(tg.Name)
 	}
 	slices.SortStableFunc(out, func(a, b TagScore) int {

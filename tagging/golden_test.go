@@ -44,7 +44,7 @@ func TestGoldenTagging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := newGoldenWorld(t, emb, ds)
+	w := newGoldenWorld(t, emb, ds, 0)
 	untagged, unrelated := w.untagged(ctx, t)
 	got := map[string]float64{
 		// no examples anywhere, so every tag is judged by its name alone (the
@@ -59,6 +59,11 @@ func TestGoldenTagging(t *testing.T) {
 		"fits nothing, no unrelated tag": unrelated,
 		// two documents stitched into one page: share that gets both tags
 		"two topics, both tags": w.bothTags(ctx, t),
+		// the same with ChunkBytes 2000: every essence is one piece, so the
+		// other scenarios do not change, but a stitched page (2.3 to 2.9 KB)
+		// is two, scored by the best of its halves and their centroid (see
+		// itemScore)
+		"two topics, ChunkBytes 2000": newGoldenWorld(t, emb, ds, 2000).bothTags(ctx, t),
 	}
 	// the share that gets no tag at all, ancestors included: logged, not
 	// enforced (0.7500 under the centroid rule without the path rule, 0.6429
@@ -71,11 +76,14 @@ func TestGoldenTagging(t *testing.T) {
 	}{
 		// measured 2026-11-06 with embeddinggemma-300m Q8_0, the mean rule and
 		// the path rule: 0.7889, 0.8597, 0.8095, 0.8039. The centroid rule
-		// before them, at 0.46 and 0.70: 0.7071, 0.7561, 0.8333, 0.5882
+		// before them, at 0.46 and 0.70: 0.7071, 0.7561, 0.8333, 0.5882. Two
+		// topics with ChunkBytes 2000, measured 2026-11-07: 0.8725 (0.8431 when
+		// a text of two pieces scored by their mean, 0.7745 by the better one)
 		{"names only", 0.74},
 		{"mixed examples", 0.78},
 		{"fits nothing, no unrelated tag", 0.75},
 		{"two topics, both tags", 0.70},
+		{"two topics, ChunkBytes 2000", 0.82},
 	}
 	for _, f := range floors {
 		t.Logf("%-30s %.4f (floor %.2f)", f.name, got[f.name], f.floor)
@@ -114,7 +122,7 @@ type goldenWorld struct {
 	tagRev  map[string]int             // tag id -> its revision
 }
 
-func newGoldenWorld(t *testing.T, emb langai.Embedder, ds *eval.Dataset) *goldenWorld {
+func newGoldenWorld(t *testing.T, emb langai.Embedder, ds *eval.Dataset, chunkBytes int) *goldenWorld {
 	t.Helper()
 	w := &goldenWorld{
 		ds:     ds,
@@ -122,7 +130,7 @@ func newGoldenWorld(t *testing.T, emb langai.Embedder, ds *eval.Dataset) *golden
 		byTag: map[string][]string{}, essence: map[string]string{}, present: map[string]bool{},
 		links: map[string]map[string]bool{}, tagRev: map[string]int{},
 	}
-	tg, err := NewTagger(emb, w, NewMemCache(), TaggerConfig{Model: "golden"})
+	tg, err := NewTagger(emb, w, NewMemCache(), TaggerConfig{Model: "golden", ChunkBytes: chunkBytes})
 	if err != nil {
 		t.Fatal(err)
 	}

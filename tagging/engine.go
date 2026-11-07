@@ -33,9 +33,7 @@ type engine struct {
 	cfg   TaggerConfig
 	// params fingerprints cfg's scoring settings (see checkConfig)
 	params string
-	// itemModel is what item and member vectors are cached under (see itemModel)
-	itemModel string
-	flight    flight
+	flight flight
 }
 
 // newEngine returns an engine over its four parts. It fails on a missing
@@ -55,14 +53,14 @@ func newEngine(emb langai.Embedder, cat Catalog, cache EmbeddingCache, ix TagInd
 	if err != nil {
 		return nil, err
 	}
-	return &engine{emb: emb, cat: cat, cache: cache, ix: ix, cfg: cfg, params: params, itemModel: itemModel(cfg)}, nil
+	return &engine{emb: emb, cat: cat, cache: cache, ix: ix, cfg: cfg, params: params}, nil
 }
 
 // scores returns text's score against every tag of the space at revision,
-// best first, as Scope.Scores does: it gets text's vector (from the cache, or
-// embedded and cached), brings the space up to revision (see refresh), and
-// scores the index's candidates. Any error returns no scores; one of a
-// rebuild wraps ErrNotRebuilt.
+// best first, as Scope.Scores does: it gets the vectors of text's pieces (from
+// the cache, or embedded and cached), brings the space up to revision (see
+// refresh), and scores the index's candidates (see itemScore). Any error
+// returns no scores; one of a rebuild wraps ErrNotRebuilt.
 func (e *engine) scores(ctx context.Context, index, partition, revision, text string) ([]TagScore, error) {
 	if err := checkSpace(index, revision); err != nil {
 		return nil, err
@@ -74,12 +72,12 @@ func (e *engine) scores(ctx context.Context, index, partition, revision, text st
 	if err != nil {
 		return nil, err
 	}
-	vec := vecs[text]
-	cands, err := e.candidates(ctx, index, partition, revision, vec)
+	pieces := vecs[text]
+	cands, err := e.candidates(ctx, index, partition, revision, queryVector(pieces))
 	if err != nil {
 		return nil, err
 	}
-	return scoreVectors(vec, cands, !e.cfg.AllPathLevels), nil
+	return scoreVectors(pieces, cands, !e.cfg.AllPathLevels), nil
 }
 
 // candidates brings the space up to revision (see refresh) and returns the
@@ -225,8 +223,9 @@ func (e *engine) diff(ctx context.Context, index, partition string, held map[str
 
 // build fills in the Vec and Cutoff of tags from their names and members, in
 // one Members call. Members of ids not asked for are ignored, and blank texts
-// skipped. A member whose vector is not as long as the tag's name vector is
-// an error naming the tag: blend and tagCutoff index one by the other.
+// skipped. A member enters as one vector (see memberVector). A member with a
+// vector not as long as the tag's name vector is an error naming the tag:
+// blend and tagCutoff index one by the other.
 func (e *engine) build(ctx context.Context, index, partition string, tags []TagVector) error {
 	ids, names := make([]string, len(tags)), make([]string, len(tags))
 	for i, t := range tags {
@@ -256,11 +255,13 @@ func (e *engine) build(ctx context.Context, index, partition string, tags []TagV
 		nameVec := nameVecs[t.Name]
 		vecs := make([][]float32, 0, len(members[t.ID]))
 		for _, m := range members[t.ID] {
-			v := items[m]
-			if len(v) != len(nameVec) {
-				return fmt.Errorf("tagging: tag %q has a member with a vector of %d dimensions and a name vector of %d", t.ID, len(v), len(nameVec))
+			pieces := items[m]
+			for _, v := range pieces {
+				if len(v) != len(nameVec) {
+					return fmt.Errorf("tagging: tag %q has a member with a vector of %d dimensions and a name vector of %d", t.ID, len(v), len(nameVec))
+				}
 			}
-			vecs = append(vecs, v)
+			vecs = append(vecs, memberVector(pieces, nameVec))
 		}
 		t.Vec = blend(nameVec, vecs, k)
 		t.Cutoff = storedCutoff(tagCutoff(nameVec, vecs, k, e.cfg.NameMinScore, e.cfg.MemberMinScore))
@@ -279,11 +280,49 @@ func nonBlank(texts []string) []string {
 	return out
 }
 
-// itemVectors returns the query vector of each of texts, by text, as items
-// and members are scored (see embedItems).
-func (e *engine) itemVectors(ctx context.Context, index string, texts []string) (map[string][]float32, error) {
-	key := func(text string) CacheKey { return KeyFor(e.itemModel, langai.RoleQuery, text) }
-	return e.vectors(ctx, index, texts, key, e.embedItems)
+// itemVectors returns the query vectors of the pieces of each of texts (see
+// itemPieces), by text, as items and members are scored. Each piece is cached
+// on its own, under the Tagger's model, so a piece another text shares, or a
+// text that makes one piece, is embedded once whatever ChunkBytes is. The
+// texts that make one piece are embedded in one call, and each longer one's
+// missing pieces in one call of their own: when one fails, what was embedded
+// before it stays cached (see vectors), and a retry embeds only what is
+// missing.
+func (e *engine) itemVectors(ctx context.Context, index string, texts []string) (map[string][][]float32, error) {
+	pieces := make(map[string][]string, len(texts))
+	var all []string
+	whole := map[string]bool{}
+	var long [][]string // the pieces of each text of several, in order
+	for _, t := range texts {
+		if _, ok := pieces[t]; ok {
+			continue
+		}
+		ps := itemPieces(t, e.cfg.ChunkBytes)
+		pieces[t] = ps
+		all = append(all, ps...)
+		if len(ps) == 1 {
+			whole[ps[0]] = true
+		} else {
+			long = append(long, ps)
+		}
+	}
+	key := func(piece string) CacheKey { return KeyFor(e.cfg.Model, langai.RoleQuery, piece) }
+	embed := func(ctx context.Context, misses []string) ([][]float32, error) {
+		return e.embedPieces(ctx, misses, whole, long)
+	}
+	vecs, err := e.vectors(ctx, index, all, key, embed)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][][]float32, len(pieces))
+	for t, ps := range pieces {
+		vs := make([][]float32, len(ps))
+		for i, p := range ps {
+			vs[i] = vecs[p]
+		}
+		out[t] = vs
+	}
+	return out, nil
 }
 
 // nameVectors returns the document vector of each of names, by name.
@@ -352,37 +391,49 @@ func (e *engine) vectors(ctx context.Context, index string, texts []string, key 
 	return out, nil
 }
 
-// embedItems embeds item texts as queries: the ones that make one chunk at
-// most whole, as given, in one call, and longer ones one at a time in pieces
-// (see embedItem). When one fails it returns the error together with what it
-// embedded before it, a nil vector for every text it did not, so the caller
-// can keep those: a retry then embeds only what is missing.
-func (e *engine) embedItems(ctx context.Context, texts []string) ([][]float32, error) {
-	out := make([][]float32, len(texts))
-	var whole []string
-	var wholeAt, chunkedAt []int
-	for i, t := range texts {
-		if len(Chunk(t, e.cfg.ChunkBytes)) <= 1 {
-			whole, wholeAt = append(whole, t), append(wholeAt, i)
-		} else {
-			chunkedAt = append(chunkedAt, i)
+// embedPieces embeds the pieces in misses as queries: the ones that are a
+// text whole in one call, then the missing pieces of each text of several (in
+// long) one call per text. When one fails it returns the error together with
+// what it embedded before it, a nil vector for every piece it did not, so the
+// caller can keep those.
+func (e *engine) embedPieces(ctx context.Context, misses []string, whole map[string]bool, long [][]string) ([][]float32, error) {
+	out := make([][]float32, len(misses))
+	at := make(map[string]int, len(misses))
+	var single []string
+	var singleAt []int
+	for i, m := range misses {
+		at[m] = i
+		if whole[m] {
+			single, singleAt = append(single, m), append(singleAt, i)
 		}
 	}
-	if len(whole) > 0 {
-		vs, err := embedBatch(ctx, e.emb, langai.RoleQuery, whole)
-		if err != nil {
-			return nil, err
-		}
-		for j, i := range wholeAt {
-			out[i] = vs[j]
-		}
-	}
-	for _, i := range chunkedAt {
-		v, err := embedItem(ctx, e.emb, e.cfg.ChunkBytes, texts[i])
+	if len(single) > 0 {
+		vs, err := embedBatch(ctx, e.emb, langai.RoleQuery, single)
 		if err != nil {
 			return out, err
 		}
-		out[i] = v
+		for j, i := range singleAt {
+			out[i] = vs[j]
+		}
+	}
+	for _, ps := range long {
+		var need []string
+		var needAt []int
+		for _, p := range ps {
+			if i, ok := at[p]; ok && out[i] == nil && !slices.Contains(need, p) {
+				need, needAt = append(need, p), append(needAt, i)
+			}
+		}
+		if len(need) == 0 {
+			continue
+		}
+		vs, err := embedBatch(ctx, e.emb, langai.RoleQuery, need)
+		if err != nil {
+			return out, err
+		}
+		for j, i := range needAt {
+			out[i] = vs[j]
+		}
 	}
 	return out, nil
 }

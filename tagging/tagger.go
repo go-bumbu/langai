@@ -26,6 +26,12 @@ const (
 // it, the cosine to their centroid, had no name in the fingerprint.
 const scoringRule = "mean"
 
+// longRule names how a member of several pieces enters its tag's vector, for
+// the params fingerprint of a Tagger with ChunkBytes: "best" by its piece
+// closest to the tag's name (see memberVector); the rule before it, the mean
+// of its pieces, had no name in the fingerprint.
+const longRule = "best"
+
 // TaggerConfig tunes a Tagger. Model is the identity of the embedding model,
 // and NewTagger requires it: every embedding is cached under the model it came
 // from, so a Tagger of another model embeds the texts it needs again rather
@@ -40,14 +46,17 @@ const scoringRule = "mean"
 // and +Inf). There is no limit on how many tags a text gets.
 //
 // ChunkBytes, when above zero, has a text longer than that embedded in
-// pieces of at most ChunkBytes bytes (see Chunk), its vector the mean of
-// theirs. An embedder reads a window of tokens and silently drops the rest
-// (512 tokens, some 2 KB of prose, for the default yzma model), so without it
-// only the start of a long text counts. Set it a little under what the
-// embedder reads. Zero, the default, embeds every text whole, as the golden
-// numbers were measured. Item and member vectors are cached under the model
-// marked with the chunk size, so a change of ChunkBytes re-embeds them as a
-// change of Model does. NewTagger refuses a negative one.
+// pieces of at most ChunkBytes bytes (see Chunk). An embedder reads a window
+// of tokens and silently drops the rest (512 tokens, some 2 KB of prose, for
+// the default yzma model), so without it only the start of a long text
+// counts. Set it a little under what the embedder reads: 2000 for the default
+// model. A text of two pieces scores the best of its pieces and their mean, a
+// longer one the mean of its two best pieces (see itemScore), and a member of
+// several pieces teaches its tag with the one closest to the tag's name (see
+// memberVector). Zero, the default, embeds every text whole, as the golden
+// numbers were measured. Each piece is cached on its own under Model, so a
+// change of ChunkBytes embeds only pieces the cache does not hold. NewTagger
+// refuses a negative one.
 //
 // Tag names are read as paths of a tree, levels separated by "/" ("dev / go"
 // is a child of "dev"). Of the tags a text reaches the cutoff of on one path,
@@ -150,9 +159,10 @@ func checkConfig(cfg TaggerConfig) (TaggerConfig, string, error) {
 	}
 	params := fmt.Sprintf("%s k=%g name=%g member=%g", scoringRule, cfg.SmoothingK, cfg.NameMinScore, cfg.MemberMinScore)
 	if cfg.ChunkBytes > 0 {
-		// a tag's vectors blend its members', which chunking changes; without
+		// a tag's vectors blend its members', which chunking changes, and so
+		// does how a member of several pieces enters (see longRule); without
 		// it the fingerprint stays what it was before ChunkBytes existed
-		params += fmt.Sprintf(" chunk=%d", cfg.ChunkBytes)
+		params += fmt.Sprintf(" chunk=%d long=%s", cfg.ChunkBytes, longRule)
 	}
 	return cfg, params, nil
 }
@@ -211,7 +221,9 @@ func (s *Scope) Suggest(ctx context.Context, revision, text string) ([]string, e
 }
 
 // TagScore is how a text scores against one tag: the cosine between the
-// text's vector and the tag's blended one, and the cutoff the tag picks at.
+// text's vector and the tag's blended one (for a text in several pieces, see
+// TaggerConfig.ChunkBytes, the score of its pieces), and the cutoff the tag
+// picks at.
 // ShadowedBy, when not empty, is the id of a tag on the same path that the
 // text clears the cutoff of by more: the score reaches this tag's cutoff, but
 // Suggest returns that tag instead (see TaggerConfig).
