@@ -1,0 +1,71 @@
+id: fixture-one
+lang: en
+title: Fixture document
+text: |
+  Intro paragraph.
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+
+  ## Early part
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+
+  Filler sentence about the subject that pads the section out to a useful length.   Filler sentence about the subject that pads the section out to a useful length.   Filler sentence about the subject that pads the section out to a useful length.   Filler sentence about the subject that pads the section out to a useful length.   Filler sentence about the subject that pads the section out to a useful length.   Filler sentence about the subject that pads the section out to a useful length.
+
+  ## Middle part
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+
+  Filler sentence about the subject that pads the section out to a useful length.   Filler sentence about the subject that pads the section out to a useful length.   Filler sentence about the subject that pads the section out to a useful length.   Filler sentence about the subject that pads the section out to a useful length.   Filler sentence about the subject that pads the section out to a useful length.   Filler sentence about the subject that pads the section out to a useful length.
+
+  ## Late part
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+
+  ## Closing part
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+
+  ## Mention one
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+
+  ## Mention two
+
+  Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. Filler sentence about the subject that pads the section out to a useful length. 
+topics:
+  - label: Main subject
+    kind: main
+    aliases: [main subject]
+  - label: Early
+    kind: side
+    section: Early part
+    aliases: [early]
+  - label: Middle
+    kind: side
+    section: Middle part
+    aliases: [middle]
+  - label: Late
+    kind: side
+    section: Late part
+    aliases: [late]
+  - label: Closing
+    kind: side
+    section: Closing part
+    aliases: [closing]
+  - label: One
+    kind: mention
+    section: Mention one
+    aliases: [one]
+  - label: Two
+    kind: mention
+    section: Mention two
+    aliases: [two]
