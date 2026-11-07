@@ -106,6 +106,19 @@ semeval: ## compare embedding models on the golden set (downloads candidates int
 		go test ./zarf/eval/ -run '^TestCompareModels$$' -v -count=1 -timeout 0
 
 #==========================================================================================
+##@ Examples
+#==========================================================================================
+# example runs zarf/examples' `make run`; its settings pass through, e.g.
+# `make example MODEL=qwen3vl ADDR=0.0.0.0:8085`. `make example-prepare` fetches the
+# sample media first (needs curl and ffmpeg).
+.PHONY: example example-prepare
+example: ## serve the example pages on http://127.0.0.1:8085 (media search, auto tagging)
+	@$(MAKE) --no-print-directory -C zarf/examples run
+
+example-prepare: ## download the example's sample photos and render its sample clips (needs curl and ffmpeg)
+	@$(MAKE) --no-print-directory -C zarf/examples prepare
+
+#==========================================================================================
 ##@ Release
 #==========================================================================================
 

@@ -177,7 +177,7 @@ func run() error {
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
-	logger.Info("serving", "url", "http://"+*addr+"/mediasearch/")
+	logger.Info("serving", "url", "http://"+*addr+"/")
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

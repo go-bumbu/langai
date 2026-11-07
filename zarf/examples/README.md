@@ -10,8 +10,10 @@ picked among your own tags or written new by a chat model).
 ```
 cd zarf/examples
 make prepare   # sample photos from picsum.photos and two slideshow clips into data/media
-make run       # index data/media, serve http://127.0.0.1:8085/mediasearch/
+make run       # index data/media, serve the pages on http://127.0.0.1:8085/
 ```
+
+From the repository root, `make example-prepare` and `make example` do the same.
 
 Needs Go, ffmpeg and ffprobe on PATH (the video sampler), curl (for `prepare`)
 and, as `vector/sqlitevec` is CGO, a C compiler and `libsqlite3-dev`. The first

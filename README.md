@@ -591,8 +591,8 @@ keeps every metric, and the Makefile lists the other settings.
 ## Examples
 
 `zarf/examples/` is a single-user web service that exercises the features by hand,
-one page per feature. Media search is the first: `cd zarf/examples && make prepare`
-fetches sample photos and renders two slideshow clips, `make run` indexes them
+one page per feature. Media search is the first: `make example-prepare` fetches
+sample photos and renders two slideshow clips, `make example` indexes them
 and serves a grid of thumbnails on http://127.0.0.1:8085/mediasearch/; click one
 to see the items that look like it with their scores, the frame of a video that
 matched and when, the frames the index saw of a video, and how long the search
