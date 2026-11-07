@@ -143,12 +143,12 @@ func TestMatchTopics(t *testing.T) {
 	})
 	t.Run("tie goes to first topic", func(t *testing.T) {
 		tp := []Topic{
-			{Kind: TopicSide, Aliases: []string{"alpha beta"}},
+			{Kind: TopicMain, Aliases: []string{"alpha beta"}},
 			{Kind: TopicSide, Aliases: []string{"alpha beta"}},
 		}
 		s := MatchTopics([]string{"alpha beta"}, tp, noSim, 0.5)
-		if !near(s.SideRecall, 0.5) {
-			t.Errorf("side recall = %v, want 0.5", s.SideRecall)
+		if !near(s.MainRecall, 1) || !near(s.SideRecall, 0) {
+			t.Errorf("main %v side %v, want 1 and 0", s.MainRecall, s.SideRecall)
 		}
 	})
 }
@@ -163,8 +163,14 @@ func TestLongScore_F1AndMean(t *testing.T) {
 	if MeanLongScores(nil) != (LongScore{}) {
 		t.Error("mean of nothing should be zero")
 	}
-	m := MeanLongScores([]LongScore{{Recall: 1, Tags: 3}, {Recall: 0, Tags: 4}})
-	if !near(m.Recall, 0.5) || m.Tags != 4 {
-		t.Errorf("mean = %+v", m)
+	m := MeanLongScores([]LongScore{
+		{Recall: 1, MainRecall: 0.2, SideRecall: 0.4, LateSideRecall: 0.6, MentionRate: 0.8, Precision: 0.1, Tags: 3},
+		{Recall: 0, MainRecall: 0.4, SideRecall: 0.8, LateSideRecall: 0, MentionRate: 0.2, Precision: 0.3, Tags: 4},
+	})
+	want := LongScore{Recall: 0.5, MainRecall: 0.3, SideRecall: 0.6, LateSideRecall: 0.3, MentionRate: 0.5, Precision: 0.2, Tags: 4}
+	if !near(m.Recall, want.Recall) || !near(m.MainRecall, want.MainRecall) ||
+		!near(m.SideRecall, want.SideRecall) || !near(m.LateSideRecall, want.LateSideRecall) ||
+		!near(m.MentionRate, want.MentionRate) || !near(m.Precision, want.Precision) || m.Tags != want.Tags {
+		t.Errorf("mean = %+v, want %+v", m, want)
 	}
 }
