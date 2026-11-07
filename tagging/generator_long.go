@@ -22,7 +22,7 @@ const windowBytes = 6144
 // maxTitleBytes is the longest first line of a text that is read as its title.
 // A window past the first, cut from the middle of the text, often cannot tell
 // what its section is about, so the title is repeated at its head. Measured on
-// the same 24 documents: side-topic recall 0.656 without, 0.733 with.
+// the same 24 documents: side-topic recall 0.656 without, 0.708 with.
 const maxTitleBytes = 200
 
 // titleOf returns the first line of text, trimmed, when it is a title: at
