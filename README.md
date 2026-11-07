@@ -492,14 +492,21 @@ text; `WithLanguageTags(lang)` in one language whatever the text's, `lang` a BCP
 text's topics rather than copy its words (proper names stay), and repeats the rule last.
 A 4B model copies a text's words readily: with the rule stated once, last, English tags
 for the 55 German and Spanish golden documents had 88 of 550 tags still in the text's
-language; stated first and last, 28, most of them place and dish names. `WithTreeTags(existing...)` writes each tag as a path from a broad
+language; stated first and last, 28, most of them place and dish names. With `WithTreeTags`,
+`WithNativeLanguageTags` states its rule first and last too; without, last only (first as
+well cost long texts 0.07 of side recall). `WithTreeTags(existing...)` writes each tag as a path from a broad
 category down (`dev / go / error wrapping`, at most `MaxTreeLevels` deep) and the tags of a
 text as a small tree sharing upper levels. With existing paths, the model is shown them (up
 to `MaxTreeBytes`) and asked to extend them, written as they are, and to start a new
 top-level category only when none fits; a tag is scored by its whole path. On a Spanish
 text about Go errors, with the golden tags as the tree, it wrote `dev / go / error wrapping`
 and three siblings, in English although the text is Spanish: the tree's language wins over
-`WithNativeLanguageTags`, so set `WithLanguageTags` to the tree's. On a text that fits no
+`WithNativeLanguageTags`, although the prompt also says that new levels follow the text.
+Measured 2026-11-07 with an English tree on six German and Spanish documents, every tag
+came back English; `WithLanguageTags` turned the German ones German, existing levels
+translated too, but left two of the three Spanish ones English. So set `WithLanguageTags` to
+the tree's language. Without existing paths the native rule holds; before it was stated
+first, short German and Spanish texts got English trees. On a text that fits no
 branch it opened new roots (`tech / agentic web`) rather than reaching for `dev / web`. A
 Generator keeps no state, so building one per call, with the tree as it is now, is cheap.
 

@@ -184,11 +184,18 @@ func systemPrompt(candidates int, o generatorOptions) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You write tags for texts. Reply with up to %d tags for the text you are given: "+
 		"one tag per line, the most relevant first, and nothing else (no numbers, no bullets, no explanations). ", candidates)
-	if o.language != "" {
-		// first and last: a small model copies the text's own words unless the
-		// language is the rule it reads before anything else
+	// first and last: a small model copies the text's own words unless the
+	// language is the rule it reads before anything else, and the long tree
+	// prompt, its example path and the existing tree pull it into English.
+	// The flat prompt in the text's language states the rule last only:
+	// stated first as well, side recall on the 24 long documents fell from
+	// 0.708 to 0.640 and precision from 0.882 to 0.853.
+	switch {
+	case o.language != "":
 		fmt.Fprintf(&b, "Every tag must be in %[1]s. The text may be in another language: translate its topics into %[1]s "+
 			"and do not copy its words, except proper names such as places, people, products and dishes. ", languageName(o.language))
+	case o.tree:
+		b.WriteString("Every tag must be in the language of the text, even though these instructions and their examples are in English. ")
 	}
 	if !o.tree {
 		b.WriteString("A tag is one to three words naming a topic, a thing or a kind of content the text is about. ")
@@ -207,7 +214,12 @@ func systemPrompt(candidates int, o generatorOptions) string {
 		}
 	}
 	if o.language == "" {
-		b.WriteString("Write every tag in the language of the text.")
+		if !o.tree {
+			b.WriteString("Write every tag in the language of the text.")
+		} else {
+			b.WriteString("Existing paths keep their words as they are, and the levels you add are in the language of the text. " +
+				"Remember: write every tag in the language of the text.")
+		}
 	} else {
 		if o.tree {
 			b.WriteString("Existing paths keep their words as they are. ")

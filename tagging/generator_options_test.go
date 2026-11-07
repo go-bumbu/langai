@@ -29,6 +29,8 @@ func TestGeneratorOptions_Language(t *testing.T) {
 	}{
 		{"default", nil, "Write every tag in the language of the text."},
 		{"native", []GeneratorOption{WithNativeLanguageTags()}, "Write every tag in the language of the text."},
+		{"native tree rule", []GeneratorOption{WithTreeTags()}, "Every tag must be in the language of the text, even though these instructions"},
+		{"native tree reminder", []GeneratorOption{WithTreeTags()}, "Remember: write every tag in the language of the text."},
 		{"spanish rule", []GeneratorOption{WithLanguageTags("es")}, "Every tag must be in Spanish (es). The text may be in another language: translate"},
 		{"spanish reminder", []GeneratorOption{WithLanguageTags("es")}, "Remember: write every tag in Spanish (es), whatever the language of the text."},
 		{"region", []GeneratorOption{WithLanguageTags("pt-BR")}, "in Brazilian Portuguese (pt-BR),"},
@@ -65,6 +67,13 @@ func TestGeneratorOptions_TreeAsksForPathsAndShowsTheExistingTree(t *testing.T) 
 		if !strings.Contains(ext, want) {
 			t.Errorf("tree prompt does not say %q:\n%s", want, ext)
 		}
+	}
+	native := askedPrompt(t, WithTreeTags("dev / go"))
+	if want := "the levels you add are in the language of the text"; !strings.Contains(native, want) {
+		t.Errorf("native tree prompt does not say %q:\n%s", want, native)
+	}
+	if flat := askedPrompt(t); strings.Contains(flat, "levels you add") || strings.Contains(flat, "Every tag must be") {
+		t.Errorf("the flat prompt in the text's language states the rule only last:\n%s", flat)
 	}
 }
 

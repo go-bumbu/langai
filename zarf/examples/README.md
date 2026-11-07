@@ -117,13 +117,14 @@ both ways `tagging` tags a text:
   (`TAG_MIN_SCORE`), the ones under it greyed. A tag that matches one of yours
   by name or leaf (`baking` and `cooking / baking`) says so and **+ tag** uses
   it; **+ create** makes it a new tag and puts it on the note. Two controls in
-  the header shape them: **recommend in** writes the tags in English (the
-  page's default, as the sample tags are English), Spanish, German, French or
-  Italian (`tagging.WithLanguageTags`), or in the note's own language, so a
-  German note gets English tags; the page remembers the choice. Over the 55
-  German and Spanish samples, English tags came back for all but about three
-  notes (the tortilla and train-travel notes stayed largely in their own
-  language), with place and dish names kept as they are; **as a tree** has the model write paths
+  the header shape them: **recommend in** writes the tags in the note's own
+  language (the page's default), or in English, Spanish, German, French or
+  Italian (`tagging.WithLanguageTags`); the page remembers the choice. Asked
+  for English, the 55 German and Spanish samples got English tags for all but
+  about three notes (the tortilla and train-travel notes stayed largely in
+  their own language), with place and dish names kept as they are. With **as a
+  tree** and English tags in the notebook, the tags come back English even in
+  the note's language: pick the notebook's language there. **as a tree** has the model write paths
   that extend your tags (`tagging.WithTreeTags`, with the notebook's tags as
   the tree): the levels that are your tags already show grey and the new ones
   bold, and **+ create** makes the missing levels too, taking the spelling of
