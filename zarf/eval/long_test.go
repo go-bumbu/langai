@@ -83,6 +83,59 @@ func TestLoadLong_DuplicateIDAcrossFiles(t *testing.T) {
 	}
 }
 
+// TestLongGoldenComposition checks the shape of testdata/long: 24 documents,
+// 8 per language, each language with 3 texts of 6-10 KB, 3 of 14-20 KB and
+// 2 of 28-36 KB, and every id written as <lang>-<slug>.
+func TestLongGoldenComposition(t *testing.T) {
+	docs, err := LoadLong("testdata/long")
+	if err != nil {
+		t.Fatalf("LoadLong(testdata/long): %v", err)
+	}
+	if len(docs) != 24 {
+		t.Errorf("got %d documents, want 24 (8 per language)", len(docs))
+	}
+
+	byLang := map[string][]LongDocument{}
+	for _, d := range docs {
+		byLang[d.Lang] = append(byLang[d.Lang], d)
+		if !strings.HasPrefix(d.ID, d.Lang+"-") || len(d.ID) == len(d.Lang)+1 {
+			t.Errorf("doc %q: id must be <lang>-<slug> with the lang prefix %q", d.ID, d.Lang)
+		}
+	}
+
+	tiers := []struct {
+		name     string
+		min, max int // bytes of Text, inclusive
+		want     int
+	}{
+		{"6-10 KB", 6000, 10000, 3},
+		{"14-20 KB", 14000, 20000, 3},
+		{"28-36 KB", 28000, 36000, 2},
+	}
+	for _, lang := range []string{"en", "es", "de"} {
+		ds := byLang[lang]
+		if len(ds) != 8 {
+			t.Errorf("lang %s: %d documents, want 8 (short by %d)", lang, len(ds), 8-len(ds))
+		}
+		for _, tr := range tiers {
+			n := 0
+			for _, d := range ds {
+				if l := len(d.Text); l >= tr.min && l <= tr.max {
+					n++
+				}
+			}
+			switch {
+			case n < tr.want:
+				t.Errorf("lang %s: %d documents of %s bytes %d-%d, want %d (short by %d)",
+					lang, n, tr.name, tr.min, tr.max, tr.want, tr.want-n)
+			case n > tr.want:
+				t.Errorf("lang %s: %d documents of %s bytes %d-%d, want %d (over by %d)",
+					lang, n, tr.name, tr.min, tr.max, tr.want, n-tr.want)
+			}
+		}
+	}
+}
+
 // validLong builds a document that passes every rule; cases break one thing.
 func validLong() LongDocument {
 	pad := strings.Repeat("Filler sentence that pads the text out. ", 30) + "\n\n"

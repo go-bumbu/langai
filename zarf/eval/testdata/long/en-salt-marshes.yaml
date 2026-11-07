@@ -1,0 +1,69 @@
+id: en-salt-marshes
+lang: en
+title: Tidal salt marshes
+text: |
+  A salt marsh is a coastal wetland that is flooded and drained by the tides and covered by plants able to survive in salty mud. Salt marshes form where the sea is calm enough for fine sediment to settle, which means they are found behind barrier islands, inside river mouths, along sheltered bays and on the edges of broad estuaries. From a distance a marsh looks like a flat green or russet meadow cut by a web of winding creeks. Up close it is a layered habitat, with bare mud at the bottom of the tidal range, a belt of pioneer plants above it and a crowded meadow of grasses and herbs on the highest ground, which the sea reaches only a few times a month.
+
+  Marshes occur in every climate zone outside the tropics, where mangrove forests take their place. They are among the most productive ecosystems on earth, comparable to farmland in the amount of plant material they grow each year, and they provide food and shelter for fish, shellfish and birds. They also protect the land behind them, store carbon in their soils and filter the water that flows through them to the sea. For these reasons, scientists and coastal managers now study them closely, after centuries during which they were widely drained, embanked and converted to pasture.
+
+  ## How a marsh forms
+
+  A marsh begins as a mudflat. Rivers and tides carry fine silt and clay, and where the water slows, these particles sink to the bottom. Once the surface of the mud is high enough to be left dry for part of each tide, the first plants can take root. Their stems slow the water further, which makes more sediment settle, and their roots bind the mud so that it is not washed away. The marsh therefore builds itself upward, a few millimetres each year, in a process called accretion.
+
+  The pattern of creeks is an important part of the system. At each ebb, water drains from the marsh surface into small channels, which join into larger ones, and the channels cut down and branch like the veins of a leaf. At high tide, the same channels carry the flood onto the marsh, bringing in fresh sediment and nutrients. In the small Fennick Estuary, a survey in the 1990s counted more than eleven hundred separate creek heads in a single square kilometre.
+
+  A marsh can only survive if its surface rises at least as fast as the sea does. Where sediment is plentiful, marshes keep up with moderate sea level rise. Where it is scarce, because dams hold back the river's load, the marsh slowly drowns from the seaward edge. Landward, it is often squeezed against a sea wall and cannot migrate to higher ground, an effect that coastal scientists call coastal squeeze.
+
+  ## Plants of the marsh
+
+  Plants in a salt marsh have to cope with salt, with mud that holds no oxygen and with regular flooding. Different species solve these problems in different ways, so each occupies its own zone, a pattern known as zonation. On the lowest ground grow glassworts, fleshy plants without visible leaves that store water in swollen stems and tolerate hours of immersion. Cordgrasses form dense stands slightly higher, with hollow tissue that carries air down to the roots, and they are the main builders of the marsh because they trap so much mud.
+
+  Higher on the marsh, the flooding is less frequent and a richer mixture of plants appears. Sea lavender covers the ground with a haze of violet in late summer, sea purslane lines the creek banks with grey-green bushes, and a short turf of saltmarsh grasses forms a lawn. Many of these plants excrete surplus salt through glands in their leaves, leaving tiny white crystals that glitter in dry weather. Others keep salt in older leaves, which then die and drop off.
+
+  At the top edge, where the marsh meets the land, the salt is diluted by rain and fresh water seeping from the slope. Here reeds, rushes and shrubs take over, and the marsh grades into a freshwater fen or a hedge. This transition zone is the first to be lost when a sea wall is built, and it is often the richest in insects.
+
+  ## Birds and other wildlife
+
+  A salt marsh is a feeding ground, a nursery and a resting place. Tens of thousands of wading birds use the mudflats and creeks of large marshes in winter, probing the mud for worms, snails and small crustaceans. Redshanks, curlews and godwits feed at the water's edge, and flocks of knots rise and turn together as a single grey cloud when a falcon passes. Geese graze the turf, and on migration the marsh gives them a safe place to rest and refuel.
+
+  In summer, some birds nest on the marsh itself. Redshanks and lapwings make shallow scrapes in the grass, while terns and gulls prefer shingle banks. Nests built too low are swept away by the highest tides of spring, so the birds' success depends on the weather and the moon. Wardens put out wire cages over nests to protect eggs from foxes, and some reserves limit walking on the marsh during the breeding season.
+
+  Below the surface the marsh teems with life. Mud snails, ragworms and small shrimps live in the sediment. At high tide, young bass, mullet and flatfish swim up the creeks to feed, so the marsh serves as a nursery for fish that are later caught at sea. Fishing boats working the Fennick coast depend on this nursery, though few of the people on board have seen it at low water.
+
+  ## Coastal defence and restoration
+
+  Because it absorbs wave energy, a marsh in front of a sea wall can greatly reduce the cost of keeping the wall in repair. Waves lose much of their height as they cross a few hundred metres of vegetation, and the thick turf resists erosion far better than bare soil. Engineers have begun to treat a healthy marsh as a living part of the defences, and some wall designs rely on the marsh in front of them to keep the water at a manageable level.
+
+  Where marshes have been drained, one remedy is managed realignment. A section of sea wall is breached on purpose, or moved back inland, so that the tide can flood the former farmland and a new marsh can form. The process is slow, and the first years are bare mud, but within a decade plants colonise the ground and birds return. Realignment schemes cost less than rebuilding an old wall, and they replace lost habitat at the same time, but they require farmland owners who are willing to sell or lease their fields.
+
+  Another approach is to add sediment directly. Dredged mud from a nearby channel is spread thinly across a sinking marsh to raise its level, and the plants grow through it. Trials of this method are cautious, because too thick a layer smothers the vegetation, yet the early results are encouraging.
+
+  ## Cultural uses
+
+  People have used salt marshes for thousands of years. Grazing sheep and cattle on the turf is the oldest use, and the meat from animals raised on marsh grass is prized for its flavour. In some places, salt was boiled from the water or scraped from dried mud, and samphire, a glasswort, is still gathered in summer as a vegetable. The cricketer Harlan Pruitt is said to have lived beside a marsh in his retirement, though nothing in his career relates to the place. The folk singer Elsie Varga wrote a ballad about a drowned church bell on the Fennick Estuary, which she performed at village halls.
+
+  Today most visitors come to walk, watch birds or paint the wide skies. Boardwalks keep feet out of the mud, and visitor centres explain the tides and the plants, so that a habitat once thought of as wasteland is now seen as one of the most valuable edges of the sea.
+topics:
+  - label: salt marshes
+    kind: main
+    aliases: [saltmarsh, tidal marsh, coastal wetland]
+  - label: marsh plants
+    kind: side
+    section: Plants of the marsh
+    aliases: [halophytes, saltmarsh vegetation, cordgrass]
+  - label: wading birds
+    kind: side
+    section: Birds and other wildlife
+    aliases: [waders, birdwatching, marsh wildlife]
+  - label: coastal defence
+    kind: side
+    section: Coastal defence and restoration
+    aliases: [sea walls, managed realignment, flood protection]
+  - label: cricket
+    kind: mention
+    section: Cultural uses
+    aliases: [cricketer, cricket player, sports]
+  - label: folk music
+    kind: mention
+    section: Cultural uses
+    aliases: [folk singer, ballad, folk songs]
