@@ -106,9 +106,10 @@ func TestLongTagStrategies(t *testing.T) {
 				generated[key{vi, di}] = r
 				continue
 			}
+			g := generator(v) // may download and load the model: outside the clock
 			counter.reset()
 			start := time.Now()
-			names, err := v.generate(ctx, generator(v), d)
+			names, err := v.generate(ctx, g, d)
 			if err != nil {
 				t.Fatalf("%s %s: %v", v.name, d.ID, err)
 			}
@@ -270,20 +271,35 @@ func TestLongTagStrategies(t *testing.T) {
 			logCutoff, l.k.variant, l.k.strategy, s.Recall, s.MainRecall, s.SideRecall, s.LateSideRecall, s.MentionRate, s.Precision, s.F1(), s.Tags)
 	}
 
-	// the three best rows by F1 at the middle cutoff, and their picks per document
-	mid := slices.IndexFunc(cutoffs, func(c float64) bool { return math.Abs(c-0.50) < 1e-9 })
+	// the decision rule: at the log cutoff, rows whose main recall is no worse
+	// than prefix's, ranked by F1; the three best, and those within 0.02 of it
+	var prefixMain float64
+	for _, l := range lines {
+		if l.k.cutoff == ci45 && l.k.variant == "prefix" {
+			prefixMain = math.Max(prefixMain, l.score.MainRecall)
+		}
+	}
 	var atMid []line
 	for _, l := range lines {
-		if l.k.cutoff == mid {
+		if l.k.cutoff == ci45 && l.score.MainRecall >= prefixMain {
 			atMid = append(atMid, l)
 		}
 	}
 	slices.SortStableFunc(atMid, func(a, b line) int { return cmp.Compare(b.score.F1(), a.score.F1()) })
+	if len(atMid) > 0 {
+		bestF1 := atMid[0].score.F1()
+		t.Logf("decision rule at cutoff %.2f: prefix main recall %.3f, best eligible F1 %.3f; rows within 0.02:", logCutoff, prefixMain, bestF1)
+		for _, l := range atMid {
+			if bestF1-l.score.F1() <= 0.02 {
+				t.Logf("  %s / %s F1 %.3f main %.3f, %d LLM calls, %.0f s", l.k.variant, l.k.strategy, l.score.F1(), l.score.MainRecall, l.calls, l.secs)
+			}
+		}
+	}
 	if len(atMid) > 3 {
 		atMid = atMid[:3]
 	}
 	for _, l := range atMid {
-		t.Logf("best row %s / %s at cutoff %.2f, F1 %.3f", l.k.variant, l.k.strategy, cutoffs[mid], l.score.F1())
+		t.Logf("best row %s / %s at cutoff %.2f, F1 %.3f", l.k.variant, l.k.strategy, logCutoff, l.score.F1())
 		for di, d := range docs {
 			t.Logf("  %s: %s", d.ID, strings.Join(rows[l.k].picks[di], " | "))
 		}
