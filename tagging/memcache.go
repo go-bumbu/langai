@@ -42,8 +42,13 @@ func NewMemCacheWithClock(now func() time.Time) *MemCache {
 
 // Get implements EmbeddingCache. The returned slices are copies.
 func (c *MemCache) Get(_ context.Context, index string, keys []CacheKey) (map[CacheKey][]float32, error) {
-	if index == "" {
-		return nil, errEmptyIndex
+	if err := checkIndex(index); err != nil {
+		return nil, err
+	}
+	for _, k := range keys {
+		if err := checkName("model", k.Model); err != nil {
+			return nil, err
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -66,10 +71,13 @@ func (c *MemCache) Get(_ context.Context, index string, keys []CacheKey) (map[Ca
 
 // Put implements EmbeddingCache. It keeps copies of the vectors.
 func (c *MemCache) Put(_ context.Context, index string, vecs map[CacheKey][]float32) error {
-	if index == "" {
-		return errEmptyIndex
+	if err := checkIndex(index); err != nil {
+		return err
 	}
-	for _, v := range vecs {
+	for k, v := range vecs {
+		if err := checkName("model", k.Model); err != nil {
+			return err
+		}
 		if len(v) == 0 {
 			return errEmptyVector
 		}
@@ -90,8 +98,8 @@ func (c *MemCache) Put(_ context.Context, index string, vecs map[CacheKey][]floa
 
 // DeleteIndex implements EmbeddingCache.
 func (c *MemCache) DeleteIndex(_ context.Context, index string) error {
-	if index == "" {
-		return errEmptyIndex
+	if err := checkIndex(index); err != nil {
+		return err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

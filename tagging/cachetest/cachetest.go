@@ -91,6 +91,7 @@ func Run(t *testing.T, newCache func(t *testing.T, now func() time.Time) tagging
 		{"KeysDifferByModelAndRole", timeless(keysDifferByModelAndRole)},
 		{"IndexesAreIsolated", timeless(indexesAreIsolated)},
 		{"EmptyIndexIsAnError", timeless(emptyIndexIsAnError)},
+		{"NamesNoDatabaseStoresAreErrors", timeless(namesNoDatabaseStoresAreErrors)},
 		{"EmptyVectorIsAnError", timeless(emptyVectorIsAnError)},
 		{"SlicesAreCopies", timeless(slicesAreCopies)},
 		{"DeleteIndexDropsOnlyThatIndex", timeless(deleteIndexDropsOnlyThatIndex)},
@@ -200,6 +201,34 @@ func emptyIndexIsAnError(t *testing.T, c tagging.EmbeddingCache) {
 	}
 	if err := c.DeleteIndex(ctx, ""); err == nil {
 		t.Error("DeleteIndex with an empty index: no error")
+	}
+}
+
+// namesNoDatabaseStoresAreErrors: an index or a model with a NUL byte, or one
+// that is not valid UTF-8, is refused by every backend, not only by the
+// database that cannot store it as text, and nothing is stored under it.
+func namesNoDatabaseStoresAreErrors(t *testing.T, c tagging.EmbeddingCache) {
+	ctx := context.Background()
+	for name, bad := range map[string]string{"a NUL byte": "ten\x00ant", "invalid UTF-8": "ten\xffant"} {
+		if _, err := c.Get(ctx, bad, []tagging.CacheKey{k1}); err == nil {
+			t.Errorf("Get with an index holding %s: no error", name)
+		}
+		if err := c.Put(ctx, bad, map[tagging.CacheKey][]float32{k1: v1}); err == nil {
+			t.Errorf("Put with an index holding %s: no error", name)
+		}
+		if err := c.DeleteIndex(ctx, bad); err == nil {
+			t.Errorf("DeleteIndex with an index holding %s: no error", name)
+		}
+		k := tagging.KeyFor(bad, langai.RoleQuery, "one")
+		if _, err := c.Get(ctx, idx, []tagging.CacheKey{k1, k}); err == nil {
+			t.Errorf("Get with a model holding %s: no error", name)
+		}
+		if err := c.Put(ctx, idx, map[tagging.CacheKey][]float32{k1: v1, k: v2}); err == nil {
+			t.Errorf("Put with a model holding %s: no error", name)
+		}
+	}
+	if got := get(t, c, idx, k1); len(got) != 0 {
+		t.Errorf("a refused Put stored %v, want nothing", got)
 	}
 }
 
