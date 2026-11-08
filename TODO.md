@@ -208,3 +208,71 @@ and `todo list --json` cover the common actions — run `todo --help`.
 - [ ] text => similar image video
   - onnxruntime + SigLIP 2: the query text lands in the image/frame space
   - kronk only: embedding model over the descriptions (meaning, not looks)
+
+# review 2026-11-09
+
+## architecture
+
+- [ ] model identity so vector spaces cannot mix
+  No port reports which model made a vector and the stores record only dims, so two 768-d models (SigLIP 2, EmbeddingGemma) can share a collection and return garbage with no error; TaggerConfig.Model is typed by hand. Add an optional langai.Identified{Model() string}, implement it in the providers and LazyEmbedder, keep a (model, dims) meta row per index in the stores and fail with vector.ErrModelMismatch.
+- [ ] content hash covers the chunker and the model
+  search.ContentHash(text) covers only the text, so a changed MaxChars, Chunker or embedder leaves stale chunks in place forever. Hash text + chunker fingerprint + model id.
+- [ ] reshape the vector.Store port
+  Methods take 4-6 positional strings, Search only wraps SearchScope, and listing doc ids, Count, deleting a whole index, dropping an old generation, batch upsert and a doc-id filter are missing. Introduce a Coord{Index, Partition, Collection}, batch Upsert/Delete, Docs, DeleteIndex, one Search with a scope filter, DropGeneration on the stores.
+- [ ] vectortest conformance suite and missing fakes
+  sqlitevec and pgvec repeat the same tests by hand and MemStore has its own. Add vector/vectortest.Run for all three, plus langaitest.FakeCompleter (stub chat models are written three times), a map-backed Catalog and a fake VideoEmbedder.
+- [ ] read paths must not create tables
+  ensure() runs CREATE TABLE from Delete/ContentHash/Chunks/Search in both SQL stores, so a search for an unknown index creates a table set and a read-only Postgres role fails on a lookup. Only Upsert creates the schema; reads return empty when the tables are absent.
+- [ ] sentinel errors for errors.Is
+  Closed-embedder, dimension-mismatch and empty-id errors are plain strings. Add langai.ErrClosed, vector.ErrDimensions, search.ErrEmptyID and wrap with %w.
+- [ ] search API symmetry
+  Index.Search returns the store's vector.Match (leaks Partition/Collection) while MediaIndex returns MediaMatch; Index has no SearchIndexed and MediaIndex.SearchIndexed returns the query item itself. Add search.Match, Index.SearchIndexed, and leave the query doc out of both.
+- [ ] batch indexing
+  Index.Index does one hash read, one Embed and one transaction per document. Add Index.IndexBatch that reads hashes once, embeds changed chunks in one batch and upserts in one call (needs the reshaped Store).
+- [ ] ports in the right packages
+  vector.Normalize is imported by the providers although vector is the store port, and VideoEmbedder/Segment live in media while the other embedder ports are in the root. Move Normalize, VideoEmbedder and Segment to the root package.
+- [ ] LazyEmbedder lifecycle
+  No Close (the loaded model can never be released), load takes no ctx, and there is no lazy form of ImageEmbedder, Vision or Completer. load becomes func(ctx), add Close, add LazyImageEmbedder and LazyCompleter over one loader.
+- [ ] dedupe provider fetch code
+  ensureModelFile, fetchFile and the staged library install are copied between provider/yzma/fetch.go and provider/onnx/fetch.go; yzma.Download is exported only for zarf/eval. Move the shared steps to internal/fetch.
+- [ ] consistent provider constructors
+  yzma/onnx Config repeat Runtime's fields, OpenVision breaks the Open(ctx, spec, Runtime) pattern, lookup names differ (Spec, LookupCompleterSpec, LookupVisionSpec), yzma has no Models(), and the cache constructors return the interface.
+- [ ] one Chunker for search and tagging
+  search.MarkdownChunker{MaxChars} and tagging.Chunk(text, maxBytes) differ in units and live apart; Tagger and Generator take only an int. One Chunker port with Markdown and Even implementations. The eval floors depend on tagging.Chunk, so re-measure.
+- [ ] doc drift
+  internal/tablename says tagging uses ForPrefix (dead outside its test); WithGeneration docs point consumers at an internal package; README's package tree and dependency rule are out of date.
+
+## search, vector, media
+
+- [ ] zero or NaN vector breaks every search in its scope
+  A text with no letters or digits embeds to a zero vector with the fake embedder; once stored, every sqlitevec Search in that scope fails scanning a NULL distance, and on pg the NaN score passes the MinScore floor. Add vector.Validate (finite, non-zero), call it on index and query paths and in each store, and treat NaN as below the floor.
+- [ ] limit*4 over-fetch returns far fewer items than limit
+  One 64-frame near-static video fills all fetched chunks, so SearchIndexed/SearchFrames return one hit where 10 exist. The store needs a per-document best-chunk search (pg DISTINCT ON, sqlite/mem loop with doubling k) and an exclude-doc argument.
+- [ ] empty partition or collection is a wildcard in Store.Search
+  search.New(e, store, index, "", "notes") searches every partition and returns other tenants' docs. Search matches both coordinates exactly; only the explicit scope filter may leave one open.
+- [ ] concurrent sqlitevec writes fail with database is locked
+  The transaction starts with a SELECT and upgrades to a write, so 8 concurrent upserts fail 60-95% of calls even with _busy_timeout. Make the first statement a write, document the DSN, add a concurrent-upsert test.
+- [ ] concurrent pgvec Upsert of one doc leaves duplicate chunk sets
+  Under READ COMMITTED both transactions delete then insert and only serialize at the final docs upsert. Upsert the docs row first so its row lock serializes same-doc writers.
+- [ ] LazyEmbedder ignores ctx during load and panics on a nil embedder
+  Embed blocks in once.Do past its deadline during a multi-GB load; load returning (nil, nil) or panicking leaves a nil inner that every later Embed dereferences.
+- [ ] sqlite caps k at 4096
+  Index.Search with limit above 1024 errors on sqlitevec only. Clamp or page inside the store.
+- [ ] dimension change accepted at New, fails later with a raw driver error
+  New(ctx, db, 16) over an 8-dim store succeeds and every write and search then fails. Compare the existing dims in ensure and return an error naming WithGeneration.
+- [ ] ffmpeg: path with a colon read as a protocol, out starting with - read as an option
+  Sample(ctx, "clip:final.mkv") fails with Protocol not found. Pass file: URLs for inputs and outputs.
+- [ ] ffmpeg Sample buffers every raw frame in one buffer
+  Up to 67 MB by default and about 2 GB for unscaled 4K, and each frame aliases the shared buffer. Read frame by frame from the pipe with per-frame allocations.
+- [ ] video with zero frames is stored as indexed and never retried
+  An empty sampler or EmbedVideo result stores the hash with no chunks, so later IndexVideo calls are no-ops. Error on zero frames or segments.
+- [ ] IndexImage reads the whole reader unbounded
+  io.ReadAll runs before the pixel guard. Limit the reader.
+- [ ] chunker misses paragraph breaks on CRLF and whitespace-only blank lines
+  CRLF text is one paragraph and falls to splitWords, which flattens code and lists; the heading prefix is not counted toward MaxChars.
+- [ ] NUL or invalid UTF-8 indexes on sqlite and fails on Postgres
+  Sanitize before chunking.
+- [ ] MemStore differs from the SQL stores
+  Scores 0 on a dimension mismatch instead of an error, accepts an empty index, aliases the caller's vectors and orders ties randomly. Covered by the conformance suite: ties by score, then doc id, then seq.
+
+# change log
