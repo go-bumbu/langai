@@ -355,11 +355,14 @@ pictures and clips, and an image finds the stretch of a video it appears in.
    7. Candidates below the minimum score are dropped, and a long text's are capped at
       `Candidates`.
    8. The library returns the remaining tags with their scores, best first.
-5. **Cache maintenance** (the app calls these on the cache directly)
-   1. `Prune` deletes the embeddings not used since a given time, across all tenants.
-      The app runs it on a schedule.
-   2. `DeleteIndex` deletes all embeddings of one tenant, for example when the tenant is
-      removed.
+5. **Cache maintenance**
+   1. The app calls `Tagger.Prune` on a schedule, with a cutoff and the spaces still in
+      use.
+   2. The library reads each space's `Catalog` and marks the embeddings of its tag names
+      and members as used now. Nothing is embedded.
+   3. It deletes the embeddings not used since the cutoff, across all tenants.
+   4. The app calls `DeleteIndex` on the cache to delete all embeddings of one tenant,
+      for example when the tenant is removed.
 
 There's no "learn" call. The Tagger learns only when the app changes the revision.
 
@@ -414,14 +417,38 @@ hash of the text, so an edited text or another model simply misses and is embedd
 `tagging.NewMemCache()` keeps it in memory, for tests and tiny corpora;
 `tagging/sqlitecache` and `tagging/pgcache` keep it in one plain table of a SQLite or
 Postgres database that you open and pass to `New(ctx, db)`; your application imports the
-driver. `Prune` drops the rows not used since a given time, such as the texts of edited
-items. SQLite allows one writer at a time: when several goroutines write, open it with
-`?_busy_timeout=5000&_txlock=immediate`, so a writer waits for its turn instead of failing
-with "database is locked". `tagging/cachetest` is the conformance suite for a cache of your
-own. Each space's tag vectors and cutoffs live in a `TagIndex`, by default a `MemIndex`
+driver. An index or a model name with a NUL byte or invalid UTF-8 is refused by all three,
+since Postgres cannot store one. Processes that start together may all call `New`: the table
+is created under a lock. SQLite allows one writer at a time: when several goroutines write,
+open it with `?_busy_timeout=5000&_txlock=immediate`, so a writer waits for its turn instead
+of failing with "database is locked". `tagging/cachetest` is the conformance suite for a
+cache of your own; it runs on a clock it moves by hand, so your cache must be able to take
+its last-used times from the `now` function the suite passes. Each space's tag vectors and
+cutoffs live in a `TagIndex`, by default a `MemIndex`
 (an LRU of spaces under a 256 MB budget; `WithTagIndex` sets another), rebuilt from the
 cache, never from the model, after a restart or an eviction. A space has few tags, so the
 Tagger scores them all in Go.
+
+**Pruning.** `tagger.Prune(ctx, unusedSince, spaces...)` removes the embeddings last used
+before `unusedSince`, across every tenant: the texts of items edited or deleted since, and
+the rows of a model you no longer use. Run it on a schedule, and call it instead of the
+cache's own `Prune`:
+
+```go
+spaces := []tagging.Space{{Index: "tenant-1", Partition: "space-7"}} // every space still in use
+removed, err := tagger.Prune(ctx, time.Now().AddDate(0, 0, -30), spaces...)
+```
+
+A tag that does not change is built once and never read from the cache again, so the
+embeddings of its name and members look unused however often the tag is suggested. `Prune`
+therefore first reads the `Catalog` of each space you pass and marks what its tags are built
+from as used (`EmbeddingCache.Touch`), and only then deletes. A space you leave out loses
+its old embeddings and embeds them again at its next rebuild: time, never correctness. If a
+space's catalog fails, nothing is deleted. The cutoff must be at least 24 hours old
+(`tagging.CacheRefreshAfter`): a read rewrites a last-used time only once it is that stale,
+so a more recent cutoff would delete embeddings read minutes ago, and `Prune` refuses it.
+When Taggers of several models that are all in use share one cache, call `Scope.Touch` on
+the other Taggers' spaces first, since a `Prune` keeps only its own model's embeddings.
 
 How a tag is judged:
 
@@ -460,8 +487,8 @@ How a tag is judged:
   a cache: the model is part of every key.
 - **Switching models** needs no migration: after you change `TaggerConfig.Model` the new
   model misses the cache and embeds what it needs, lazily, never mixing two models'
-  vectors. `Scope.Warm` with the corpus's texts does it ahead of time, and `Prune` later
-  drops the old model's rows.
+  vectors. `Scope.Warm` with the corpus's texts does it ahead of time, and `Tagger.Prune`
+  later drops the old model's rows.
 - **Rejected alternatives:** kNN voting on its own (it never abstains); a kNN agreement
   check (it blocks second tags on two-topic pages); one global cutoff (it fits only one
   stage, names or examples); the cosine to the members' centroid (it drifts with their

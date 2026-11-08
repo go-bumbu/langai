@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-bumbu/langai"
 )
@@ -34,6 +35,7 @@ type engine struct {
 	// params fingerprints cfg's scoring settings (see checkConfig)
 	params string
 	flight flight
+	now    func() time.Time // time.Now, replaced by tests
 }
 
 // newEngine returns an engine over its four parts. It fails on a missing
@@ -53,7 +55,7 @@ func newEngine(emb langai.Embedder, cat Catalog, cache EmbeddingCache, ix TagInd
 	if err != nil {
 		return nil, err
 	}
-	return &engine{emb: emb, cat: cat, cache: cache, ix: ix, cfg: cfg, params: params}, nil
+	return &engine{emb: emb, cat: cat, cache: cache, ix: ix, cfg: cfg, params: params, now: time.Now}, nil
 }
 
 // scores returns text's score against every tag of the space at revision,

@@ -98,7 +98,10 @@ func Run(t *testing.T, newCache func(t *testing.T, now func() time.Time) tagging
 		{"PruneDeletesUnused", pruneDeletesUnused},
 		{"PruneKeepsWhatWasUsedAtTheCutoff", pruneKeepsWhatWasUsedAtTheCutoff},
 		{"GetRefreshesStaleEntries", getRefreshesStaleEntries},
-		{"LargeBatchesRoundTrip", timeless(largeBatchesRoundTrip)},
+		{"TouchKeepsWhatPruneWouldDrop", touchKeepsWhatPruneWouldDrop},
+		{"TouchIgnoresMissingKeys", touchIgnoresMissingKeys},
+		{"TouchIsPerIndex", touchIsPerIndex},
+		{"LargeBatchesRoundTrip", largeBatchesRoundTrip},
 		{"ConcurrentPutsAllLand", timeless(concurrentPutsAllLand)},
 		{"OverlappingConcurrentPutsAllLand", timeless(overlappingConcurrentPutsAllLand)},
 	}
@@ -199,6 +202,9 @@ func emptyIndexIsAnError(t *testing.T, c tagging.EmbeddingCache) {
 	if err := c.Put(ctx, "", map[tagging.CacheKey][]float32{k1: v1}); err == nil {
 		t.Error("Put with an empty index: no error")
 	}
+	if err := c.Touch(ctx, "", []tagging.CacheKey{k1}); err == nil {
+		t.Error("Touch with an empty index: no error")
+	}
 	if err := c.DeleteIndex(ctx, ""); err == nil {
 		t.Error("DeleteIndex with an empty index: no error")
 	}
@@ -219,7 +225,13 @@ func namesNoDatabaseStoresAreErrors(t *testing.T, c tagging.EmbeddingCache) {
 		if err := c.DeleteIndex(ctx, bad); err == nil {
 			t.Errorf("DeleteIndex with an index holding %s: no error", name)
 		}
+		if err := c.Touch(ctx, bad, []tagging.CacheKey{k1}); err == nil {
+			t.Errorf("Touch with an index holding %s: no error", name)
+		}
 		k := tagging.KeyFor(bad, langai.RoleQuery, "one")
+		if err := c.Touch(ctx, idx, []tagging.CacheKey{k1, k}); err == nil {
+			t.Errorf("Touch with a model holding %s: no error", name)
+		}
 		if _, err := c.Get(ctx, idx, []tagging.CacheKey{k1, k}); err == nil {
 			t.Errorf("Get with a model holding %s: no error", name)
 		}
@@ -320,6 +332,56 @@ func getRefreshesStaleEntries(t *testing.T, c tagging.EmbeddingCache, clk *clock
 	}
 }
 
+// touchKeepsWhatPruneWouldDrop: Touch sets the last-used time of the keys it
+// is given to now, whatever it was, also where a Get would not: an hour after
+// the Put the entries are not CacheRefreshAfter old. The others keep theirs.
+func touchKeepsWhatPruneWouldDrop(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1, k2: v2})
+	clk.advance(time.Hour)
+	if got := get(t, c, idx, k1, k2); len(got) != 2 {
+		t.Fatalf("Get = %v, want both entries", got)
+	}
+	if err := c.Touch(context.Background(), idx, []tagging.CacheKey{k1, k1}); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	prune(t, c, clk.Now().Add(-time.Minute), 1)
+	if got := get(t, c, idx, k1, k2); len(got) != 1 || !reflect.DeepEqual(got[k1], v1) {
+		t.Errorf("after Touch and Prune = %v, want only k1, unchanged", got)
+	}
+}
+
+// touchIgnoresMissingKeys: touching a key the cache does not hold, or no key
+// at all, is not an error and stores nothing.
+func touchIgnoresMissingKeys(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	ctx := context.Background()
+	for name, keys := range map[string][]tagging.CacheKey{"nil": nil, "empty": {}, "missing": {k1, k2}} {
+		if err := c.Touch(ctx, idx, keys); err != nil {
+			t.Errorf("Touch with %s keys: %v", name, err)
+		}
+	}
+	if got := get(t, c, idx, k1, k2); len(got) != 0 {
+		t.Errorf("Touch stored %v, want nothing", got)
+	}
+	prune(t, c, clk.Now().Add(time.Hour), 0)
+}
+
+// touchIsPerIndex: a Touch in one index leaves the same key of another alone.
+func touchIsPerIndex(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, "a", map[tagging.CacheKey][]float32{k1: v1})
+	put(t, c, "b", map[tagging.CacheKey][]float32{k1: v2})
+	clk.advance(time.Hour)
+	if err := c.Touch(context.Background(), "a", []tagging.CacheKey{k1}); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	prune(t, c, clk.Now().Add(-time.Minute), 1)
+	if got := get(t, c, "a", k1); !reflect.DeepEqual(got[k1], v1) {
+		t.Errorf("index a = %v, want its touched entry", got)
+	}
+	if got := get(t, c, "b", k1); len(got) != 0 {
+		t.Errorf("index b = %v, want empty: nobody touched it", got)
+	}
+}
+
 // duplicateKeysCountOnce: a key listed several times in one Get is one entry,
 // and does not disturb the others.
 func duplicateKeysCountOnce(t *testing.T, c tagging.EmbeddingCache) {
@@ -335,8 +397,8 @@ func duplicateKeysCountOnce(t *testing.T, c tagging.EmbeddingCache) {
 }
 
 // largeBatchesRoundTrip: a batch bigger than any per-statement limit a SQL
-// backend has still lands whole.
-func largeBatchesRoundTrip(t *testing.T, c tagging.EmbeddingCache) {
+// backend has still lands whole, and is touched whole.
+func largeBatchesRoundTrip(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
 	const n = 3000
 	vecs := make(map[tagging.CacheKey][]float32, n)
 	keys := make([]tagging.CacheKey, 0, n)
@@ -355,6 +417,11 @@ func largeBatchesRoundTrip(t *testing.T, c tagging.EmbeddingCache) {
 			t.Fatalf("entry %x = %v, want %v", k.Hash[:4], got[k], want)
 		}
 	}
+	clk.advance(time.Hour)
+	if err := c.Touch(context.Background(), idx, keys); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	prune(t, c, clk.Now().Add(-time.Minute), 0)
 }
 
 // concurrentPutsAllLand: writers on one index lose nothing to each other.

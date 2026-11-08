@@ -29,7 +29,8 @@
 // EmbeddingCache (MemCache, or sqlitecache and pgcache for a database) holds
 // every embedding, by index, model, role and the hash of the text, so an
 // edited text or another model simply misses and is embedded again, and
-// unused rows go with Prune. A TagIndex (MemIndex by default, an LRU of the
+// unused rows go with Tagger.Prune, which first marks what the tags of the
+// spaces in use are built from. A TagIndex (MemIndex by default, an LRU of the
 // spaces under a memory budget) holds each space's blended tag vectors and
 // cutoffs, with the revision they were built at. On a Suggest at the revision
 // the index holds, the catalog is not called: the text's vector comes from

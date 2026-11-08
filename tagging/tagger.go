@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/go-bumbu/langai"
 )
@@ -254,6 +255,37 @@ func (s *Scope) Scores(ctx context.Context, revision, text string) ([]TagScore, 
 // an error, and one of the rebuild wraps ErrNotRebuilt.
 func (s *Scope) Warm(ctx context.Context, revision string, texts ...string) error {
 	return s.tg.e.warm(ctx, s.index, s.partition, revision, texts)
+}
+
+// Touch marks every embedding the space's tags are built from as used now:
+// the name of each tag its Catalog lists and the texts of their members, under
+// the Tagger's Model. It embeds nothing. Tagger.Prune does this for the spaces
+// it is given; Touch on its own is for the spaces of another Tagger that
+// shares the cache (one of another Model, say), which that Tagger's Prune
+// would otherwise take for unused. An empty index is an error.
+func (s *Scope) Touch(ctx context.Context) error {
+	return s.tg.e.touch(ctx, s.index, s.partition)
+}
+
+// Prune removes from the cache, across every index, the embeddings last used
+// before unusedSince, and returns how many: the texts of items edited or
+// deleted since, and the rows of a model no longer used. It is the one call
+// for that, on a schedule, instead of the cache's own Prune.
+//
+// A tag that does not change is built once and never read from the cache
+// again, so the embeddings of its name and members look unused however often
+// the tag is suggested. Prune therefore first reads the Catalog of each of
+// spaces and marks what its tags are built from as used now (see Scope.Touch),
+// and only then removes the rest: pass every space still in use. A space left
+// out loses the embeddings not read since unusedSince, which costs embedding
+// them again at its next rebuild, never correctness. When a space cannot be
+// read, nothing is removed.
+//
+// unusedSince must be at least CacheRefreshAfter (24 hours) in the past: a
+// read rewrites an entry's last-used time only once it is that stale, so a
+// more recent cutoff would remove entries read minutes ago, and is refused.
+func (t *Tagger) Prune(ctx context.Context, unusedSince time.Time, spaces ...Space) (int64, error) {
+	return t.e.prune(ctx, unusedSince, spaces)
 }
 
 // embedOne embeds a single text, refusing an embedder that breaks its contract

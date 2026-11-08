@@ -62,13 +62,24 @@ type EmbeddingCache interface {
 	Get(ctx context.Context, index string, keys []CacheKey) (map[CacheKey][]float32, error)
 	// Put stores or replaces the vectors, last used now. An empty vector is an error.
 	Put(ctx context.Context, index string, vecs map[CacheKey][]float32) error
+	// Touch sets the last-used time of the keys it holds to now, whatever it
+	// was; keys it does not hold are ignored. It is how a Tagger marks the
+	// embeddings its tags are built from as in use before a Prune (see
+	// Tagger.Prune): a tag that does not change is never read again, so no Get
+	// would refresh them.
+	Touch(ctx context.Context, index string, keys []CacheKey) error
 	// DeleteIndex removes every entry of index.
 	DeleteIndex(ctx context.Context, index string) error
 	// Prune removes the entries, of every index, last used before unusedSince,
-	// and returns how many.
+	// and returns how many. An entry last used at unusedSince stays. It
+	// removes what it is told to: an application prunes through Tagger.Prune,
+	// which first marks what is still in use and refuses a cutoff too recent
+	// for the last-used times to be trusted.
 	Prune(ctx context.Context, unusedSince time.Time) (int64, error)
 }
 
 // CacheRefreshAfter is how stale a last-used time gets before a Get rewrites
-// it, so reads do not turn into writes.
+// it, so reads do not turn into writes. An entry's recorded time may therefore
+// be up to this much older than its last read, which is why Tagger.Prune
+// refuses a cutoff more recent than this.
 const CacheRefreshAfter = 24 * time.Hour

@@ -96,6 +96,29 @@ func (c *MemCache) Put(_ context.Context, index string, vecs map[CacheKey][]floa
 	return nil
 }
 
+// Touch implements EmbeddingCache.
+func (c *MemCache) Touch(_ context.Context, index string, keys []CacheKey) error {
+	if err := checkIndex(index); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		if err := checkName("model", k.Model); err != nil {
+			return err
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	entries := c.indexes[index]
+	for _, k := range keys {
+		if e, ok := entries[k]; ok {
+			e.used = now
+			entries[k] = e
+		}
+	}
+	return nil
+}
+
 // DeleteIndex implements EmbeddingCache.
 func (c *MemCache) DeleteIndex(_ context.Context, index string) error {
 	if err := checkIndex(index); err != nil {

@@ -180,7 +180,9 @@ func (c *Cache) Get(ctx context.Context, index string, keys []tagging.CacheKey) 
 			if err != nil {
 				return nil, err
 			}
-			if err := c.touch(ctx, index, g, stale, now, staleBefore); err != nil {
+			// only the entries still stale: two readers do not rewrite a
+			// row one after the other for nothing
+			if err := c.touch(ctx, index, g, stale, now, &staleBefore); err != nil {
 				return nil, err
 			}
 		}
@@ -244,14 +246,39 @@ func (c *Cache) read(ctx context.Context, index string, g group, hashes [][]byte
 	return stale, nil
 }
 
-// touch sets the last-used time of the stale entries to now. The used < bound
-// guard keeps two readers from rewriting a row one after the other for
-// nothing.
-func (c *Cache) touch(ctx context.Context, index string, g group, stale [][]byte, now, staleBefore int64) error {
-	for start := 0; start < len(stale); start += chunk {
-		part := stale[start:min(start+chunk, len(stale))]
-		args := append([]any{now, index, g.model, int64(g.role), staleBefore}, bytesArgs(part)...)
-		if _, err := c.db.ExecContext(ctx, c.q(`UPDATE `+table+` SET used = ? WHERE idx = ? AND model = ? AND role = ? AND used < ? AND hash IN (`+placeholders(len(part))+`)`), args...); err != nil {
+// touch sets the last-used time of the entries of hashes to now, 500 at a
+// time: of all of them, or with usedBefore only of the ones last used before
+// it.
+func (c *Cache) touch(ctx context.Context, index string, g group, hashes [][]byte, now int64, usedBefore *int64) error {
+	for start := 0; start < len(hashes); start += chunk {
+		part := hashes[start:min(start+chunk, len(hashes))]
+		args := []any{now, index, g.model, int64(g.role)}
+		guard := ""
+		if usedBefore != nil {
+			guard = ` AND used < ?`
+			args = append(args, *usedBefore)
+		}
+		args = append(args, bytesArgs(part)...)
+		if _, err := c.db.ExecContext(ctx, c.q(`UPDATE `+table+` SET used = ? WHERE idx = ? AND model = ? AND role = ?`+guard+
+			` AND hash IN (`+placeholders(len(part))+`)`), args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Touch implements tagging.EmbeddingCache.
+func (c *Cache) Touch(ctx context.Context, index string, keys []tagging.CacheKey) error {
+	if err := checkIndex(index); err != nil {
+		return err
+	}
+	groups, err := grouped(keys)
+	if err != nil {
+		return err
+	}
+	now := c.now().Unix()
+	for g, hashes := range groups {
+		if err := c.touch(ctx, index, g, hashes, now, nil); err != nil {
 			return err
 		}
 	}
