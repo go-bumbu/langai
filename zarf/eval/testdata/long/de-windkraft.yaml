@@ -1,0 +1,105 @@
+id: de-windkraft
+lang: de
+title: Windkraft
+text: |
+  Windkraft bezeichnet die Nutzung der Bewegungsenergie der Luft, um mechanische Arbeit zu verrichten oder elektrischen Strom zu erzeugen. Früher trieb der Wind Mühlen an, die Getreide mahlten oder Wasser aus tiefliegenden Landstrichen pumpten, heute dreht er vor allem die Rotoren von Windenergieanlagen, deren Generatoren Strom in die öffentlichen Netze einspeisen. In vielen Ländern ist die Windkraft nach der Wasserkraft die wichtigste erneuerbare Stromquelle und liefert an windreichen Tagen einen großen Teil des gesamten Bedarfs.
+
+  Die Energie des Windes entsteht letztlich aus der Sonne. Sie erwärmt die Erdoberfläche ungleichmäßig, warme Luft steigt auf, kühlere strömt nach, und aus den Druckunterschieden werden Luftbewegungen, die sich über Küsten, Ebenen und Gebirgskämme jeweils eigen ausprägen. Ihre Leistung wächst mit der dritten Potenz der Windgeschwindigkeit: Verdoppelt sich der Wind, steigt die verfügbare Leistung auf das Achtfache. Aus diesem einfachen physikalischen Zusammenhang folgt fast alles, was die Windkraft technisch und wirtschaftlich ausmacht, vom Turmbau bis zur Standortwahl.
+
+  Windkraft hat Vorzüge und Grenzen. Sie verursacht im Betrieb kaum Emissionen und benötigt keinen Brennstoff, ist aber vom Wetter abhängig und verändert das Landschaftsbild. Wie sich diese Vor- und Nachteile abwägen lassen, ist Gegenstand technischer, ökologischer und politischer Auseinandersetzungen, die sich in den folgenden Abschnitten wiederfinden.
+
+  ## Geschichte
+
+  Die ältesten Nachweise für Windmühlen stammen aus dem Hochland östlich des Kaspischen Meeres, wo sich Vertikalachsenmühlen mit Schilfmatten zum Mahlen drehten. In Europa tauchten Windmühlen im zwölften Jahrhundert auf, zunächst als Bockwindmühlen, bei denen das gesamte Mühlenhaus auf einem Bock gedreht wird, um in den Wind zu zeigen. Später folgten die Turmmühlen mit drehbarer Haube und die Holländermühle, die sich vor allem in den Niederungen an der Nordsee zur Entwässerung der Polder durchsetzte. In einzelnen Marschdörfern standen im achtzehnten Jahrhundert mehr als ein Dutzend Mühlen auf engem Raum.
+
+  Elektrischen Strom aus Wind erzeugte erstmals im späten neunzehnten Jahrhundert ein Versuchsgerät, das auf dem Dach eines Landhauses stand und Akkumulatoren lud. In Dänemark entstand um 1890 eine Reihe von Forschungsanlagen, und in den Zwanzigerjahren verbreiteten sich kleine Windlader auf Farmen, die abgelegene Gehöfte versorgten. Eine bedeutende Rolle spielte die Ölkrise der Siebzigerjahre, die Staaten dazu brachte, Alternativen zu fördern. Die Firma Lüttkamp Energietechnik aus Norderstedt baute 1979 eine Versuchsanlage mit fünfundzwanzig Metern Rotordurchmesser, die als eine der ersten in Norddeutschland dauerhaft Strom ins Netz lieferte.
+
+  In den folgenden Jahrzehnten wuchsen die Anlagen rasant. Die Leistung einer Einzelanlage stieg von wenigen Dutzend Kilowatt in den Achtzigerjahren auf mehrere Megawatt, der Rotordurchmesser auf über einhundertfünfzig Meter. Gleichzeitig sanken die Kosten je Kilowattstunde deutlich, und die Windkraft wurde an guten Standorten wettbewerbsfähig gegenüber konventionellen Kraftwerken. Nebenbei sei erwähnt, dass der Maler Konrad Eschwege die Mühlen von Dörnbach um 1910 in einer Reihe von Gemälden festhielt, die heute in einem kleinen Regionalmuseum hängen.
+
+  ## Aufbau und Funktionsweise
+
+  Eine moderne Windenergieanlage besteht aus Fundament, Turm, Maschinenhaus (Gondel), Rotornabe und Rotorblättern. Der Turm trägt die Gondel in Höhen, in denen der Wind stärker und gleichmäßiger weht als am Boden. Je nach Standort ragt die Nabe achtzig bis über einhundertachtzig Meter in die Höhe. Der Turm besteht in der Regel aus Stahlrohrsegmenten, bei großen Anlagen auch aus Beton oder Hybridbauweise, und steht auf einem Flachfundament von zwanzig bis dreißig Metern Durchmesser, das mit einem Gewicht von Tausenden Tonnen die Anlage sichert.
+
+  In der Gondel sitzen der Generator, bei vielen Typen ein Getriebe, die Bremsen und die Steuerelektronik. Die Rotorblätter bestehen aus glasfaser- oder kohlefaserverstärktem Kunststoff und sind wie Tragflächen geformt: Der Wind strömt an ihnen vorbei, erzeugt Auftrieb und versetzt den Rotor in Drehung. Die Blätter lassen sich um ihre Längsachse verstellen. Mit dieser Pitch-Regelung begrenzt die Anlage bei starkem Wind ihre Leistung, bei Sturm stellt sie die Blätter in die Fahnenstellung und schaltet ab. Eine Windnachführung dreht die Gondel in den Wind.
+
+  Eine Anlage kann nur einen Teil der im Wind enthaltenen Energie nutzen. Das physikalische Limit nach Betz liegt bei knapp sechzig Prozent, ausgeführte Anlagen erreichen etwa vierzig bis fünfundvierzig Prozent. Die Jahresarbeit hängt vom Standort ab: Die Volllaststunden, also die Zeit, in der eine Anlage rechnerisch mit Nennleistung liefe, liegen an der Küste bei über zweitausendfünfhundert Stunden im Jahr, im Binnenland oft darunter. Neuere Anlagen für Schwachwindgebiete haben deshalb größere Rotoren im Verhältnis zum Generator, um auch bei mäßigem Wind viel zu ernten.
+
+  Am Ende der Lebensdauer, die bei etwa zwanzig bis fünfundzwanzig Jahren liegt, werden Anlagen zurückgebaut oder repariert und erneut betrieben. Stahl, Kupfer und Beton lassen sich gut verwerten, die verbundenen Faserwerkstoffe der Rotorblätter dagegen bislang nur mit Aufwand, etwa als Brennstoff im Zementwerk oder zu Granulat zerkleinert. Hersteller arbeiten an Blättern aus Harzen, die sich wieder lösen lassen.
+
+  ## Standortwahl und Windmessung
+
+  Bevor eine Anlage gebaut wird, wird der Wind oft über ein Jahr lang gemessen. Dazu dienen Messmasten mit Schalenkreuzanemometern in mehreren Höhen oder moderne Lidar-Geräte, die den Wind mit Laserlicht aus der Ferne erfassen. Aus den Messreihen entsteht eine Häufigkeitsverteilung, nach der sich der erwartete Jahresertrag berechnen lässt. Entscheidend sind auch die Rauigkeit der Umgebung, Hindernisse wie Waldränder und Gebäude sowie die Turbulenz, die Anlagen stärker belastet und verschleißen lässt.
+
+  Ein weiterer Gesichtspunkt ist der Abstand zwischen den Anlagen. Jede Anlage entzieht dem Wind Energie und hinterlässt einen Nachlauf, in dem die Luft langsamer und unruhiger strömt. Windparks werden daher so gebaut, dass die Abstände in Hauptwindrichtung mindestens das Fünf- bis Achtfache des Rotordurchmessers betragen. Ist der Park zu dicht gesetzt, verlieren die hinteren Anlagen einen spürbaren Teil ihres Ertrags. Man kann den Nachlaufeffekt berechnen, und in der Praxis wird die Aufstellung am Rechner optimiert.
+
+  Neben der Windhöffigkeit entscheiden Naturschutz, Lärm, Schattenwurf und Abstand zu Wohnhäusern darüber, ob ein Standort geeignet ist. In Planungsverfahren weisen Regionalplaner Vorranggebiete aus. Der Radiosender Wellenfunk Mittelland musste 1998 seine Richtfunkstrecke verlegen, weil ein Windpark im Strahlengang entstand, ein Beispiel dafür, dass auch unerwartete Nachbarn betroffen sein können.
+
+  ## Offshore-Windparks
+
+  Auf See weht der Wind stärker und gleichmäßiger als an Land, weil es weniger Hindernisse gibt. Deshalb entstehen seit den Neunzigerjahren Windparks in Küstengewässern, später auch weit draußen vor der Küste. Eine Offshore-Anlage kann dank des gleichmäßigeren Windes über viertausend Volllaststunden im Jahr erreichen, also fast doppelt so viele wie an einem guten Landstandort. Dafür sind Bau und Betrieb wesentlich aufwendiger und teurer.
+
+  Die Fundamente richten sich nach der Wassertiefe. Bis etwa dreißig Meter werden Monopiles verwendet, große Stahlrohre mit sieben bis zehn Metern Durchmesser, die mit Hydraulikhämmern in den Meeresboden getrieben werden. In größeren Tiefen kommen Jacket-Gründungen mit mehreren Beinen zum Einsatz, bei sehr tiefem Wasser sind schwimmende Plattformen in der Entwicklung, die mit Ankerleinen am Grund befestigt sind. Spezialschiffe mit Hubbeinen heben die Komponenten an Ort und Stelle, und der Zeitraum für die Montage ist durch das Wetter eng begrenzt, denn bei hohem Seegang ruhen die Arbeiten.
+
+  Der erzeugte Strom fließt über Seekabel zu einer Umspannplattform im Park und von dort über Hochspannungs-Gleichstromleitungen zum Festland. Die Wartung ist anspruchsvoll: Techniker fahren mit Schnellbooten oder werden mit Hubschraubern auf die Anlagen gebracht. Korrosion durch Salzwasser ist ein Dauerthema, und die Anlagen werden deshalb mit mehrschichtigen Beschichtungen und Entfeuchtungsanlagen in den Gondeln geschützt. Der Windpark Nordergrund-Ost, der 2016 vor der friesischen Küste in Betrieb ging, besteht aus achtundachtzig Anlagen mit je acht Megawatt Leistung und versorgt rechnerisch über eine Million Haushalte.
+
+  Auch für die Meeresumwelt ergeben sich Folgen. Beim Rammen der Fundamente entsteht Unterwasserlärm, der Schweinswale vertreiben kann, weshalb Blasenschleier den Schall dämpfen. Die Fundamente wirken zugleich als künstliche Riffe, an denen sich Muscheln, Seepocken und Fische ansiedeln. Welche Gesamtbilanz sich daraus ergibt, wird noch untersucht.
+
+  Die Logistik ist ein eigenes Kapitel. Ein Offshore-Windpark braucht einen Basishafen mit großen Lagerflächen, Schwerlastkränen und Liegeplätzen für Errichterschiffe. Die Blätter einer Anlage sind über achtzig Meter lang und werden auf Spezialschiffen transportiert, die Türme in mehreren Segmenten. Die Hafenstädte an der Küste haben sich deshalb teilweise zu Zentren der Branche entwickelt, mit Ausbildungsstätten für Industriekletterer, Rettungsübungen auf Übungstürmen und einer eigenen Zulieferindustrie.
+
+  ## Netzanbindung und Speicherung
+
+  Strom aus Wind fällt nicht dann an, wenn er gebraucht wird, sondern wenn der Wind weht. Das stellt die Stromnetze vor eine Aufgabe, denn Erzeugung und Verbrauch müssen sich in jeder Sekunde die Waage halten. Weicht die Netzfrequenz zu stark von ihrem Sollwert ab, drohen Ausfälle. Die Betreiber der Übertragungsnetze setzen deshalb auf mehrere Mittel: genaue Windprognosen, flexible Kraftwerke, Verbrauchssteuerung, Speicher und zusätzliche Leitungen.
+
+  Besonders in windreichen Regionen im Norden reicht die Leitungskapazität oft nicht aus, um den Strom zu den Verbrauchszentren im Süden zu transportieren. Dann müssen Anlagen abgeregelt werden, obwohl Wind vorhanden wäre, und der Betreiber erhält eine Entschädigung. Der Ausbau von Höchstspannungsleitungen, häufig als Erdkabel geführt, ist daher eine Voraussetzung für den weiteren Ausbau der Windkraft. Gleichstromverbindungen verlieren auf langen Strecken weniger Energie als Wechselstrom und werden deshalb für Distanzen von mehreren hundert Kilometern bevorzugt.
+
+  Kurzfristige Schwankungen gleichen Batteriespeicher aus, die in Sekundenbruchteilen reagieren. Für längere Flauten kommen Pumpspeicherkraftwerke in Betracht, die Wasser in ein höher gelegenes Becken pumpen und es bei Bedarf wieder durch Turbinen abfließen lassen. Zunehmend wird auch überschüssiger Strom zur Erzeugung von Wasserstoff genutzt, der sich speichern und später in Brennstoffzellen oder Gaskraftwerken wieder verstromen lässt. Alle Verfahren haben Verluste, und welche Mischung sich durchsetzt, hängt von Kosten und vom Ausbaugrad ab.
+
+  Moderne Anlagen sind selbst netzdienlich geworden. Sie können ihre Leistung rasch anpassen, Blindleistung liefern und bei Spannungseinbrüchen am Netz bleiben, anstatt sich abzuschalten, wie es ältere Typen taten. Dadurch tragen sie zur Stabilität bei, die früher allein den großen Kraftwerken oblag.
+
+  ## Windkraft und Vogelschutz
+
+  Windenergieanlagen können Vögeln und Fledermäusen gefährlich werden. Greifvögel wie der Rotmilan kreisen im Aufwind und sind in der Höhe der Rotoren unterwegs, wobei sie auf Beute am Boden achten und herannahende Rotorblätter nicht rechtzeitig wahrnehmen. Fledermäuse jagen nachts in Rotorhöhe und können durch plötzliche Druckunterschiede in der Nähe der Blätter tödliche innere Verletzungen erleiden, auch ohne direkt getroffen zu werden. Zugvögel werden durch Windparks auf ihrer Route gestört und müssen Umwege fliegen.
+
+  Wie viele Tiere tatsächlich sterben, ist schwer zu bestimmen, denn Kadaver werden von Füchsen und Aasfressern rasch beseitigt. Gutachter suchen deshalb in Probeflächen unter den Anlagen systematisch und rechnen die Funde mit Korrekturfaktoren hoch. Die Ergebnisse streuen stark. Eine Anlage an einem Waldrand im Hügelland kann viel gefährlicher sein als eine im offenen Feld, und ein Rastplatz von Kranichen in der Nähe macht ein Gebiet für den Bau ungeeignet.
+
+  Zur Minderung gibt es mehrere Wege. Die wichtigste Maßnahme ist die Standortwahl: Brutplätze, Schlafplätze und Zugkorridore werden von der Planung freigehalten, und Abstandsempfehlungen geben Mindestentfernungen vor. Abschaltungen während der Hauptaktivität der Fledermäuse, also in warmen, windarmen Sommernächten, senken die Verluste um große Anteile bei geringem Ertragsverlust. Kamerasysteme erkennen anfliegende Greifvögel und stoppen den Rotor automatisch, und schwarze Rotorblätter sollen die Sichtbarkeit verbessern, was in Versuchen in Norwegen vielversprechende Ergebnisse brachte.
+
+  Zugleich ordnen Forscher die Zahlen ein. Straßenverkehr, Glasscheiben, Hauskatzen und Stromleitungen töten ein Vielfaches an Vögeln, und der Klimawandel bedroht ganze Arten. Dennoch gilt der Vogelschutz als wichtiger Prüfstein, weil er zeigt, ob der Ausbau der erneuerbaren Energien und der Artenschutz sich vereinbaren lassen.
+
+  ## Akzeptanz und Bürgerwindparks
+
+  Windkraftanlagen sind weithin sichtbar, hörbar und verändern vertraute Landschaften. Das führt vor Ort immer wieder zu Konflikten, auch bei Menschen, die den Ausbau der erneuerbaren Energien grundsätzlich befürworten. Anwohner klagen über Lärm, Schattenwurf, die nächtliche Befeuerung mit roten Warnlichtern und den Verlust des Ausblicks. Eine Rolle spielt auch das Gefühl, dass Entscheidungen über die Köpfe der Betroffenen hinweg gefällt werden und der Gewinn anderswo landet.
+
+  Als Antwort auf diese Konflikte haben sich Bürgerwindparks entwickelt, an denen Anwohner als Gesellschafter oder Genossen beteiligt sind. Sie investieren selbst, erhalten eine Rendite und haben Mitspracherecht bei Standort und Betrieb. Studien zeigen, dass die Zustimmung deutlich höher ausfällt, wenn die Menschen vor Ort finanziell profitieren und von Beginn an in die Planung einbezogen werden. Der Bürgerwindpark Heidmoor im Landkreis Ostenfeld, der 2011 von dreihundertzwanzig Einwohnern der Gemeinde getragen wurde, zahlt seitdem eine jährliche Dividende von etwa vier Prozent und finanziert aus einem Teil des Gewinns den örtlichen Kindergarten.
+
+  Neben der Beteiligung zählt die Information. Viele Betreiber laden vor Baubeginn zu Bürgerversammlungen ein, zeigen Visualisierungen der geplanten Anlagen aus verschiedenen Blickwinkeln und stellen Schallprognosen vor. Lärmmessungen nach der Inbetriebnahme prüfen, ob die Zusagen eingehalten werden. Wo das gelingt, verlieren viele Vorbehalte an Gewicht; wo es misslingt, wächst das Misstrauen, und aus einem technischen Streit wird ein Streit um Vertrauen.
+
+  Auch gesetzliche Regelungen versuchen, die Teilhabe zu fördern. Betreiber müssen in einigen Ländern Gemeinden an den Erträgen beteiligen, und Verfahren zur Bürgerbeteiligung sind vorgeschrieben. Gleichwohl bleibt die Genehmigung langwierig; von der ersten Idee bis zur Inbetriebnahme einer Anlage vergehen im Mittel vier bis sechs Jahre, und rund ein Drittel der Verfahren endet vor Gericht. Das zeigt, wie sehr die Windkraft nicht nur eine technische, sondern auch eine gesellschaftliche Aufgabe ist.
+topics:
+  - label: wind power
+    kind: main
+    aliases: [Windkraft, Windenergie, wind energy, wind turbines]
+  - label: offshore wind
+    kind: side
+    section: Offshore-Windparks
+    aliases: [Offshore-Windpark, Windpark auf See, offshore wind farm, marine energy]
+  - label: grid integration
+    kind: side
+    section: Netzanbindung und Speicherung
+    aliases: [Stromnetz, Energiespeicher, power grid, energy storage]
+  - label: bird protection
+    kind: side
+    section: Windkraft und Vogelschutz
+    aliases: [Vogelschutz, Fledermäuse, bird conservation, wildlife impact]
+  - label: community wind
+    kind: side
+    section: Akzeptanz und Bürgerwindparks
+    aliases: [Bürgerwindpark, Akzeptanz, community ownership, public acceptance]
+  - label: painting
+    kind: mention
+    section: Geschichte
+    aliases: [Malerei, Gemälde, painter, paintings]
+  - label: radio
+    kind: mention
+    section: Standortwahl und Windmessung
+    aliases: [Radiosender, Rundfunk, radio station, broadcasting]

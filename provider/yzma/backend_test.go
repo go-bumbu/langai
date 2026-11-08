@@ -58,6 +58,7 @@ type fakeAPI struct {
 	// backtraceAtLoad is GGML_NO_BACKTRACE as load saw it.
 	backtraceAtLoad string
 	calls           []fakeCall
+	devs            []device // what devices reports
 }
 
 // verify the fake actually satisfies the interface
@@ -123,8 +124,13 @@ func (f *fakeAPI) version() string {
 	return f.reported
 }
 
-func (f *fakeAPI) loadModel(path string) (uintptr, error) {
-	f.record("loadModel", path)
+func (f *fakeAPI) devices() []device {
+	f.record("devices")
+	return f.devs
+}
+
+func (f *fakeAPI) loadModel(path string, gpuLayers int32) (uintptr, error) {
+	f.record("loadModel", path, gpuLayers)
 	if f.loadModelErr != nil {
 		return 0, f.loadModelErr
 	}
@@ -185,7 +191,7 @@ func (f *fakeAPI) embeddings(ctx uintptr, n int32) ([]float32, error) {
 // does.
 func openFake(t *testing.T, f *fakeAPI) *llamaBackend {
 	t.Helper()
-	b, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, nil)
+	b, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, AccelCPU, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +293,7 @@ func TestOpenLlama_StopsAtAFailedLoad(t *testing.T) {
 	t.Run("libraries", func(t *testing.T) {
 		f := newFakeAPI()
 		f.loadErr = boom
-		if _, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, nil); !errors.Is(err, boom) {
+		if _, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, AccelCPU, 0, nil); !errors.Is(err, boom) {
 			t.Fatalf("err = %v, want the load error", err)
 		}
 		if got := strings.Join(f.names(), ","); got != "load" {
@@ -297,7 +303,7 @@ func TestOpenLlama_StopsAtAFailedLoad(t *testing.T) {
 	t.Run("model", func(t *testing.T) {
 		f := newFakeAPI()
 		f.loadModelErr = boom
-		_, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, nil)
+		_, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, AccelCPU, 0, nil)
 		if !errors.Is(err, boom) || !strings.Contains(err.Error(), testModelPath) {
 			t.Fatalf("err = %v, want the load error naming %s", err, testModelPath)
 		}
@@ -313,7 +319,7 @@ func TestOpenLlama_StopsAtAFailedLoad(t *testing.T) {
 func TestOpenLlama_RejectsModelWithoutTrainingContext(t *testing.T) {
 	f := newFakeAPI()
 	f.trainCtx = 0
-	if _, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, nil); err == nil {
+	if _, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, AccelCPU, 0, nil); err == nil {
 		t.Fatal("a model without a training context length was accepted")
 	}
 	if args := f.only(t, "freeModel"); args[0] != fakeModel {
@@ -328,7 +334,7 @@ func TestOpenLlama_FreesModelWhenContextFails(t *testing.T) {
 	boom := errors.New("cannot allocate the compute buffer")
 	f := newFakeAPI()
 	f.newContextErr = boom
-	_, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, nil)
+	_, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, AccelCPU, 0, nil)
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the context error", err)
 	}
@@ -352,7 +358,7 @@ func TestOpenLlama_LimitIsMinOfGrantedAndTrain(t *testing.T) {
 		f := newFakeAPI()
 		f.trainCtx = 512
 		f.grantedLimit = c.granted
-		b, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, nil)
+		b, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, AccelCPU, 0, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -371,7 +377,7 @@ func TestOpenLlama_LimitIsMinOfGrantedAndTrain(t *testing.T) {
 func TestOpenLlama_RejectsZeroLimit(t *testing.T) {
 	f := newFakeAPI()
 	f.grantedLimit = 0
-	if _, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, nil); err == nil {
+	if _, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, 0, AccelCPU, 0, nil); err == nil {
 		t.Fatal("a context granting a 0-token batch was accepted")
 	}
 	if args := f.only(t, "freeContext"); args[0] != fakeCtx {
@@ -502,7 +508,7 @@ func TestNew_LoadsThroughTheAPI(t *testing.T) {
 	_, libAsset := serve(t, tarGz(t, "llama-b11429", releaseLibs()))
 	_, modelAsset := serve(t, []byte("GGUF fake model"))
 	plat := platform()
-	origLib, hadLib := libAssets[plat]
+	origLib, hadLib := libAssets[plat+"/cpu"]
 	origModel := defaultModelAsset
 	origAPI, origLibs := api, libs
 	f := newFakeAPI()
@@ -511,12 +517,13 @@ func TestNew_LoadsThroughTheAPI(t *testing.T) {
 		f.buf[i] = 1
 	}
 	offline(t)
-	libAssets[plat] = libAsset
+	cpuOnly(t)
+	libAssets[plat+"/cpu"] = libAsset
 	defaultModelAsset = modelAsset
 	api, libs = f, &runtimeLoader{}
 	t.Cleanup(func() {
 		if hadLib {
-			libAssets[plat] = origLib
+			libAssets[plat+"/cpu"] = origLib
 		} else {
 			delete(libAssets, plat)
 		}
@@ -613,7 +620,7 @@ func TestOpenLlama_CapsContextAtMaxTokens(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFakeAPI()
 			f.trainCtx, f.grantedLimit = c.trainCtx, int(c.trainCtx)
-			b, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, c.maxTokens, nil)
+			b, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, PoolingMean, c.maxTokens, AccelCPU, 0, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -633,7 +640,7 @@ func TestOpenLlama_CapsContextAtMaxTokens(t *testing.T) {
 func TestOpenLlama_PassesPoolingAndRefusesUnknown(t *testing.T) {
 	for _, p := range []Pooling{PoolingMean, PoolingCLS, PoolingLast} {
 		f := newFakeAPI()
-		if _, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, p, 0, nil); err != nil {
+		if _, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, p, 0, AccelCPU, 0, nil); err != nil {
 			t.Fatal(err)
 		}
 		if args := f.only(t, "newContext"); args[3] != p {
@@ -641,7 +648,7 @@ func TestOpenLlama_PassesPoolingAndRefusesUnknown(t *testing.T) {
 		}
 	}
 	f := newFakeAPI()
-	_, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, Pooling("average"), 0, nil)
+	_, err := openLlama(f, &runtimeLoader{}, testLibDir, testModelPath, 2, Pooling("average"), 0, AccelCPU, 0, nil)
 	if err == nil || !strings.Contains(err.Error(), `"average"`) || !strings.Contains(err.Error(), "mean") {
 		t.Fatalf("err = %v, want a refusal naming the value and the accepted ones", err)
 	}
@@ -675,13 +682,13 @@ func fakeRuntime(t *testing.T, f *fakeAPI, tmp string) Runtime {
 	t.Helper()
 	_, libAsset := serve(t, tarGz(t, "llama-b11429", releaseLibs()))
 	plat := platform()
-	origLib, hadLib := libAssets[plat]
+	origLib, hadLib := libAssets[plat+"/cpu"]
 	origAPI, origLibs := api, libs
-	libAssets[plat] = libAsset
+	libAssets[plat+"/cpu"] = libAsset
 	api, libs = f, &runtimeLoader{}
 	t.Cleanup(func() {
 		if hadLib {
-			libAssets[plat] = origLib
+			libAssets[plat+"/cpu"] = origLib
 		} else {
 			delete(libAssets, plat)
 		}

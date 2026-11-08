@@ -21,12 +21,12 @@ const (
 )
 
 // parseTags reads the model's reply as a list of tag names: one per line, or
-// several separated by commas or semicolons, with list numbers, bullets,
-// hashes, quotes and trailing punctuation removed. A line ending in a colon is
-// a heading ("Here are the tags:") and is skipped, as is any item that is too
-// long to be a tag. Names that differ only in case are one tag, the first
-// spelling wins, and at most limit are returned, in reply order.
-func parseTags(answer string, limit int) []string {
+// several separated by commas or semicolons, each cleaned by clean (cleanTag,
+// or cleanPath for tree tags), which drops an item that is not a tag. A line
+// ending in a colon is a heading ("Here are the tags:") and is skipped. Names
+// that differ only in case are one tag, the first spelling wins, and at most
+// limit are returned, in reply order.
+func parseTags(answer string, limit int, clean func(string) string) []string {
 	var names []string
 	seen := make(map[string]bool)
 	for _, line := range strings.Split(answer, "\n") {
@@ -34,7 +34,7 @@ func parseTags(answer string, limit int) []string {
 			continue
 		}
 		for _, item := range strings.FieldsFunc(line, func(r rune) bool { return r == ',' || r == ';' }) {
-			name := cleanTag(item)
+			name := clean(item)
 			key := strings.ToLower(name)
 			if name == "" || seen[key] {
 				continue
@@ -59,6 +59,33 @@ func cleanTag(s string) string {
 		return ""
 	}
 	return name
+}
+
+// cleanPath returns the tree tag s holds, its levels joined by " / ", or ""
+// when it holds none. Levels are split at "/", ">" and "›", which models use
+// for paths, and each is cleaned as a tag (see cleanTag) after the list marks
+// of the whole line are gone; blank levels are dropped, and a path deeper than
+// MaxTreeLevels is cut to it. A level that is too long to be a tag drops the
+// whole path, which is the model explaining itself.
+func cleanPath(s string) string {
+	s = strings.TrimLeft(strings.TrimSpace(s), leadingMarks)
+	s = strings.TrimLeft(trimListNumber(s), leadingMarks)
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '/' || r == '>' || r == '›' })
+	var levels []string
+	for _, p := range parts {
+		if strings.Trim(p, trailingMarks) == "" {
+			continue
+		}
+		level := cleanTag(p)
+		if level == "" {
+			return ""
+		}
+		levels = append(levels, level)
+	}
+	if len(levels) > MaxTreeLevels {
+		levels = levels[:MaxTreeLevels]
+	}
+	return strings.Join(levels, " / ")
 }
 
 // trimListNumber removes a list number such as "1. " or "2) " from the front

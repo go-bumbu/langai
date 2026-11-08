@@ -1,8 +1,10 @@
 package vector
 
 import (
+	"cmp"
 	"context"
 	"math"
+	"slices"
 	"sort"
 	"sync"
 )
@@ -46,6 +48,22 @@ func (s *MemStore) ContentHash(_ context.Context, index, partition, collection, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.docs[memKey{index, partition, collection, docID}].hash, nil
+}
+
+// Chunks implements Store; the vectors are copies.
+func (s *MemStore) Chunks(_ context.Context, index, partition, collection, docID string) ([]Chunk, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	doc, ok := s.docs[memKey{index, partition, collection, docID}]
+	if !ok || len(doc.chunks) == 0 {
+		return nil, nil
+	}
+	out := make([]Chunk, len(doc.chunks))
+	for i, c := range doc.chunks {
+		out[i] = Chunk{Seq: c.Seq, Text: c.Text, Vector: slices.Clone(c.Vector)}
+	}
+	slices.SortStableFunc(out, func(a, b Chunk) int { return cmp.Compare(a.Seq, b.Seq) })
+	return out, nil
 }
 
 // Search implements Store.

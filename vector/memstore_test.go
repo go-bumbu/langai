@@ -12,6 +12,35 @@ func axis(dims, i int) []float32 {
 	return v
 }
 
+func TestMemStore_ChunksReturnsStoredVectorsBySeq(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemStore()
+	if err := s.Upsert(ctx, "i", "p", "c", "doc", "h", []Chunk{
+		{Seq: 4000, Text: "b", Vector: axis(3, 1)},
+		{Seq: 0, Text: "a", Vector: axis(3, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Chunks(ctx, "i", "p", "c", "doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Seq != 0 || got[0].Text != "a" || got[0].Vector[0] != 1 || got[1].Seq != 4000 || got[1].Vector[1] != 1 {
+		t.Fatalf("chunks = %+v", got)
+	}
+	// a copy: changing it leaves the store alone
+	got[0].Vector[0] = 9
+	again, _ := s.Chunks(ctx, "i", "p", "c", "doc")
+	if again[0].Vector[0] != 1 {
+		t.Error("Chunks handed out the stored slice")
+	}
+	for _, k := range [][4]string{{"other", "p", "c", "doc"}, {"i", "x", "c", "doc"}, {"i", "p", "c", "missing"}} {
+		if got, err := s.Chunks(ctx, k[0], k[1], k[2], k[3]); err != nil || got != nil {
+			t.Errorf("Chunks%v = %v, %v; want nothing", k, got, err)
+		}
+	}
+}
+
 func TestMemStore_IndexIsolation(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()

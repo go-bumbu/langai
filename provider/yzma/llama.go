@@ -28,7 +28,8 @@ func (ffiAPI) load(dir string, logger *slog.Logger) error {
 	if err := llama.Load(dir); err != nil {
 		return fmt.Errorf("load llama.cpp libraries from %s: %w (they need libgomp1 and libstdc++6 installed; libffi8 is required by the Go bindings)", dir, err)
 	}
-	llama.LogSet(logCallback(logger))
+	llamaLogCallback = logCallback(logger)
+	llama.LogSet(llamaLogCallback)
 	if err := llama.Init(); err != nil {
 		return fmt.Errorf("init llama.cpp backends from %s: %w", dir, err)
 	}
@@ -37,8 +38,29 @@ func (ffiAPI) load(dir string, logger *slog.Logger) error {
 
 func (ffiAPI) version() string { return llama.Version() }
 
-func (ffiAPI) loadModel(path string) (uintptr, error) {
-	model, err := llama.ModelLoadFromFile(path, llama.ModelDefaultParams())
+func (ffiAPI) devices() []device {
+	n := llama.GGMLBackendDeviceCount()
+	out := make([]device, 0, n)
+	for i := range n {
+		dev := llama.GGMLBackendDeviceGet(i)
+		if dev == 0 {
+			continue
+		}
+		t := llama.GGMLBackendDevType(dev)
+		out = append(out, device{
+			name:        llama.GGMLBackendDeviceName(dev),
+			backend:     llama.GGMLBackendRegName(llama.GGMLBackendDeviceBackendReg(dev)),
+			description: llama.GGMLBackendDeviceDescription(dev),
+			gpu:         t == llama.GGMLBackendDeviceTypeGPU || t == llama.GGMLBackendDeviceTypeIGPU,
+		})
+	}
+	return out
+}
+
+func (ffiAPI) loadModel(path string, gpuLayers int32) (uintptr, error) {
+	p := llama.ModelDefaultParams()
+	p.NGpuLayers = gpuLayers
+	model, err := llama.ModelLoadFromFile(path, p)
 	if err != nil {
 		return 0, err
 	}
@@ -210,6 +232,20 @@ func (ffiAPI) tokenText(model uintptr, token int32) []byte {
 	return buf[:n]
 }
 
+// llamaLogCallback is the callback load installed for llama.cpp's log, which
+// libmtmd gets too when it is loaded later.
+var llamaLogCallback uintptr
+
+// expectedWarning reports whether a llama.cpp warning describes what this
+// package does on purpose, so it is dropped rather than logged once per
+// input. The Vision embedder feeds each input through libmtmd's helper,
+// which marks only the last token as an output, and the embedding context
+// then marks every token itself and says so; llama.cpp's own server logs
+// the same line on every embedding request.
+func expectedWarning(msg string) bool {
+	return strings.Contains(msg, "embeddings required but some input tokens were not marked as outputs")
+}
+
 // logCallback forwards llama.cpp warnings and errors to logger. Everything
 // else (progress, model metadata dumps) is dropped: llama.cpp is chatty, and
 // the lines an operator needs are the ones explaining a failed load, which
@@ -223,7 +259,7 @@ func logCallback(logger *slog.Logger) uintptr {
 			return 0
 		}
 		msg := strings.TrimSpace(utils.BytePtrToString(text))
-		if msg == "" {
+		if msg == "" || expectedWarning(msg) {
 			return 0
 		}
 		switch llama.LogLevel(level) {

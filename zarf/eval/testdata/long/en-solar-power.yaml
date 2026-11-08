@@ -1,0 +1,111 @@
+id: en-solar-power
+lang: en
+title: Solar power
+text: |
+  Solar power is the conversion of sunlight into useful energy, most often electricity. Sunlight reaches the surface of the Earth at a rate that, over a single hour, exceeds the energy that humanity uses in a year, and it arrives without fuel, smoke or moving parts at the point of collection. Two broad technologies turn it into power. Photovoltaic panels convert light directly into an electric current, while thermal systems use mirrors or lenses to concentrate heat, which then raises steam and drives a turbine. Of the two, photovoltaics have grown far faster, and they are now among the cheapest ways of generating new electricity in many countries.
+
+  The strengths of solar power are easy to state. The resource is free and spread across the world, the equipment lasts for decades with little maintenance, and a panel can be fitted to a roof, a field, a lake surface or a carport. The weaknesses are equally clear. The sun does not shine at night, its strength varies with the weather and the season, and the electricity produced must be used, stored or sent elsewhere at the moment it appears. Much of the modern history of solar power is the story of finding ways to manage these limits.
+
+  ## Early development
+
+  The observation that light could produce an electric effect in certain materials dates back to the nineteenth century, when experimenters noticed that a metal plate immersed in a conducting liquid gave a small current when exposed to light. For many decades the effect was a curiosity. Early cells made from selenium converted less than one per cent of the light they received, which was far too little to be of use for power, although they served as light meters for photographers.
+
+  A practical device came in the middle of the twentieth century, when engineers at a laboratory called the Tavistock Research Works found that a thin slice of treated silicon could turn about six per cent of sunlight into current. The first customers were not households but satellites, which needed a source of power that would work for years without refuelling. Space programmes paid high prices for the cells, and the orders helped manufacturers refine their methods.
+
+  Interest on the ground arrived after the oil price shocks of the nineteen seventies, when governments began to fund research and to offer subsidies for early adopters. Prices fell slowly at first. A panel that cost hundreds of times more than it does now was still bought by remote telecommunication stations, lighthouses and mountain huts, where the alternative was a diesel generator and a long supply route. The market grew in steps, each step bringing costs down and making the next step possible.
+
+  The nineteen nineties and the early years of this century brought mass production. Factories grew from a handful of workers making cells by hand into automated plants turning out millions of modules a year, and every doubling of the total installed capacity brought a steady fall in price, a pattern that analysts call a learning curve. Subsidy schemes in several countries created sudden booms, followed by painful busts when payments were cut, but each cycle left behind more factories, more trained installers and cheaper panels.
+
+  ## How photovoltaic cells work
+
+  A photovoltaic cell is a sandwich of semiconductor layers. The most common material is crystalline silicon, treated so that one layer has a surplus of electrons and the other a shortage. Where the two layers meet, an electric field forms. When a particle of light, called a photon, strikes the cell with enough energy, it knocks an electron loose, and the field pushes that electron towards a metal contact on the surface. Connect the contacts through a circuit and a current flows.
+
+  A single cell yields only about half a volt, so manufacturers join sixty to a hundred and twenty cells in series inside a glass-fronted panel, sealed against rain and dust. Panels are then wired into strings, and the direct current they produce passes through an inverter, which turns it into the alternating current used by the grid and by most appliances. Modern inverters also follow the point of maximum output as the light changes, a technique known as maximum power point tracking.
+
+  Efficiency measures the share of sunlight that becomes electricity. Mass-produced silicon panels reach around twenty to twenty-three per cent, and laboratory devices that stack several materials in layers have gone well beyond that. Heat is a problem, since a hot panel loses some of its output, and so is dirt, which blocks light. Even so, a good panel keeps most of its capacity for twenty-five years or more, losing less than one per cent a year.
+
+  ## Sunlight and geography
+
+  How much power a panel gives depends first on where it stands. The yearly sunshine on a square metre is highest in deserts and high plateaus, where skies are clear and the air is thin, and lowest in cloudy northern valleys. Yet the difference is smaller than many expect. A well-sited array in a grey, temperate country may produce half as much as one in a desert, which is still enough to make it worthwhile when equipment is cheap.
+
+  Tilt and direction matter too. In the northern hemisphere a panel facing south and tilted at roughly the angle of the latitude collects the most over a year, while a panel facing east or west gives less in total but spreads its output more evenly across the day, which can suit a household that uses power in the morning and evening. Snow slides off steep panels, but dust, pollen and bird droppings can cut output by several per cent unless the surface is washed by rain or by cleaning crews.
+
+  Planners rely on maps of solar irradiance, built from decades of satellite records and ground stations, to estimate the yield of a new site. Such maps allow investors to compare a hillside in the province of Kellmoor with a roof in a distant city before a single panel is ordered. Local weather is still unpredictable from year to year, and operators therefore budget for variation of five or ten per cent either side of the average.
+
+  ## Concentrated solar thermal
+
+  Concentrated solar thermal power takes a different route. Instead of converting light directly, it uses mirrors to focus the sun on a small receiver, where a fluid is heated to several hundred degrees. The hot fluid boils water, the steam spins a turbine, and a generator makes electricity, much as in a coal or gas plant, except that the fuel is a beam of light. Mirrors may be long troughs that follow the sun along one axis, or thousands of flat mirrors, called heliostats, that surround a central tower.
+
+  The great advantage of the thermal approach is that heat is easy to store. Tanks of molten salt, kept hot in insulated vessels, can hold energy for many hours, so that the turbine keeps running after sunset. The Marrowdale Tower plant, built on a dry plateau, was designed with enough salt to run for eleven hours, allowing it to supply the evening peak when demand is high and photovoltaic output has already fallen away.
+
+  The disadvantages are cost and place. Thermal plants need direct, unclouded sunshine, so they suit deserts and dry highlands, and they require large areas, water for cooling, and considerable capital. Falling photovoltaic prices have pushed many planned projects aside, and the surviving plants tend to be those that make a point of their storage. Engineers continue to study other uses for the technology, including supplying high-temperature heat for industry and for making cement or hydrogen.
+
+  ## Utility-scale solar farms
+
+  The largest photovoltaic installations are solar farms, often covering several square kilometres and holding millions of panels. Developers choose sites by looking for flat land, strong sunshine, easy access to a transmission line and few objections from neighbours. Panels are fixed to steel frames driven into the ground, and many farms use trackers, motorised mounts that turn the panels to follow the sun and increase output by a fifth or more.
+
+  Building a farm is a matter of months rather than years, which is one reason for the rapid growth of the industry. The land can be shared: sheep graze between the rows, and some projects plant wildflowers for bees. Floating arrays, laid on reservoirs, cut water loss from evaporation and benefit from the cooling effect of the water. Agrivoltaic systems raise the panels high enough for crops to grow beneath, and tests show that shade-loving plants can do well under them in hot climates.
+
+  Large farms bring their own problems. Output rises and falls together across a whole region, so a cloudy day can remove thousands of megawatts from the grid in minutes. Grid operators must keep other plants ready to fill the gap, and in some places solar plants are paused at midday because there is more power than customers can use. Such curtailment wastes energy and income, and it is one of the main reasons that attention has turned to storage.
+
+  ## Rooftop systems at home
+
+  Small systems on houses, shops and factories form the other main part of the market. A typical household array has between ten and twenty panels and meets a large share of the yearly use of electricity of an ordinary family. Installers visit the roof, check its angle and shade, and design a layout that fits the tiles, the inverter and the fuse board. Most of the work is done in a day or two.
+
+  Owners can use the power as it is made, and send the surplus to the grid. Payment for that surplus differs from place to place. Under net metering, each exported unit offsets a unit later drawn from the grid, while feed-in tariffs pay a fixed price for every unit exported. As more homes install panels, many utilities have reduced these payments, arguing that the grid still has to be maintained for all customers, including those who generate much of their own power.
+
+  The economics for a household depend on the cost of the system, the local price of electricity, the hours of sunshine and any grants or loans. In sunny regions the investment is usually repaid within six to ten years, after which the owner enjoys free electricity for another decade or more. Community schemes allow people who rent, or whose roofs are shaded, to buy a share in a shared array, and cooperatives in small towns have used this model to put panels on schools and village halls.
+
+  The racing driver Henrik Sallow once drove a solar-powered car across a desert as part of a charity event, an anecdote which is often repeated in books on the subject but which has little to do with the practical use of panels.
+
+  ## Storage and the grid
+
+  Because the sun does not follow demand, solar power is most useful when paired with storage. The commonest form is the lithium-ion battery, whose cost has fallen sharply, and which can be installed in a house, in a shipping container beside a solar farm, or in a large hall next to a substation. A battery charges when the sun is strong and prices are low, and gives the energy back in the evening when demand peaks.
+
+  Other methods work at larger scale. Pumped hydro stations lift water to a high reservoir with surplus power, then let it fall through turbines when electricity is needed. Compressed air in underground caverns, heated stones and flywheels have each been tried, and each fits a different time span, from seconds to seasons. For the longest gaps, such as a dark winter fortnight, hydrogen made by electrolysis is under study, though it loses a good deal of energy in conversion.
+
+  The grid itself must change as solar spreads. Lines built for a few large power stations now carry flows in both directions, and local networks must handle a high share of small producers. Smart meters, flexible prices, and rules that let households and businesses sell spare capacity are helping, and operators use forecasts of cloud cover to plan their reserves hours ahead. In the region of Ostermere, a virtual power plant joins several thousand home batteries and calls on them as one unit during peak periods.
+
+  ## Manufacturing and recycling
+
+  Most of the world's panels are made through a chain that starts with quartz sand. The sand is refined into polysilicon, melted and drawn into ingots, and then sliced into wafers thinner than a human hair. The wafers are doped, coated with an anti-reflective layer, printed with fine metal lines, assembled into modules and tested. The process is energy-hungry, but a panel typically repays the energy used to make it within one to two years, and goes on producing for decades.
+
+  The concentration of manufacturing in a few regions has raised questions of supply security and labour conditions, and several governments now offer incentives for producing cells and modules locally. Silver, used in the contacts, is a significant cost, and researchers are replacing it with copper where possible. Other materials, such as perovskites, promise cheap and efficient cells, but must overcome problems of durability before they can compete at scale.
+
+  Panels installed in the first great wave of the market are now reaching the end of their lives, and recycling has become a pressing task. A module is mostly glass, aluminium and silicon, along with small amounts of silver, copper and plastics. Specialised plants strip the frames, separate the glass, and recover the metals by chemical or thermal treatment. Rules in some regions oblige producers to pay for collection, while elsewhere old panels are still buried in landfill. A well-run recycling industry could supply a meaningful share of the materials for new modules within a generation. The playwright Pell Ardwick is reported to have written an entire comedy in a shed heated and lit by a handful of secondhand panels.
+
+  ## Outlook
+
+  Reaching high shares of solar will take patience as well as investment. Transmission lines take a decade to approve, workers must be trained to install and maintain equipment, and building codes must be updated so that fire fighters know how to treat a roof carrying live panels. Several countries have also begun to write standards for inverters, so that thousands of small systems can ride through a short fault on the grid instead of switching off all at once and deepening the problem.
+
+  Forecasts of solar power have been wrong in one direction for years: they underestimated its growth. Costs have fallen by about nine tenths in a decade, and in sunny regions new panels now produce electricity for less than the running costs of many existing fossil plants. The task in the coming years is less about generating power than about moving, storing and sharing it, and about building the wires, batteries and rules that let a grid with very high solar shares remain stable.
+
+  Environmental concerns remain, including the use of land, the mining of materials, and the disposal of old equipment, but most studies find that the life-cycle emissions of solar power are a small fraction of those of coal or gas. As societies seek to reduce their carbon output, the sun is likely to provide a growing part of the answer.
+topics:
+  - label: solar power
+    kind: main
+    aliases: [solar energy, photovoltaics, solar panels, renewable energy]
+  - label: solar thermal
+    kind: side
+    section: Concentrated solar thermal
+    aliases: [concentrated solar power, heliostats, molten salt, solar tower]
+  - label: rooftop solar
+    kind: side
+    section: Rooftop systems at home
+    aliases: [home solar, net metering, feed-in tariffs, residential solar]
+  - label: energy storage
+    kind: side
+    section: Storage and the grid
+    aliases: [batteries, grid storage, pumped hydro, smart grid]
+  - label: panel recycling
+    kind: side
+    section: Manufacturing and recycling
+    aliases: [solar manufacturing, recycling, polysilicon, end of life panels]
+  - label: solar car racing
+    kind: mention
+    section: Rooftop systems at home
+    aliases: [solar car, racing driver, desert race]
+  - label: playwright
+    kind: mention
+    section: Manufacturing and recycling
+    aliases: [comedy, theatre, writer]

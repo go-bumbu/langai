@@ -17,3 +17,9 @@ cover.html
 cover.out
 coverage.out
 .tokensave
+
+# the example service: sample media, index databases, thumbnail cache
+zarf/examples/data/
+
+# superpowers plans and design specs stay local
+docs/superpowers/

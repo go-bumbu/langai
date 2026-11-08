@@ -1,22 +1,20 @@
 package yzma
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/go-bumbu/langai/internal/fetch"
 )
 
 // Pinned artifacts. They belong to one yzma release: yzma's Go structs mirror
@@ -54,14 +52,12 @@ const (
 	// whole: the pinned one is 2.5 GB, which takes longer than downloadTimeout
 	// on a slow link.
 	completerDownloadTimeout = time.Hour
+	// userAgent names this package's downloads.
+	userAgent = "langai-semsearch"
 )
 
 // asset is one downloadable file with its expected digest.
-type asset struct {
-	URL    string
-	SHA256 string
-	Size   int64 // exact size when known, 0 to skip the check
-}
+type asset = fetch.Asset
 
 // defaultModelAsset is unsloth's Q8_0 GGUF conversion of DefaultModel, which
 // Google publishes under the Gemma Terms of Use.
@@ -80,21 +76,57 @@ var defaultCompleterAsset = asset{
 	Size:   2497281120,
 }
 
-// libAssets are the CPU builds of LibTag per GOOS/GOARCH. linux/amd64 is the
-// release target; linux/arm64 is pinned because its digest is published in
-// the same manifest. Other platforms install the libraries with the yzma CLI
-// into an operator-supplied LibDir (see Config.ManagedLibDir).
+// libAssets are the builds of LibTag per GOOS/GOARCH and backend (see
+// chooseBackend): the plain CPU build, and the builds that add one GPU
+// backend library to it (Vulkan, CUDA 13.4 with the runtime expected on the
+// host; the macOS build has Metal built in). linux/amd64 is the release
+// target; the others are pinned because their digests are published with
+// the same release. Other platforms install the libraries with the yzma CLI
+// into an operator-supplied LibDir (see Config.ManagedLibDir). The digests
+// are those of the ggml-org release assets, except linux/arm64/cpu, which
+// comes from the manifest yzma verifies against.
 var libAssets = map[string]asset{
-	"linux/amd64": {
+	"linux/amd64/cpu": {
 		URL:    "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-ubuntu-x64.tar.gz",
 		SHA256: "f6d25dde8f51133143d1453da4fd5f73b145127177612a283bf7995957af3392",
 		Size:   17693462,
 	},
-	"linux/arm64": {
+	"linux/amd64/vulkan": {
+		URL:    "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-ubuntu-vulkan-x64.tar.gz",
+		SHA256: "632c4e98feba2b94407a2130e3133e0c3aefb0ea1ab41337e926d8bfafdd0b74",
+		Size:   31636673,
+	},
+	"linux/amd64/cuda": {
+		URL:    "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-ubuntu-cuda-13.4-x64.tar.gz",
+		SHA256: "8082b7eaa74a714c9fecca19128f751c8e32da763ee8096b8ad1e824da7621d3",
+		Size:   152519318,
+	},
+	"linux/arm64/cpu": {
 		URL:    "https://github.com/hybridgroup/llama-cpp-builder/releases/download/v0.6.0/llama-v0.6.0-bin-ubuntu-cpu-arm64.tar.gz",
 		SHA256: "296e1cac3c68912c8d77bbaea9a51b2c19aecf67173b7d2d1ff52d6ab4c5d8de",
 		Size:   8759371,
 	},
+	"linux/arm64/vulkan": {
+		URL:    "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-ubuntu-vulkan-arm64.tar.gz",
+		SHA256: "702d99c4219b4314cc6d3b10fb41ae96cbfc68226305c2681269dfb51487af34",
+		Size:   24845090,
+	},
+	"darwin/arm64/metal": {
+		URL:    "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-macos-arm64.tar.gz",
+		SHA256: "740288ec6887be94280a5dfa25b5e23a78285cab104519e6c7e218904ee82459",
+		Size:   11971406,
+	},
+}
+
+// libRecordFile is written into a managed LibDir with the tag and backend
+// installed there, so a later request for a GPU build replaces a CPU
+// install (the GPU builds are supersets, the other way round is a no-op).
+const libRecordFile = "langai-libs.json"
+
+// libRecord is what libRecordFile holds.
+type libRecord struct {
+	Tag     string `json:"tag"`
+	Backend string `json:"backend"`
 }
 
 // httpClient is the client downloads go through. The default client honours
@@ -133,27 +165,30 @@ func ensureModelFile(ctx context.Context, spec ModelSpec, logger *slog.Logger) e
 	return nil
 }
 
-// ensureLibs makes sure libDir holds the llama.cpp libraries. A managed
-// directory (owned by this package) is filled from libAssets when empty, and
-// the download and install are logged to logger; an operator directory is
-// only checked, never written to.
-func ensureLibs(ctx context.Context, libDir string, managed bool, logger *slog.Logger) error {
-	return ensureLibsFor(ctx, platform(), libDir, managed, logger)
+// ensureLibs makes sure libDir holds the llama.cpp libraries of the given
+// build (see chooseBackend). A managed directory (owned by this package) is
+// filled from libAssets when empty or when it holds the CPU build and a GPU
+// build is wanted, and the download and install are logged to logger; an
+// operator directory is only checked, never written to.
+func ensureLibs(ctx context.Context, libDir string, managed bool, b build, logger *slog.Logger) error {
+	return ensureLibsFor(ctx, platform(), libDir, managed, b, logger)
 }
 
-func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, logger *slog.Logger) error {
+func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, b build, logger *slog.Logger) error {
 	if _, err := os.Stat(filepath.Join(libDir, libFile())); err == nil {
-		if managed {
+		if !managed {
+			return checkInstallRecord(libDir)
+		}
+		if !needsReinstall(libDir, b) {
 			return nil
 		}
-		return checkInstallRecord(libDir)
-	}
-	if !managed {
+		logger.Info("replacing llama.cpp "+LibTag+" with its "+b+" build", logComponent, slog.String("dir", libDir))
+	} else if !managed {
 		return fmt.Errorf("no %s in %s: install llama.cpp build %s there with `yzma install --lib %s` (yzma %s installs it by default), or use a managed LibDir, which gets the pinned build downloaded", libFile(), libDir, LibTag, libDir, pinnedYzma)
 	}
-	a, ok := libAssets[plat]
+	a, ok := libAssets[plat+"/"+b]
 	if !ok {
-		return fmt.Errorf("no pinned llama.cpp build for %s: use an unmanaged LibDir populated with `yzma install`", plat)
+		return fmt.Errorf("no pinned llama.cpp %s build for %s: use an unmanaged LibDir populated with `yzma install`", b, plat)
 	}
 	parent := filepath.Dir(libDir)
 	if err := os.MkdirAll(parent, 0o750); err != nil {
@@ -178,14 +213,40 @@ func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, logge
 	if err := extractLibs(archive, libs); err != nil {
 		return fmt.Errorf("extract llama.cpp %s: %w", LibTag, err)
 	}
+	rec, err := json.Marshal(libRecord{Tag: LibTag, Backend: b})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(libs, libRecordFile), rec, 0o600); err != nil {
+		return err
+	}
 	if err := os.RemoveAll(libDir); err != nil {
 		return err
 	}
 	if err := os.Rename(libs, libDir); err != nil {
 		return err
 	}
-	logger.Info("installed llama.cpp "+LibTag, logComponent, slog.String("dir", libDir))
+	logger.Info("installed llama.cpp "+LibTag, logComponent, slog.String("dir", libDir), slog.String("build", b))
 	return nil
+}
+
+// needsReinstall reports whether a managed libDir must be replaced to serve
+// build b: it holds the CPU build (or predates the record and so is one)
+// and b is a GPU build. A GPU build also serves the CPU, so the reverse
+// request keeps what is there.
+func needsReinstall(libDir string, b build) bool {
+	if b == "cpu" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(libDir, libRecordFile)) //nolint:gosec // libDir is this package's own directory and libRecordFile a fixed name; the content is only parsed as JSON
+	if err != nil {
+		return true
+	}
+	var rec libRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return true
+	}
+	return rec.Backend != b
 }
 
 // installRecord is the subset of `yzma install`'s record this package reads.
@@ -217,30 +278,13 @@ func checkInstallRecord(libDir string) error {
 }
 
 // fetchFile downloads a to dest, verifying size and SHA-256 before the file
-// appears under its final name: the bytes go to a temp file in the same
-// directory and are renamed into place only once they check out. Since a
-// download can take minutes, it is logged (what names it) before it starts.
-// The download is capped at maxDownloadBytes, or at the asset's exact size when
-// that is larger.
+// appears under its final name (see fetch.File). Since a download can take
+// minutes, it is logged (what names it) before it starts. The download is
+// capped at maxDownloadBytes, or at the asset's exact size when that is
+// larger.
 func fetchFile(ctx context.Context, what string, a asset, dest string, logger *slog.Logger) error {
 	logger.Info("downloading "+what, logComponent, slog.String("url", a.URL), slog.Int64("size", a.Size), slog.String("sha256", a.SHA256), slog.String("dest", dest))
-	tmp, sum, n, err := downloadTemp(ctx, a.URL, dest, max(maxDownloadBytes, a.Size))
-	if err != nil {
-		return err
-	}
-	if a.Size != 0 && n != a.Size {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("%s: got %d bytes, expected %d", a.URL, n, a.Size)
-	}
-	if sum != a.SHA256 {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("%s: sha256 %s, expected %s", a.URL, sum, a.SHA256)
-	}
-	if err = os.Rename(tmp, dest); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return fetch.File(ctx, httpClient, userAgent, a, dest, maxDownloadBytes)
 }
 
 // Download fetches url into dest with nothing to verify it against and
@@ -251,149 +295,35 @@ func Download(ctx context.Context, url, dest string, logger *slog.Logger) (strin
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
-		return "", 0, err
-	}
 	logger.Info("downloading unpinned file", logComponent, slog.String("url", url), slog.String("dest", dest))
-	tmp, sum, n, err := downloadTemp(ctx, url, dest, maxDownloadBytes)
-	if err != nil {
-		return "", 0, err
-	}
-	if err := os.Rename(tmp, dest); err != nil {
-		_ = os.Remove(tmp)
-		return "", 0, err
-	}
-	return sum, n, nil
-}
-
-// downloadTemp streams url into a closed temp file next to dest, capped at
-// limit bytes, and returns the temp path with the SHA-256 and size of its
-// content. On any error nothing is left behind.
-func downloadTemp(ctx context.Context, url, dest string, limit int64) (tmpPath, sum string, n int64, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", "", 0, err
-	}
-	req.Header.Set("User-Agent", "langai-semsearch")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", "", 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", "", 0, fmt.Errorf("GET %s: %s", url, resp.Status)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".download-*")
-	if err != nil {
-		return "", "", 0, err
-	}
-	defer func() {
-		_ = tmp.Close()
-		if err != nil {
-			_ = os.Remove(tmp.Name())
-		}
-	}()
-	h := sha256.New()
-	n, err = io.Copy(io.MultiWriter(tmp, h), io.LimitReader(resp.Body, limit+1))
-	if err != nil {
-		return "", "", 0, err
-	}
-	if n > limit {
-		err = fmt.Errorf("%s exceeds the %d byte download cap", url, limit)
-		return "", "", 0, err
-	}
-	if err = tmp.Close(); err != nil {
-		return "", "", 0, err
-	}
-	return tmp.Name(), hex.EncodeToString(h.Sum(nil)), n, nil
+	return fetch.Unpinned(ctx, httpClient, userAgent, url, dest, maxDownloadBytes)
 }
 
 // wantLib reports whether an archive entry (by base name) is one of the
-// runtime libraries: libggml*.so* (base, ggml, every CPU variant, any GPU
-// backend) and libllama.so*. The tools' impl libraries, libmtmd and the RPC
-// backend are skipped.
+// runtime libraries: libggml* (base, ggml, every CPU variant, any GPU
+// backend), libllama and libmtmd (the multimodal projector runtime the
+// Vision embedder drives), as .so or .dylib. The tools' impl libraries and
+// the RPC backend are skipped.
 func wantLib(name string) bool {
 	if strings.HasPrefix(name, "libggml-rpc") {
 		return false
 	}
-	if strings.HasPrefix(name, "libggml") || strings.HasPrefix(name, "libllama.so") {
-		return strings.Contains(name, ".so")
+	if strings.HasPrefix(name, "libggml") || strings.HasPrefix(name, "libllama.") || strings.HasPrefix(name, "libmtmd.") {
+		return strings.Contains(name, ".so") || strings.Contains(name, ".dylib")
 	}
 	return false
 }
 
 // extractLibs copies the runtime libraries out of a llama.cpp release
 // tarball into dir, flattened (release archives nest them under a
-// version-named directory). Symlinks are recreated only when they point at a
-// bare library name in the same directory; anything else is rejected rather
-// than written.
+// version-named directory), see fetch.ExtractTarGz.
 func extractLibs(archive, dir string) error {
-	f, err := os.Open(archive) //nolint:gosec // archive is the download this package just verified in its own staging directory, not a path taken from archive content
+	found, err := fetch.ExtractTarGz(archive, dir, func(p string) bool { return wantLib(path.Base(p)) }, maxDownloadBytes)
 	if err != nil {
 		return err
-	}
-	defer func() { _ = f.Close() }()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = gz.Close() }()
-	tr := tar.NewReader(gz)
-	found := 0
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		name := filepath.Base(hdr.Name)
-		if !wantLib(name) {
-			continue
-		}
-		dest := filepath.Join(dir, name)
-		switch hdr.Typeflag {
-		case tar.TypeReg:
-			if err := writeLibrary(dest, tr); err != nil {
-				return err
-			}
-		case tar.TypeSymlink:
-			target := hdr.Linkname
-			if target != filepath.Base(target) || !wantLib(target) {
-				return fmt.Errorf("refusing symlink %s -> %s", name, target)
-			}
-			if err := os.Symlink(target, dest); err != nil {
-				return err
-			}
-		default:
-			continue
-		}
-		found++
 	}
 	if found == 0 {
 		return fmt.Errorf("no llama.cpp libraries found in %s", archive)
-	}
-	return nil
-}
-
-// writeLibrary writes one extracted library, bounded by maxDownloadBytes.
-func writeLibrary(dest string, r io.Reader) (err error) {
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec // dest is a wantLib-filtered base name inside this package's staging directory, writes are capped by maxDownloadBytes, and shared libraries must be executable
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if cerr := out.Close(); err == nil {
-			err = cerr
-		}
-	}()
-	n, err := io.Copy(out, io.LimitReader(r, maxDownloadBytes+1))
-	if err != nil {
-		return err
-	}
-	if n > maxDownloadBytes {
-		return fmt.Errorf("%s exceeds the %d byte cap", dest, maxDownloadBytes)
 	}
 	return nil
 }

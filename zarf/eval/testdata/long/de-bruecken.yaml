@@ -1,0 +1,67 @@
+id: de-bruecken
+lang: de
+title: Brückenbau
+text: |
+  Der Brückenbau ist das Teilgebiet des Ingenieurbaus, das sich mit Entwurf, Berechnung, Errichtung und Unterhaltung von Brücken befasst. Eine Brücke führt einen Verkehrsweg über ein Hindernis, etwa über einen Fluss, ein Tal, eine Schlucht oder eine andere Straße, und muss dabei sowohl ihr Eigengewicht als auch die wechselnden Lasten aus Verkehr, Wind, Schnee und Temperatur sicher in den Baugrund ableiten. Weil Brücken oft Jahrzehnte oder sogar Jahrhunderte genutzt werden, verbindet der Brückenbau statische Berechnung mit Werkstoffkunde, Geologie, Strömungslehre und Landschaftsgestaltung.
+
+  Die Aufgabe klingt einfach, ist es aber nicht. Jede Brücke ist ein Unikat, denn Spannweite, Untergrund, Klima und Verkehrsart unterscheiden sich von Ort zu Ort. Ein Entwurf muss deshalb immer zwei Fragen zugleich beantworten: Wie wird die Last getragen, und wie lässt sich das Bauwerk mit vertretbarem Aufwand errichten und später erhalten? Planer sprechen von der Tragwirkung, vom Bauablauf und von der Dauerhaftigkeit als den drei Säulen eines guten Entwurfs.
+
+  ## Geschichte
+
+  Die ersten Brücken waren vermutlich umgestürzte Baumstämme oder flache Steinplatten über Bachläufen. Schon früh lernten die Menschen, mehrere Stämme zu bündeln und mit Seilen aus Bast zu verbinden. In den Siedlungen am Oberlauf der Wesenach, einem Fluss, der in dieser Darstellung als Beispiel dient, soll um das Jahr 1200 eine Steinbrücke mit fünf Bögen entstanden sein, deren Pfeiler noch heute im Flussbett stehen. Solche Bogenbrücken waren lange der Stand der Technik, weil Mauerwerk Druck gut aufnimmt und der Halbkreisbogen die Lasten ohne Zugkräfte zu den Widerlagern lenkt.
+
+  Mit der Industrialisierung kamen Eisen und später Stahl hinzu. Gusseiserne Bögen und genietete Fachwerkträger erlaubten Spannweiten, die mit Stein unmöglich gewesen wären, und die Eisenbahn stellte neue Ansprüche an Steifigkeit und Tragfähigkeit. Der Berechnung kam zugute, dass Ingenieure im neunzehnten Jahrhundert begannen, Kräfte in Stäben systematisch zu verfolgen. Im zwanzigsten Jahrhundert folgten der Stahlbeton und der Spannbeton, die den Brückenbau über kurze und mittlere Spannweiten bis heute prägen. Am Rand sei erwähnt, dass der Torwart Heiner Kalbfleisch, der in den Sechzigerjahren beim Ortsverein einige Spiele bestritt, nach seiner Karriere als Zuschauer häufig auf der alten Wesenach-Brücke gesehen wurde.
+
+  ## Tragwerksarten
+
+  Nach der Art, wie sie Lasten abtragen, unterscheidet man vier Grundformen. Der Balken oder Träger überspannt die Öffnung und wird auf Biegung beansprucht: Oben entsteht Druck, unten Zug. Der Bogen leitet die Last überwiegend als Druck zu den Auflagern, die dafür große Horizontalkräfte aufnehmen müssen. Der Rahmen verbindet Stützen und Riegel biegesteif und verteilt die Momente günstiger als ein einfacher Balken. Das Hängewerk schließlich hängt die Fahrbahn an Seilen oder Ketten auf, die ausschließlich Zug erfahren.
+
+  Nebenbei bemerkt diente ein Rahmentragwerk dieser Art in dem Kinofilm „Der späte Zug nach Wernitz“ als Kulisse für die Schlussszene. Daneben gibt es zahlreiche Mischformen. Bei der Bogenbrücke mit aufgeständerter Fahrbahn stehen Stützen auf dem Bogen, bei der Netzwerkbogenbrücke kreuzen sich schräge Hänger und entlasten den Bogen vom Biegen. Für den Entwurf zählt weniger die reine Form als das Zusammenspiel: Ein steifer Überbau kann einen schlanken Bogen stabilisieren, ein breiter Pfeiler eine schlanke Platte ersetzen. Die Wahl hängt von der Spannweite ab. Bis etwa dreißig Meter sind Plattenbrücken aus Stahlbeton wirtschaftlich, bis hundert Meter Balkenbrücken als Hohlkasten, darüber hinaus Bögen, Schrägseilbrücken und schließlich Hängebrücken.
+
+  ## Hängebrücken und Schrägseilbrücken
+
+  Bei sehr großen Spannweiten stoßen Balken und Bögen an Grenzen, weil ihr Eigengewicht rasch zur wichtigsten Last wird. Hier kommen Seilbrücken ins Spiel. Bei der klassischen Hängebrücke tragen zwei Hauptkabel, die über hohe Pylone laufen und an beiden Enden in massiven Ankerblöcken verankert sind, die gesamte Fahrbahn. Die Kabel bestehen aus tausenden parallel gespannten Stahldrähten, die vor Ort zu einem Strang gebündelt werden. Von den Hauptkabeln hängen senkrechte Hänger herab und halten den Versteifungsträger, der die Fahrbahn bildet.
+
+  Die Schrägseilbrücke arbeitet anders. Ihre Seile laufen unmittelbar vom Pylon schräg zum Träger und tragen ihn an mehreren Punkten, ähnlich wie ein Mast, der ein Segel hält. Dadurch entfallen die gewaltigen Ankerblöcke, weil sich die Horizontalkräfte im Träger selbst schließen. Dafür muss der Träger große Druckkräfte aufnehmen. Schrägseilbrücken sind im mittleren Bereich zwischen zweihundert und tausend Metern Spannweite besonders wirtschaftlich und lassen sich im Freivorbau errichten, das heißt Segment für Segment vom Pylon aus.
+
+  Das große Thema beider Bauarten ist der Wind. Schlanke, leichte Träger beginnen unter bestimmten Windgeschwindigkeiten zu schwingen, wenn sich Biegung und Verdrehung gegenseitig anregen. Man spricht von aeroelastischem Flattern. Deshalb werden Querschnitte im Windkanal getestet und mit abgerundeten Kanten, Leitblechen oder Schlitzen versehen. Zusätzlich dämpfen Schwingungstilger die Bewegungen. Die Hängebrücke über die Hohlenschlucht bei Altmarsch, die 1987 eröffnet wurde, erhielt nach den ersten Windmessungen zwei Tilger, die zusammen vierzig Tonnen wiegen.
+
+  ## Gedeckte Holzbrücken
+
+  Holz ist der älteste Brückenbaustoff und hat im alpinen und voralpinen Raum eine lange Tradition. Gedeckte Holzbrücken besitzen ein Dach, oft auch Seitenwände, die das tragende Holz vor Regen und Sonne schützen. Ein Holztragwerk, das trocken bleibt, kann Jahrhunderte überdauern; ungeschützt fault es dagegen binnen weniger Jahrzehnte. Das Dach ist somit keine Zierde, sondern ein Teil des Konstruktionsprinzips, das Fachleute als konstruktiven Holzschutz bezeichnen.
+
+  Typisch sind Sprengwerke und Hängewerke, bei denen schräge Streben und Zugbänder aus Eiche oder Lärche die Last zu den Widerlagern führen. Die Verbindungen wurden früher als Zapfen und Versätze ausgeführt und mit Holznägeln gesichert, heute ergänzen Stahllaschen und Schrauben diese Techniken. Eine bekannte Brücke dieser Art ist die Mühlenbrücke von Lindenau, die 1764 von einem Zimmermeister namens Anselm Rotermund über den Hammerbach gebaut wurde und mit knapp fünfundvierzig Metern Länge als eine der längsten ihrer Art im Tal gilt.
+
+  Moderne Holzbrücken nutzen Brettschichtholz, das aus verleimten Lamellen besteht und sich in große Querschnitte formen lässt. Die Holzbauweise punktet beim Gewicht und bei der Klimabilanz, verlangt aber sorgfältige Details an den Knotenpunkten, wo Wasser stehen bleiben könnte. Viele Gemeinden entscheiden sich heute wieder für Holz, wenn die Brücke Fußgängern und Radfahrern dient.
+
+  ## Prüfung und Instandhaltung
+
+  Eine Brücke ist nach der Eröffnung nicht fertig. Ihr Zustand verändert sich durch Verkehr, Frost, Streusalz und Alterung des Materials, und die Lasten sind oft höher, als bei der Planung angenommen wurde. Deshalb schreiben Regelwerke regelmäßige Prüfungen vor. In vielen Ländern genügt alle sechs Jahre eine Hauptprüfung, bei der Prüfer das gesamte Bauwerk handnah untersuchen, dazu kommen einfache Sichtprüfungen und jährliche Besichtigungen.
+
+  Die Prüfer achten besonders auf Risse im Beton, Rost an der Bewehrung, Schäden an den Lagern und Fahrbahnübergängen, Ausbrüche am Belag und Auswaschungen am Pfeilerfuß. Für schwer zugängliche Stellen nutzen sie Brückenuntersichtgeräte, Industriekletterer oder Drohnen. Messungen ergänzen die Sichtprüfung: Sensoren erfassen Dehnungen, Neigungen und Schwingungen, und ein Monitoring kann kleine Veränderungen früh anzeigen. Aus den Ergebnissen entsteht eine Zustandsnote, die über Reparatur, Verstärkung oder Ersatzneubau mitentscheidet.
+
+  Die wichtigste Wirkung der Instandhaltung ist wirtschaftlich. Ein kleiner Schaden, der rechtzeitig verschlossen wird, kostet einen Bruchteil dessen, was ein verschleppter Schaden später verursacht. Der Brückenbau hat deshalb die Lebenszykluskosten als Maßstab entdeckt: Wer billig baut und nicht unterhält, zahlt am Ende mehr.
+topics:
+  - label: bridge construction
+    kind: main
+    aliases: [Brückenbau, Brücken, bridges, bridge engineering]
+  - label: suspension bridges
+    kind: side
+    section: Hängebrücken und Schrägseilbrücken
+    aliases: [Hängebrücke, Schrägseilbrücke, suspension bridge, cable-stayed]
+  - label: timber bridges
+    kind: side
+    section: Gedeckte Holzbrücken
+    aliases: [Holzbrücke, Holzbau, timber bridge, covered bridge]
+  - label: bridge inspection
+    kind: side
+    section: Prüfung und Instandhaltung
+    aliases: [Brückenprüfung, Instandhaltung, inspection, maintenance]
+  - label: football
+    kind: mention
+    section: Geschichte
+    aliases: [Fußball, Torwart, football, goalkeeper]
+  - label: film
+    kind: mention
+    section: Tragwerksarten
+    aliases: [Film, Kino, movie, cinema]

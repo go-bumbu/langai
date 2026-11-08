@@ -1,16 +1,17 @@
 package tagging
 
 import (
+	"maps"
 	"math"
 	"math/rand"
 	"slices"
 	"testing"
 )
 
-// TestBlend_ShiftsFromNamePriorToMemberCentroid pins the smoothing contract:
+// TestBlend_ShiftsFromNamePriorToTheMembers pins the smoothing contract:
 // with k members' worth of smoothing, one member barely moves the vector off
-// the name prior, while many members pull it onto the centroid.
-func TestBlend_ShiftsFromNamePriorToMemberCentroid(t *testing.T) {
+// the name prior, while many members pull it onto them.
+func TestBlend_ShiftsFromNamePriorToTheMembers(t *testing.T) {
 	const k = 3.0
 	name := []float32{1, 0}
 	member := []float32{0, 1}
@@ -20,23 +21,23 @@ func TestBlend_ShiftsFromNamePriorToMemberCentroid(t *testing.T) {
 		t.Fatalf("with no members the blend must be the name prior, got %v", noMembers)
 	}
 
-	// n=1: centroid weight 1/(1+3) = 0.25, so the name still dominates
+	// n=1: members' weight 1/(1+3) = 0.25, so the name still dominates
 	one := blend(name, [][]float32{member}, k)
 	if one[0] <= one[1] {
 		t.Fatalf("one member should stay name-dominated, got %v", one)
 	}
-	// n=9: centroid weight 9/(9+3) = 0.75, so the centroid dominates
+	// n=9: members' weight 9/(9+3) = 0.75, so they dominate
 	many := make([][]float32, 9)
 	for i := range many {
 		many[i] = member
 	}
 	nine := blend(name, many, k)
 	if nine[1] <= nine[0] {
-		t.Fatalf("nine members should be centroid-dominated, got %v", nine)
+		t.Fatalf("nine members should dominate, got %v", nine)
 	}
-	// more members must move strictly further toward the centroid
+	// more members must move strictly further toward them
 	if nine[1] <= one[1] {
-		t.Fatalf("centroid weight did not grow with members: one=%v nine=%v", one, nine)
+		t.Fatalf("members' weight did not grow with them: one=%v nine=%v", one, nine)
 	}
 	for _, v := range [][]float32{noMembers, one, nine} {
 		if l := length(v); math.Abs(l-1) > 1e-6 {
@@ -52,8 +53,8 @@ func TestTagCutoff_NoMembersIsTheNameMinimum(t *testing.T) {
 }
 
 // Comparing a document against the blended vector with tagCutoff must decide
-// exactly like judging the name against nameMin and the members' centroid
-// against memberMin, mixed by the blend weight.
+// exactly like judging the name against nameMin and the mean of the cosines to
+// the members against memberMin, mixed by the blend weight.
 func TestTagCutoff_MatchesTheTwoScaleRule(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	const dims, k, a, b = 16, 3.0, 0.46, 0.70
@@ -65,7 +66,6 @@ func TestTagCutoff_MatchesTheTwoScaleRule(t *testing.T) {
 		}
 		vec := blend(name, members, k)
 		cut := tagCutoff(name, members, k, a, b)
-		c := centroid(members, dims)
 		w := float64(n) / (float64(n) + k)
 		// queries from far away to right on top of the tag, so both
 		// outcomes are exercised
@@ -77,7 +77,11 @@ func TestTagCutoff_MatchesTheTwoScaleRule(t *testing.T) {
 				mix[i] = beta*float64(vec[i]) + (1-beta)*float64(noise[i])
 			}
 			q := unitVec(mix...)
-			margin := (1-w)*(dot(q, name)-a) + w*(dot(q, c)-b)
+			var mean float64
+			for _, m := range members {
+				mean += dot(q, m) / float64(n)
+			}
+			margin := (1-w)*(dot(q, name)-a) + w*(mean-b)
 			if math.Abs(margin) < 1e-5 {
 				continue // float32 rounding decides the tie
 			}
@@ -100,10 +104,32 @@ func TestTagCutoff_ApproachesTheMemberMinimumWithManyMembers(t *testing.T) {
 	}
 }
 
-// TestTagCutoff_OpposedNameAndCentroidMatchNothing: a centroid pointing
-// exactly away from the name cancels it out at equal weights, and a blend of
-// nothing has no direction any document could score against.
-func TestTagCutoff_OpposedNameAndCentroidMatchNothing(t *testing.T) {
+// TestTagCutoff_MembersCountAsTheMeanOfTheirCosines: a document that is one of
+// two orthogonal members scores 1 against it and 0 against the other, a mean
+// of 0.5, below a member minimum of 0.6, though its cosine to the two
+// members' centroid is 0.71. With many members of each kind the cutoff is
+// all but the members' one, and the document stays below it: the mean, unlike
+// the centroid, is no closer to a member for there being more of them.
+func TestTagCutoff_MembersCountAsTheMeanOfTheirCosines(t *testing.T) {
+	a, b := unitVec(1, 0, 0), unitVec(0, 1, 0)
+	var members [][]float32
+	for range 500 {
+		members = append(members, a, b)
+	}
+	name := unitVec(0, 0, 1)
+	vec, cut := blend(name, members, 3), tagCutoff(name, members, 3, 0.46, 0.60)
+	if got := cosine(a, vec); got >= cut {
+		t.Fatalf("a member of two orthogonal kinds scores %.4f against cutoff %.4f, want below", got, cut)
+	}
+	if got := cosine(unitVec(1, 1, 0), vec); got < cut {
+		t.Fatalf("a document between both kinds scores %.4f against cutoff %.4f, want above", got, cut)
+	}
+}
+
+// TestTagCutoff_OpposedNameAndMembersMatchNothing: members pointing exactly
+// away from the name cancel it out at equal weights, and a blend of nothing
+// has no direction any document could score against.
+func TestTagCutoff_OpposedNameAndMembersMatchNothing(t *testing.T) {
 	members := [][]float32{unitVec(-1, 0), unitVec(-1, 0), unitVec(-1, 0)}
 	if got := tagCutoff(unitVec(1, 0), members, 3, 0.46, 0.70); !math.IsInf(got, 1) {
 		t.Fatalf("cutoff = %v, want +Inf", got)
@@ -130,26 +156,26 @@ func TestCosine_IsZeroForMismatchedOrZeroVectors(t *testing.T) {
 	}
 }
 
-// rank judges each tag against its own cutoff: a tag below its cutoff does not
-// hide the ones after it, a score equal to the cutoff qualifies, and nothing
-// limits how many tags come back. They come best score first and equal scores
-// by id, whatever order the tags were given in, and that order is left as it
-// was. A tag with no vector, or one built under another model, has nothing to
+// scoreVectors judges each tag against its own cutoff: a tag below its cutoff
+// does not hide the ones after it, a score equal to the cutoff qualifies, and
+// nothing limits how many tags are picked. Every tag with a vector is scored,
+// best score first and equal scores by id, whatever order the tags were given
+// in, and that order is left as it was. A tag with no vector has nothing to
 // compare and is skipped. It fails closed: no score reaches a NaN cutoff,
 // though every comparison with a NaN is false.
-func TestRank_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
+func TestScoreVectors_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
 	const dims = 4
 	q := unitVec(1, 0, 0, 0)
-	// tag is a tag of model "m" whose vector scores about score against q: the
-	// vector is a float32, so its exact cosine is a few 1e-8 off, which only a
-	// case sitting right on its cutoff would notice.
-	tag := func(id string, axis int, score, cutoff float64) TagRecord {
-		return TagRecord{ID: id, Vec: scoreVec(dims, axis, score), Cutoff: cutoff, Model: "m"}
+	// tag is a tag whose vector scores about score against q: the vector is a
+	// float32, so its exact cosine is a few 1e-8 off, which only a case
+	// sitting right on its cutoff would notice.
+	tag := func(id string, axis int, score, cutoff float64) TagVector {
+		return TagVector{ID: id, Vec: scoreVec(dims, axis, score), Cutoff: cutoff}
 	}
 	// atCutoff takes its own exact cosine for its cutoff, so its score equals it
 	atCutoff := tag("2", 2, 0.50, 0)
 	atCutoff.Cutoff = cosine(q, atCutoff.Vec)
-	ids := func(tags []TagRecord) []string {
+	ids := func(tags []TagVector) []string {
 		out := make([]string, len(tags))
 		for i, tg := range tags {
 			out[i] = tg.ID
@@ -157,43 +183,139 @@ func TestRank_JudgesEachTagAgainstItsOwnCutoff(t *testing.T) {
 		return out
 	}
 	for _, tc := range []struct {
-		name string
-		tags []TagRecord
-		want []string
+		name   string
+		tags   []TagVector
+		want   []string
+		scored int
 	}{
-		{"no tags", nil, nil},
+		{"no tags", nil, nil, 0},
 		{"a tag below its cutoff does not hide the ones after it",
-			[]TagRecord{tag("1", 1, 0.65, 0.70), tag("2", 2, 0.55, 0.50)}, []string{"2"}},
+			[]TagVector{tag("1", 1, 0.65, 0.70), tag("2", 2, 0.55, 0.50)}, []string{"2"}, 2},
 		{"a score equal to the cutoff qualifies",
-			[]TagRecord{atCutoff}, []string{"2"}},
+			[]TagVector{atCutoff}, []string{"2"}, 1},
 		{"no score reaches a NaN cutoff",
-			[]TagRecord{tag("8", 1, 1, math.NaN())}, nil},
+			[]TagVector{tag("8", 1, 1, math.NaN())}, nil, 1},
 		// its zero score would reach its cutoff of 0, were it not skipped
 		{"a tag without a vector is skipped",
-			[]TagRecord{{ID: "1", Cutoff: 0, Model: "m"}, tag("2", 2, 0.80, 0.46)}, []string{"2"}},
-		{"a tag built under another model is skipped",
-			[]TagRecord{{ID: "1", Vec: scoreVec(dims, 1, 0.90), Cutoff: 0.46, Model: "other"}, tag("2", 2, 0.80, 0.46)},
-			[]string{"2"}},
-		{"every tag that clears its cutoff is returned, best score first",
-			[]TagRecord{
+			[]TagVector{{ID: "1", Cutoff: 0}, tag("2", 2, 0.80, 0.46)}, []string{"2"}, 1},
+		{"every tag that clears its cutoff is picked, best score first",
+			[]TagVector{
 				tag("1", 1, 0.75, 0.46), tag("2", 2, 0.60, 0.46), tag("3", 3, 0.90, 0.46), tag("4", 1, 0.70, 0.46),
 				tag("5", 2, 0.85, 0.46), tag("6", 3, 0.65, 0.46), tag("7", 1, 0.80, 0.46),
 			},
-			[]string{"3", "5", "7", "1", "4", "6", "2"}},
+			[]string{"3", "5", "7", "1", "4", "6", "2"}, 7},
 		{"equal scores come back ordered by id",
-			[]TagRecord{tag("b", 1, 0.80, 0.46), tag("a", 2, 0.80, 0.46)}, []string{"a", "b"}},
+			[]TagVector{tag("b", 1, 0.80, 0.46), tag("a", 2, 0.80, 0.46)}, []string{"a", "b"}, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			given := ids(tc.tags)
-			got := rank(q, tc.tags, "m")
+			ss := scoreVectors([][]float32{q}, tc.tags, true)
+			if len(ss) != tc.scored {
+				t.Fatalf("scoreVectors scored %d tags, want %d: %+v", len(ss), tc.scored, ss)
+			}
+			got := picked(ss)
 			// nil, not just empty, when nothing qualifies
 			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
-				t.Fatalf("rank = %#v, want %#v", got, tc.want)
+				t.Fatalf("picked = %#v, want %#v", got, tc.want)
 			}
 			if after := ids(tc.tags); !slices.Equal(after, given) {
-				t.Fatalf("rank reordered the caller's tags: %v, was %v", after, given)
+				t.Fatalf("scoreVectors reordered the caller's tags: %v, was %v", after, given)
 			}
 		})
+	}
+}
+
+// TestScoreVectors_AlongAPathTheBetterFitWins: among the tags that reach their
+// cutoff, each ancestor meets each descendant by margin. A descendant at
+// least as wide as its ancestor shadows it, a narrower one is shadowed by it,
+// so two children that both beat their parent are both picked and a child the
+// parent beats is not; the tag with the widest margin of a family always
+// stays, tags on other paths are judged on their own, a tag below its cutoff
+// takes no part, and without onePath every tag that reaches its cutoff is
+// picked.
+func TestScoreVectors_AlongAPathTheBetterFitWins(t *testing.T) {
+	const dims = 6
+	q := unitVec(1, 0, 0, 0, 0, 0)
+	tag := func(id, name string, axis int, score, cutoff float64) TagVector {
+		return TagVector{ID: id, Name: name, Vec: scoreVec(dims, axis, score), Cutoff: cutoff}
+	}
+	rank := func(tags []TagVector, onePath bool) []string {
+		return picked(scoreVectors([][]float32{q}, tags, onePath))
+	}
+	shadowed := func(tags []TagVector) map[string]string {
+		out := map[string]string{}
+		for _, s := range scoreVectors([][]float32{q}, tags, true) {
+			out[s.ID] = s.ShadowedBy
+		}
+		return out
+	}
+	tags := []TagVector{
+		tag("dev", "dev", 1, 0.70, 0.46),                 // margin 0.24
+		tag("go", "Dev/Go", 2, 0.66, 0.40),               // margin 0.26: beats dev
+		tag("goerr", "dev / go / errors", 3, 0.62, 0.50), // margin 0.12: beaten by dev and go
+		tag("web", "dev / web", 4, 0.80, 0.50),           // margin 0.30: beats dev too
+		tag("cook", "cooking", 5, 0.50, 0.46),            // margin 0.04: another path
+		tag("devops", "devops", 1, 0.45, 0.46),           // below its cutoff; not on dev's path anyway
+	}
+	for _, tc := range []struct {
+		name   string
+		web    TagVector
+		want   []string
+		shadow map[string]string
+	}{
+		{"two children that beat their parent are both picked", tags[3], []string{"web", "go", "cook"},
+			map[string]string{"dev": "web", "go": "", "goerr": "go", "web": "", "cook": "", "devops": ""}},
+		{"a child its parent beats is not", tag("web", "dev / web", 4, 0.60, 0.50), // margin 0.10
+			[]string{"go", "cook"}, map[string]string{"dev": "go", "go": "", "goerr": "go", "web": "dev", "cook": "", "devops": ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tags[3] = tc.web
+			if got := rank(tags, true); !slices.Equal(got, tc.want) {
+				t.Fatalf("picked = %v, want %v", got, tc.want)
+			}
+			if got := shadowed(tags); !maps.Equal(got, tc.shadow) {
+				t.Fatalf("ShadowedBy = %v, want %v", got, tc.shadow)
+			}
+		})
+	}
+	if got, want := rank(tags, false), []string{"dev", "go", "goerr", "web", "cook"}; !slices.Equal(got, want) {
+		t.Fatalf("picked without onePath = %v, want %v", got, want)
+	}
+	// a parent cleared by more than every child is what the item is about
+	tags[0] = tag("dev", "dev", 1, 0.80, 0.46) // margin 0.34
+	if got, want := rank(tags, true), []string{"dev", "cook"}; !slices.Equal(got, want) {
+		t.Fatalf("with dev cleared by most, picked = %v, want %v", got, want)
+	}
+	// on a tie the descendant stays
+	tie := []TagVector{tag("a", "a", 1, 0.60, 0.40), tag("b", "a / b", 2, 0.60, 0.40)}
+	if got, want := rank(tie, true), []string{"b"}; !slices.Equal(got, want) {
+		t.Fatalf("on a tie, picked = %v, want %v", got, want)
+	}
+}
+
+func TestTagPath(t *testing.T) {
+	for name, want := range map[string][]string{
+		"dev / go":          {"dev", "go"},
+		" Dev/GO ":          {"dev", "go"},
+		"dev // go /":       {"dev", "go"},
+		"cooking":           {"cooking"},
+		"":                  nil,
+		"a / b / c / d / e": {"a", "b", "c", "d", "e"},
+	} {
+		if got := tagPath(name); !slices.Equal(got, want) {
+			t.Errorf("tagPath(%q) = %q, want %q", name, got, want)
+		}
+	}
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"dev", "dev / go", true}, {"dev / go", "dev", true}, {"dev / go", "dev / go", false},
+		{"dev", "devops", false}, {"dev / go", "dev / web", false}, {"go", "dev / go", false},
+	} {
+		if got := onPath(tagPath(tc.a), tagPath(tc.b)); got != tc.want {
+			t.Errorf("onPath(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
 	}
 }
 

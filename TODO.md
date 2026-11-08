@@ -55,6 +55,18 @@ and `todo list --json` cover the common actions — run `todo --help`.
   family, re-measure, and only then quote the result as a wrong-tag rate and
   set a new floor; until then 0.75 untagged only bounds that rate from above
   (at most about 1 document in 4 gets a wrong tag).
+- [ ] cachetest: check that Get refreshes the last-used time
+  The conformance suite never checks that Get rewrites an entry's last-used time once it is older than CacheRefreshAfter, so a backend that skips it still passes, and Prune then drops vectors still in use and they get embedded again. Needs an injectable clock or a time-shifted Prune cutoff in the suite.
+- [x] per-chunk scoring for the Tagger's side topics
+  Done 2026-11-07 (docs/superpowers/specs/2026-11-07-tagger-long-items-results.md): with ChunkBytes an item of 3+ pieces scores by the mean of its two best pieces, one of 2 by the best of its halves and their centroid, and a long member enters its tag's blend as its piece closest to the name. Long set: side 0.68 vs 0.58 (mean), precision 0.78 both, mention 0.02; pure max found 0.74 but 3.5 off-label tags a doc vs 2.0, and lost stitched two-topic pages (0.77 vs 0.80). Title-per-chunk added nothing. Cutoffs 0.42/0.58 hold; floors in TestTaggerLongTags.
+- [ ] try Generator windows of 8-12 KB
+  6 KB windows beat 2 KB ones (F1 0.84 vs 0.74) with fewer calls; larger windows need a bigger chat context and were not measured.
+- [ ] eval.MatchTopics: containment sends side tags to the main topic
+  A tag that contains a main alias ("housing cooperatives" holds "cooperatives") scores 1 against the main topic and ties go to the first topic, so a side topic picked by its exact label counts as missed: de-genossenschaften and es-cafe score side 0.00 with every side label picked. By exact label the Tagger's side recall is 0.89, not 0.68. Prefer the topic whose own label or alias is the longer containment match; re-measure the Generator and Tagger floors after.
+- [ ] re-measure NameMinScore at 0.43
+  Short essences (names only 0.81 vs 0.79, mixed 0.868 vs 0.860) and long items (F1 +0.02) both score a little better at 0.43; stitched two-topic pages lose 0.04 (0.83 vs 0.87 with ChunkBytes) and long-member pages 0.03. Weigh it on real data before moving the default.
+- [ ] turn ChunkBytes on by default
+  Every golden essence is one piece at 2000 bytes, so the short numbers do not move, two-topic pages gain (0.80 to 0.87) and long items find side topics (0.45 to 0.68). Costs a re-embed of long items for current users, and a default that depends on the embedder's window.
 
 ## upstream
 
@@ -71,58 +83,66 @@ and `todo list --json` cover the common actions — run `todo --help`.
 
 ## image/vide
 
-- [ ] image to image proximity search
-  Embed the images themselves, no captions: the vectors go into the existing
-  Store and are ranked by cosine. langai.Embedder only takes text, so this
-  needs an image-input embedder next to it.
-  DINOv2 base (facebook/dinov2-base): Apache-2.0, 86.6M params, 768-d, 518 px
-  input, vision only. ONNX export: onnx-community/dinov2-base-ONNX.
-  SigLIP 2 base (google/siglip2-base-patch16-224): Apache-2.0, 0.4B with its
-  text half, so the same vectors also match text. ONNX export:
-  onnx-community/siglip2-base-patch16-224-ONNX.
-  Qwen3-VL-Embedding 2B also embeds images, see "text to image / video".
-  Image-only embedding output is not confirmed in llama.cpp, so yzma is not a
-  known route; the Go route is yalue/onnxruntime_go (MIT, needs cgo and the
-  onnxruntime shared library).
+- [x] image to image proximity search
+  Done: langai.ImageEmbedder, provider/onnx (ONNX Runtime through
+  yalue/onnxruntime_go, cgo; SigLIP 2 base pinned as the default, DINOv2 base
+  as the other pinned model) and search.MediaIndex over the existing Store.
   Not for a commercial app: OpenAI CLIP (card puts deployed use out of scope),
   DINOv3 (custom license, needs legal review).
-- [ ] video to vide proximiuty search
-  Same index as the text queries: embed the query clip, take the nearest video
-  vectors, drop the clip itself. Store has no get-vector-by-docID, so keep the
-  vector or embed the clip again. No video-to-video numbers found for
-  Qwen3-VL-Embedding; the video retrieval results found (its paper, the
-  Mixpeek blog) all use text queries.
-  Qwen3-VL-Embedding 2B: Apache-2.0, text, image and video in one space, video
-  sampled at 1 FPS up to 64 frames. Details under "text to image / video".
-  V-JEPA 2 ViT-L (facebook/vjepa2-vitl-fpc64-256): MIT, 0.3B, 64 frames, video
-  features only, no text side.
-  X-CLIP base (microsoft/xclip-base-patch32): MIT, ~0.2B, 8 frames at 224x224,
-  512-d, also matches text.
-  InternVideo2 (OpenGVLab/InternVideo2-Stage2_1B-224p-f4): Apache-2.0, slow.
-  Go runtime for V-JEPA 2, X-CLIP and InternVideo2 was not checked.
-  Cheapest start: sample frames and embed each with the image model (one Chunk
-  per frame, Seq = position). For exact near-duplicates, frame-level DINOv2 or
-  a perceptual hash fits better than a semantic model.
+- [x] video to vide proximiuty search
+  Done the cheap way: media/ffmpeg samples frames (scene cuts plus an
+  interval, or keyframes only), each is embedded with the image model as one
+  Chunk (Seq = milliseconds), and an item is scored by its best frame against
+  any query frame, so images and videos share one index and find each other.
+  Store still has no get-vector-by-docID, so a query that is itself indexed
+  comes back first and the caller drops its own id. Video-native models
+  (Qwen3-VL-Embedding 2B, V-JEPA 2, X-CLIP, InternVideo2) remain an option
+  for whole-clip matching; their Go runtime was not checked. For exact
+  near-duplicates DINOv2 or a perceptual hash fits better than SigLIP.
   Not for a commercial app: VideoMAE v2 (CC-BY-NC-4.0).
-- [ ] text to image / video proximity search
-  Qwen3-VL-Embedding 2B (Qwen/Qwen3-VL-Embedding-2B, arXiv 2601.04720):
-  Apache-2.0, text, image, video and mixes in one space, so a text query ranks
-  images and videos directly. 2048-d, can be cut down to 64..2048 (Matryoshka),
-  cosine. The instruction goes in the system message (default "Represent the
-  user's input."), the vector is the last hidden state of the appended
-  `<|endoftext|>` token. Video is sampled at 1 FPS, up to 64 frames.
-  MMEB-V2 overall: 2B 73.2 (image 75.0, video 61.9, visdoc 79.2), 8B 77.8.
-  About 4 GB of weights in bf16 (derived, no official VRAM figure). A
-  Qwen3-VL-Reranker (2B / 8B) exists as the second stage.
-  Runs on transformers >= 4.57.0, vLLM >= 0.14.0 and SGLang. The card does not
-  mention llama.cpp; community GGUFs exist (ifire, batiai, VesNFF) but image
-  and video embedding through them is unconfirmed, so yzma is an open question.
-  Adult content: neither the paper nor the card mentions NSFW or filtering, the
-  Apache-2.0 text has no content restriction, and quality on explicit material
-  is untested. Try it on own samples first.
-  Smaller, one modality each: SigLIP 2 base (images), X-CLIP base (video). The
-  only text-to-video comparison found is the Mixpeek blog (vendor-run, 20
-  videos, NDCG@10): X-CLIP 0.470, SigLIP 2 SO400M 0.325, InternVideo2 6B 0.302.
+- [ ] honour EXIF orientation when embedding JPEGs
+  Go's image/jpeg ignores the orientation tag, so a phone photo stored
+  rotated is embedded rotated and matches its upright video frames less. A
+  small APP1/TIFF parser for tag 0x0112 plus a rotate before embedding, in
+  search's decodeImage.
+- [ ] run provider/onnx on a GPU
+  The CUDA (gpu_cuda12 build, device_id) and CoreML paths are wired but were
+  only unit-tested with a fake session; the real-model tests ran on a CPU.
+  Check the CUDA provider loads, that batches speed up, and the yalue note on
+  CUDA overwriting Go's signal handlers (onnxruntime_go issue 140).
+- [ ] perceptual hash for exact and near-exact duplicates
+  A 64-bit dHash/pHash as a second, model-free ImageEmbedder (±1 per bit, so
+  cosine = 1 - 2·hamming/64 and the same Store works) for de-duplication
+  jobs that should not pay for a model.
+- [x] text to image / video proximity search
+  Done with Qwen3-VL-Embedding-2B (Qwen/Qwen3-VL-Embedding-2B, Apache-2.0,
+  2048-d) as yzma.Vision over llama.cpp's libmtmd: text, images and video
+  segments in one space, MediaIndex.SearchText and WithVideoEmbedder. The
+  pinned GGUF is DevQuasar's Q8_0 with the f16 projector (no official GGUF).
+  Upstream llama.cpp's Qwen3-VL vision path sits at about 0.97 cosine to the
+  Hugging Face reference (a community fork claims 0.9999 with extra patches);
+  fine within one index, not for vectors made elsewhere. The SigLIP 2 text
+  tower (text_model.onnx, SentencePiece tokenizer in Go) stays an option for a
+  lighter text-to-image route on the ONNX side. Adult content: neither the
+  paper nor the card mentions filtering; quality on explicit material is
+  untested.
+- [ ] vision model follow-ups
+  Matryoshka: the model's vectors can be cut to 64..2048 and re-normalized;
+  a VisionConfig.Dims would shrink the store. The 8B model (MMEB-V2 77.8 vs
+  73.2) and the Qwen3-VL-Reranker as a second stage are untried. The
+  instruction is one per Vision; per-call instructions (a query instruction
+  that differs from the document one) would need a second prompt path.
+  ImageMaxTokens did not change the token count in the spike (484 for
+  800x600, 1,437 for 1080x1350): check what the projector's bounds do.
+- [ ] run provider/yzma on CUDA and on macOS
+  Accel auto picks the build from the hardware and offloads to the GPU that
+  registers; Vulkan on an AMD 890M iGPU was run (1.5 s per photo vs 7 s on
+  the CPU). The CUDA 13.4 build (needs the CUDA runtime on the host) and the
+  Metal build are pinned and chosen but were not run. ROCm is detected but
+  has no pinned build (AMD cards go through Vulkan); Windows has none.
+- [ ] CI for the vision model
+  make test-vision downloads 2.7 GB and needs ffmpeg; it is not in
+  validate.yml. A cached job like embeddings-real would cover it.
 - [ ] iamge Auto Tagging
   Two routes. Caption then tag: a captioner writes text and the existing Tagger
   takes that text. That needs libmtmd, which wantLib (provider/yzma/fetch.go)
@@ -176,7 +196,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
 - [ ] text => new tags
   - kronk + LLM (Qwen3 4B Instruct) writes candidate tags
   - kronk + embedding model drops candidates too close to existing tags
-- [ ] image / video => proximity image / vide
+- [x] image / video => proximity image / vide
   - onnxruntime (cgo) + SigLIP 2 base; kronk can't embed images
   - video: ffmpeg samples frames, each embedded as an image; best frame wins
 - [ ] image / video => description

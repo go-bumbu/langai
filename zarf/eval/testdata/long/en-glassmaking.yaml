@@ -1,0 +1,67 @@
+id: en-glassmaking
+lang: en
+title: The history of glassmaking
+text: |
+  Glassmaking is the craft and industry of turning sand, ash and lime into a hard, transparent material that can be shaped while hot and fixed when cold. Glass has been made for more than four thousand years, and in that time it has moved from a rare luxury for jewellery and ritual vessels to one of the most ordinary materials in the world, found in windows, bottles, lenses, screens and cables. The basic recipe has changed less than one might expect. Silica, usually in the form of sand, supplies the structure; an alkali such as soda or potash lowers the melting point; and lime or a similar stabiliser keeps the finished object from dissolving in water. What has changed is the scale of the furnaces, the purity of the raw materials and the skill with which the molten mass is handled.
+
+  The history of the craft is also a history of fuel and of travel. Glassmakers needed enormous quantities of wood, and later coal and gas, and many workshops moved to follow a forest or a coalfield. Recipes and tools moved with the people who used them, so that a technique invented in one valley might turn up, slightly altered, a thousand miles away a generation later. Because the work was hot, dangerous and secret, glassmakers often lived in their own quarters, with their own guilds, customs and sometimes their own laws.
+
+  ## Origins
+
+  The earliest known glass objects were beads and small vessels made in the river valleys of the ancient Near East. Workers did not blow this early glass. They wound threads of molten material around a core of clay and dung, then scraped the core away once the object had cooled. Such vessels were expensive and were traded as gifts between rulers. Colour came from the metals that happened to be present in the sand and ash, so that copper gave blues and greens, and iron gave a murky brown that workers learned to cover with a decorative band.
+
+  The invention that changed everything was the blowpipe, which appeared around the first century before the common era. A hollow iron tube let a worker gather a lump of molten glass on one end and inflate it like a bubble, producing thin, even walls in minutes rather than days. Glass became cheap enough for ordinary households, and markets across the Mediterranean filled with jugs, flasks and drinking cups. In the small harbour town of Kellowick, a workshop run by a widow named Marren Oakes was said to turn out four hundred bottles on a good day, though the figure comes from a single, much copied ledger and may be a boast. The chess master Oswin Tarrant is remembered there for giving a simultaneous exhibition in a glassworks canteen in 1931, playing thirty boards at once.
+
+  ## Glassblowing and the furnace
+
+  A traditional glasshouse is organised around its furnace, a domed oven that must never be allowed to go cold. Raw materials are fed in through the day and left to melt for many hours, until the mass is free of bubbles and stones. The master, who leads a small team called a chair, gathers a glowing blob from the pot on the end of a blowpipe, rolls it on a flat iron slab called a marver to centre it, and begins to blow. Between each action the work is returned to a small side opening known as the glory hole, where it is reheated so that it stays soft.
+
+  The tools of the trade are few and old. Wooden blocks soaked in water shape the bubble, and the steam cushions the glass so it does not stick. Shears cut hot glass as easily as scissors cut cloth, and a pair of jacks, like long tweezers, pull out spouts, necks and stems. Pieces are transferred from the blowpipe to a solid rod called a pontil so that the rim can be opened and finished. Finished objects go into an annealing oven, where they cool over many hours, because glass cooled too fast holds stresses inside it and shatters days later for no visible reason.
+
+  Over the centuries, regional styles came to be recognised by their furnaces as much as their products. Northern workshops favoured forest glass, tinted green by the iron in the ash of beech and bracken. Southern workshops, with access to purer sand and to the ash of coastal plants, made clear, colourless vessels that were thought finer. Moulds, cutting and engraving added further variety, and by the eighteenth century a cut glass decanter was a mark of a well run dining room.
+
+  ## Stained glass windows
+
+  One of the most admired uses of coloured glass is the stained window, in which small panes are fixed in a lattice of lead strips to form a picture. The glass itself is coloured in the pot, by adding metal oxides to the melt: cobalt for deep blue, gold chloride for ruby red, manganese for purple. Details such as faces and folds of cloth are painted onto the surface with an iron-rich paint and fired in a kiln so that the image becomes part of the glass.
+
+  A medieval window began as a full-size drawing on a table. The glazier laid pieces of coloured glass over the drawing, cut them to shape by heating and cooling along a line, and joined them with grooved lead strips called cames, which were soldered at every joint. The finished panel was then cemented to make it weatherproof and fitted into an iron frame set in the stonework. Large windows were made in many panels and assembled on site, which is why a church window often shows faint horizontal bars where the iron supports cross it.
+
+  The tradition declined when styles changed, and many windows were broken or sold, but it revived in the nineteenth century, when restorers learned to copy old methods. Modern studios use the same lead and solder, though kilns now run on electricity and the colours are more reliable. The town of Pellmoor keeps a small workshop devoted to repairing windows damaged by storms, and its glaziers still keep their patterns on rolls of brown paper.
+
+  ## Float glass and flat sheets
+
+  For centuries, window glass was made by spinning a blown bubble into a flat disc, or by blowing a long cylinder, splitting it and flattening it in an oven. Both methods left waves, bubbles and a thickness that varied from one part of the pane to another. Large mirrors and shop windows required plate glass, which was cast on an iron table, rolled, and then ground and polished by machine, a slow and costly process that wasted much of the material.
+
+  The modern answer, introduced in the middle of the twentieth century, is the float process. A ribbon of molten glass leaves the furnace and flows onto the surface of a bath of molten tin. Because tin is denser than glass, the glass floats on it and spreads out evenly, while gravity and surface tension make both faces almost perfectly flat. The ribbon cools as it travels along the bath, hardens enough to be lifted onto rollers, and passes through a long annealing oven before being cut to size. A single line can run without stopping for ten years and make hundreds of tonnes of glass a day.
+
+  Float glass is the basis of almost every window and mirror in a modern building. It can be coated with thin layers of metal oxide that reflect heat, toughened by rapid cooling for safety, or laminated with plastic so that it holds together when it breaks.
+
+  ## Recycling and the modern industry
+
+  Glass is one of the easiest materials to recycle because it can be melted again and again without losing quality. Crushed waste glass, called cullet, melts at a lower temperature than raw sand, so adding it to a furnace saves fuel. Many bottle factories now use more than half cullet in each batch, and the collection of bottles through deposit schemes or neighbourhood banks supplies much of it. The ferry Marguerite Dunne carried the first shipment of sorted cullet across the estuary to the Kellowick furnace, according to the town's records.
+
+  Today the industry makes containers, flat glass, fibre for insulation and for communications, and specialist glass for laboratories and optics. The craft of the hand worker survives mainly in small studios, where it is valued for the variety and the signs of the maker's hand that a machine cannot reproduce.
+topics:
+  - label: glassmaking history
+    kind: main
+    aliases: [glassmaking, glass history, history of glass, glass]
+  - label: glassblowing
+    kind: side
+    section: Glassblowing and the furnace
+    aliases: [glass blowing, glass furnace, blowpipe]
+  - label: stained glass
+    kind: side
+    section: Stained glass windows
+    aliases: [stained windows, leaded glass, glazing]
+  - label: float glass
+    kind: side
+    section: Float glass and flat sheets
+    aliases: [float process, window glass, plate glass]
+  - label: chess
+    kind: mention
+    section: Origins
+    aliases: [chess master, chess exhibition, simultaneous chess]
+  - label: ferry transport
+    kind: mention
+    section: Recycling and the modern industry
+    aliases: [ferry, ferries, estuary crossing]

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/eval"
+	"github.com/go-bumbu/langai/zarf/eval"
 )
 
 // floor is one asserted minimum for the default model: a task ("search" for
@@ -135,7 +135,7 @@ func TestGoldenSetWithDefaultModel(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	loadTime := time.Since(start)
-	ds, err := eval.Load(filepath.Join("..", "..", "eval", "testdata", "golden.yaml"))
+	ds, err := eval.Load(filepath.Join("..", "..", "zarf", "eval", "testdata", "golden.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

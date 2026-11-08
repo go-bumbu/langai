@@ -88,6 +88,7 @@ type tokenizeCall struct {
 // and its sampler plays a script, so Completer runs its real code against it.
 type fakeChat struct {
 	callLog
+	devs          []device // what devices reports
 	loadErr       error
 	loadModelErr  error
 	trainCtx      int32
@@ -121,8 +122,13 @@ func (f *fakeChat) load(dir string, _ *slog.Logger) error {
 
 func (f *fakeChat) version() string { return libVersion }
 
-func (f *fakeChat) loadModel(path string) (uintptr, error) {
-	f.record("loadModel", path)
+func (f *fakeChat) devices() []device {
+	f.record("devices")
+	return f.devs
+}
+
+func (f *fakeChat) loadModel(path string, gpuLayers int32) (uintptr, error) {
+	f.record("loadModel", path, gpuLayers)
 	if f.loadModelErr != nil {
 		return 0, f.loadModelErr
 	}
@@ -235,7 +241,7 @@ func testSpec() CompleterSpec {
 // the template probe), so a test sees only what Complete does.
 func openFakeChat(t *testing.T, f *fakeChat, spec CompleterSpec) *Completer {
 	t.Helper()
-	c, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, spec, 2, nil)
+	c, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, spec, 2, AccelCPU, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +541,7 @@ func TestOpenCompleter_RejectsATemplateThatDoesNotKeepBothMessages(t *testing.T)
 		t.Run(name, func(t *testing.T) {
 			f := newFakeChat()
 			f.render = render
-			_, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, nil)
+			_, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, AccelCPU, 0, nil)
 			if err == nil || !strings.Contains(err.Error(), "chatml") {
 				t.Fatalf("err = %v, want a refusal naming the template", err)
 			}
@@ -603,7 +609,7 @@ func TestOpenCompleter_StopsAtAFailedLoad(t *testing.T) {
 	t.Run("libraries", func(t *testing.T) {
 		f := newFakeChat()
 		f.loadErr = boom
-		if _, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, nil); !errors.Is(err, boom) {
+		if _, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, AccelCPU, 0, nil); !errors.Is(err, boom) {
 			t.Fatalf("err = %v, want the load error", err)
 		}
 		if got := strings.Join(f.names(), ","); got != "load" {
@@ -613,7 +619,7 @@ func TestOpenCompleter_StopsAtAFailedLoad(t *testing.T) {
 	t.Run("model", func(t *testing.T) {
 		f := newFakeChat()
 		f.loadModelErr = boom
-		_, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, nil)
+		_, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, AccelCPU, 0, nil)
 		if !errors.Is(err, boom) || !strings.Contains(err.Error(), testChatModelPath) {
 			t.Fatalf("err = %v, want the load error naming %s", err, testChatModelPath)
 		}
@@ -626,7 +632,7 @@ func TestOpenCompleter_StopsAtAFailedLoad(t *testing.T) {
 func TestOpenCompleter_RejectsModelWithoutTrainingContext(t *testing.T) {
 	f := newFakeChat()
 	f.trainCtx = 0
-	if _, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, nil); err == nil {
+	if _, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, AccelCPU, 0, nil); err == nil {
 		t.Fatal("a model without a training context length was accepted")
 	}
 	if args := f.only(t, "freeModel"); args[0] != fakeModel {
@@ -641,7 +647,7 @@ func TestOpenCompleter_FreesTheModelWhenTheContextFails(t *testing.T) {
 	boom := errors.New("cannot allocate the KV cache")
 	f := newFakeChat()
 	f.newContextErr = boom
-	if _, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, nil); !errors.Is(err, boom) {
+	if _, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, AccelCPU, 0, nil); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the context error", err)
 	}
 	if f.only(t, "freeModel")[0] != fakeModel || f.count("freeContext") != 0 {
@@ -655,7 +661,7 @@ func TestOpenCompleter_FreesTheModelWhenTheContextFails(t *testing.T) {
 func TestOpenCompleter_FreesTheContextThenTheModelWhenTheTemplateFails(t *testing.T) {
 	f := newFakeChat()
 	f.templateErr = errors.New("unknown template")
-	_, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, nil)
+	_, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, AccelCPU, 0, nil)
 	if err == nil || !strings.Contains(err.Error(), "chatml") {
 		t.Fatalf("err = %v, want a refusal naming the template", err)
 	}
@@ -667,7 +673,7 @@ func TestOpenCompleter_FreesTheContextThenTheModelWhenTheTemplateFails(t *testin
 func TestOpenCompleter_RejectsAContextOfNoTokens(t *testing.T) {
 	f := newFakeChat()
 	f.grantNothing = true
-	if _, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, nil); err == nil {
+	if _, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, testSpec(), 2, AccelCPU, 0, nil); err == nil {
 		t.Fatal("a context granting no tokens was accepted")
 	}
 	if names := strings.Join(f.names(), ","); !strings.HasSuffix(names, "freeContext,freeModel") {
@@ -675,7 +681,7 @@ func TestOpenCompleter_RejectsAContextOfNoTokens(t *testing.T) {
 	}
 }
 
-// TestOpenCompleter_SizesTheContext: the context is the spec's size (2048 by
+// TestOpenCompleter_SizesTheContext: the context is the spec's size (4096 by
 // default) within the model's training window, batches are 512 tokens within
 // the context, and what llama.cpp grants below that wins.
 func TestOpenCompleter_SizesTheContext(t *testing.T) {
@@ -687,11 +693,11 @@ func TestOpenCompleter_SizesTheContext(t *testing.T) {
 		askCtx, askBatch       int32
 		wantCtx, wantBatchSize int
 	}{
-		{"defaults", 32768, 0, 0, 0, 2048, 512, 2048, 512},
+		{"defaults", 32768, 0, 0, 0, 4096, 512, 4096, 512},
 		{"the spec's size", 32768, 1024, 0, 0, 1024, 512, 1024, 512},
 		{"a small context shrinks the batch", 32768, 300, 0, 0, 300, 300, 300, 300},
 		{"the training window caps it", 1000, 4096, 0, 0, 1000, 512, 1000, 512},
-		{"granted less", 32768, 0, 700, 100, 2048, 512, 700, 100},
+		{"granted less", 32768, 0, 700, 100, 4096, 512, 700, 100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeChat()
@@ -699,7 +705,7 @@ func TestOpenCompleter_SizesTheContext(t *testing.T) {
 			f.grantCtx, f.grantBatch = tc.grantCtx, tc.grantBatch
 			spec := testSpec()
 			spec.ContextTokens = tc.spec
-			c, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, spec, 3, nil)
+			c, err := openCompleter(f, &runtimeLoader{}, testLibDir, testChatModelPath, spec, 3, AccelCPU, 0, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -763,6 +769,7 @@ func TestOpenCompleter_DownloadsAndLoads(t *testing.T) {
 	f.script = []int32{'o', 'k'}
 	rt := fakeChatRuntime(t, f, tmp)
 	offline(t)
+	cpuOnly(t)
 	_, modelAsset := serve(t, []byte("GGUF fake chat model"))
 	modelPath := filepath.Join(tmp, "models", "chat.gguf")
 	var logs bytes.Buffer
@@ -799,6 +806,7 @@ func TestNewCompleter_RunsThePinnedModel(t *testing.T) {
 	f := newFakeChat()
 	rt := fakeChatRuntime(t, f, tmp)
 	offline(t)
+	cpuOnly(t)
 	_, a := serve(t, []byte("GGUF fake chat model"))
 	orig := defaultCompleterAsset
 	defaultCompleterAsset = a

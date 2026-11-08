@@ -1,21 +1,26 @@
 // Package langai holds what the language-AI packages of this module share:
-// the ports a model runtime implements, Embedder for embedding models and
-// Completer for chat models, and the Role an Embedder is asked to embed a text
-// as. It imports no runtime and no store.
+// the ports a model runtime implements, Embedder for text embedding models,
+// ImageEmbedder for image embedding models and Completer for chat models, and
+// the Role an Embedder is asked to embed a text as. It imports no runtime and
+// no store.
 //
 // The capabilities live in subpackages: search answers free-text queries over
-// documents, and tagging suggests tags for a text, from the tags an application
+// documents and finds the images and videos that look like a given image or
+// video, and tagging suggests tags for a text, from the tags an application
 // already has (Tagger) or written from nothing (Generator). The implementations
 // sit in groups by the port they implement: provider/yzma runs GGUF models
-// locally through llama.cpp, and vector/sqlitevec and vector/pgvec store
-// search vectors. LazyEmbedder defers loading a model to its first use,
-// langaitest has the fakes for tests, and eval measures an Embedder's search
-// and tagging quality over a labelled dataset.
+// locally through llama.cpp, provider/onnx runs image embedding models through
+// ONNX Runtime, media/ffmpeg samples the frames of a video, and
+// vector/sqlitevec and vector/pgvec store search vectors. LazyEmbedder defers
+// loading a model to its first use, langaitest has the fakes for tests, and
+// eval measures an Embedder's search and tagging quality over a labelled
+// dataset.
 package langai
 
 import (
 	"context"
 	"fmt"
+	"image"
 )
 
 // Role tells an Embedder what a text is for. Asymmetric models are trained
@@ -46,6 +51,17 @@ func (r Role) String() string {
 // role lets an asymmetric model apply its query or document prefix.
 type Embedder interface {
 	Embed(ctx context.Context, role Role, texts []string) ([][]float32, error)
+	Dimensions() int
+}
+
+// ImageEmbedder turns images into embedding vectors, one per image in input
+// order, each with exactly Dimensions() entries, compared by cosine. Images
+// carry no Role: an image model is symmetric. The vectors of one model form
+// one space; they never compare with another model's, nor with a text
+// Embedder's, unless the two are the towers of one model trained together.
+// The method is not called Embed so that one type can implement both ports.
+type ImageEmbedder interface {
+	EmbedImages(ctx context.Context, images []image.Image) ([][]float32, error)
 	Dimensions() int
 }
 

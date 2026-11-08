@@ -143,7 +143,7 @@ func releaseLibs() []tarEntry {
 		{name: "libggml-cpu-x64.so", body: "cpu"},
 		{name: "libggml-cpu-zen4.so", body: "cpu-zen4"},
 		{name: "libggml-rpc.so", body: "rpc"},         // skipped: RPC backend
-		{name: "libmtmd.so.0.6.0", body: "mtmd"},      // skipped: multimodal
+		{name: "libmtmd.so.0.6.0", body: "mtmd"},      // kept: the Vision embedder
 		{name: "libllama-common.so.0.6.0", body: "c"}, // skipped: tools
 		{name: "libllama-cli-impl.so", body: "cli"},   // skipped: tools
 		{name: "llama-cli", body: "#!elf"},            // skipped: executable
@@ -178,6 +178,7 @@ func TestExtractLibs_FlattensFiltersAndRecreatesSymlinks(t *testing.T) {
 		"libggml-cpu-x64.so", "libggml-cpu-zen4.so",
 		"libggml.so", "libggml.so.0", "libggml.so.0.26.0",
 		"libllama.so", "libllama.so.0", "libllama.so.0.6.0",
+		"libmtmd.so.0.6.0",
 	}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("extracted %v\nwant      %v", names, want)
@@ -194,7 +195,7 @@ func TestExtractLibs_FlattensFiltersAndRecreatesSymlinks(t *testing.T) {
 // library name in the same directory; anything else is an attack surface, not
 // a packaging quirk.
 func TestExtractLibs_RejectsEscapingSymlinks(t *testing.T) {
-	for _, link := range []string{"../../etc/ld.so.preload", "/usr/lib/libllama.so", "libmtmd.so"} {
+	for _, link := range []string{"../../etc/ld.so.preload", "/usr/lib/libllama.so", "libllama-cli-impl.so"} {
 		archive := writeArchive(t, tarGz(t, "x", []tarEntry{{name: "libllama.so", link: link}}))
 		if err := extractLibs(archive, t.TempDir()); err == nil {
 			t.Errorf("symlink to %q was accepted", link)
@@ -210,8 +211,8 @@ func TestExtractLibs_RejectsArchiveWithoutLibraries(t *testing.T) {
 }
 
 func TestWantLib(t *testing.T) {
-	yes := []string{"libllama.so", "libllama.so.0", "libllama.so.0.6.0", "libggml.so", "libggml-base.so.0.26.0", "libggml-cpu-x64.so", "libggml-cpu-armv8.2_1.so", "libggml-vulkan.so"}
-	no := []string{"libggml-rpc.so", "libmtmd.so", "libllama-common.so.0", "libllama-cli-impl.so", "llama-cli", "README.md", "libllama.dylib"}
+	yes := []string{"libllama.so", "libllama.so.0", "libllama.so.0.6.0", "libggml.so", "libggml-base.so.0.26.0", "libggml-cpu-x64.so", "libggml-cpu-armv8.2_1.so", "libggml-vulkan.so", "libmtmd.so", "libmtmd.so.0.6.0", "libllama.dylib", "libggml-metal.dylib", "libmtmd.0.dylib"}
+	no := []string{"libggml-rpc.so", "libllama-common.so.0", "libllama-cli-impl.so", "libllama-server-impl.so", "llama-cli", "llama-mtmd-cli", "README.md"}
 	for _, n := range yes {
 		if !wantLib(n) {
 			t.Errorf("wantLib(%q) = false, want true", n)
@@ -229,8 +230,8 @@ func TestEnsureLibsFor_ManagedDownloadsAndInstalls(t *testing.T) {
 		t.Skip("the pinned archives hold Linux .so files")
 	}
 	_, a := serve(t, tarGz(t, "llama-b11429", releaseLibs()))
-	libAssets["test/arch"] = a
-	t.Cleanup(func() { delete(libAssets, "test/arch") })
+	libAssets["test/arch/cpu"] = a
+	t.Cleanup(func() { delete(libAssets, "test/arch/cpu") })
 
 	libDir := filepath.Join(t.TempDir(), "llama-cpp", LibTag)
 	// a directory left behind by an interrupted install (no libllama.so) is replaced
@@ -240,7 +241,7 @@ func TestEnsureLibsFor_ManagedDownloadsAndInstalls(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(libDir, "stale"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureLibsFor(context.Background(), "test/arch", libDir, true, discardLogger()); err != nil {
+	if err := ensureLibsFor(context.Background(), "test/arch", libDir, true, "cpu", discardLogger()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(libDir, "libllama.so")); err != nil {
@@ -254,14 +255,14 @@ func TestEnsureLibsFor_ManagedDownloadsAndInstalls(t *testing.T) {
 		t.Fatalf("staging directory left behind: %v", entries)
 	}
 	// installed libraries are reused: the second call must not need the network
-	libAssets["test/arch"] = asset{URL: "http://127.0.0.1:1/unreachable", SHA256: a.SHA256}
-	if err := ensureLibsFor(context.Background(), "test/arch", libDir, true, discardLogger()); err != nil {
+	libAssets["test/arch/cpu"] = asset{URL: "http://127.0.0.1:1/unreachable", SHA256: a.SHA256}
+	if err := ensureLibsFor(context.Background(), "test/arch", libDir, true, "cpu", discardLogger()); err != nil {
 		t.Fatalf("installed libraries must be reused, got %v", err)
 	}
 }
 
 func TestEnsureLibsFor_UnsupportedPlatform(t *testing.T) {
-	err := ensureLibsFor(context.Background(), "plan9/mips", filepath.Join(t.TempDir(), "libs"), true, discardLogger())
+	err := ensureLibsFor(context.Background(), "plan9/mips", filepath.Join(t.TempDir(), "libs"), true, "cpu", discardLogger())
 	if err == nil || !strings.Contains(err.Error(), "plan9/mips") || !strings.Contains(err.Error(), "yzma install") {
 		t.Fatalf("err = %v, want an error naming the platform and the manual install path", err)
 	}
@@ -269,7 +270,7 @@ func TestEnsureLibsFor_UnsupportedPlatform(t *testing.T) {
 
 func TestEnsureLibsFor_OperatorDirWithoutLibraries(t *testing.T) {
 	dir := t.TempDir()
-	err := ensureLibsFor(context.Background(), "linux/amd64", dir, false, discardLogger())
+	err := ensureLibsFor(context.Background(), "linux/amd64", dir, false, "cpu", discardLogger())
 	if err == nil || !strings.Contains(err.Error(), "yzma install") {
 		t.Fatalf("err = %v, want an error telling the operator how to install", err)
 	}
@@ -303,7 +304,7 @@ func TestEnsureLibsFor_OperatorDirChecksInstallRecord(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		err := ensureLibsFor(context.Background(), "linux/amd64", dir, false, discardLogger())
+		err := ensureLibsFor(context.Background(), "linux/amd64", dir, false, "cpu", discardLogger())
 		if (err == nil) != c.ok {
 			t.Errorf("%s: err = %v, want ok=%v", c.name, err, c.ok)
 		}
@@ -352,8 +353,8 @@ func TestPinnedAssetsAreWellFormed(t *testing.T) {
 	for plat, a := range libAssets {
 		check(plat, a)
 	}
-	if _, ok := libAssets["linux/amd64"]; !ok {
-		t.Error("linux/amd64 (the release target) has no pinned llama.cpp build")
+	if _, ok := libAssets["linux/amd64/cpu"]; !ok {
+		t.Error("linux/amd64/cpu (the release target) has no pinned llama.cpp build")
 	}
 }
 

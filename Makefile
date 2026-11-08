@@ -17,11 +17,25 @@ SEMSEARCH_YZMA_TEST_DIR ?= $(HOME)/.cache/semsearch-yzma
 test-models: ## run the real-model tests: the embedding smoke test and the golden-set quality floors
 	@SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$(SEMSEARCH_YZMA_TEST_DIR) go test -p 1 ./provider/yzma/ ./tagging/ -run 'TestEmbedAndRank|TestGoldenSet|TestGoldenTagging' -v -count=1
 
+# The vision model is ~2.7 GB on top of the above (the Qwen3-VL-Embedding GGUF and its
+# projector) and needs ffmpeg, so its real-model test has a target of its own. On a
+# machine with a GPU the provider installs the matching llama.cpp build into the cache.
+test-vision: ## run the vision embedder's real-model test: text, image and video segments in one space through libmtmd
+	@SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$(SEMSEARCH_YZMA_TEST_DIR) go test ./provider/yzma/ -run 'TestVisionReal' -v -count=1 -timeout 0
+
 # The chat model is ~2.5 GB on top of the above and a run takes minutes on a CPU, so
-# the tag Generator's real-model test has a target of its own. -timeout 0: the first run
+# the tag Generator's real-model tests (golden documents, then the long set) have a target of its own. -timeout 0: the first run
 # downloads the model, and every golden document the model tags takes seconds.
-test-gentags: ## run the tag Generator's real-model test: the chat model writes tags for golden documents, the embedding model scores them
-	@SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$(SEMSEARCH_YZMA_TEST_DIR) go test ./provider/yzma/ -run 'TestGenerateTags' -v -count=1 -timeout 0
+test-gentags: ## run the tag Generator's real-model test: the chat model writes tags for golden and long documents, the embedding model scores them
+	@SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$(SEMSEARCH_YZMA_TEST_DIR) go test ./provider/yzma/ -run 'TestGenerateTags|TestGenerateLongTags' -v -count=1 -timeout 0
+
+# The image tests download the pinned ONNX Runtime build (~11 MB) and the default image
+# model (~370 MB) into SEMSEARCH_ONNX_TEST_DIR on first run; the package is CGO and needs
+# a C compiler to build. SEMSEARCH_ONNX_MODEL=facebook/dinov2-base runs them on the other
+# pinned model (another ~350 MB).
+SEMSEARCH_ONNX_TEST_DIR ?= $(HOME)/.cache/semsearch-onnx
+test-images: ## run the real-model image tests: embeddings through ONNX Runtime and the media index end to end
+	@SEMSEARCH_MODELS=1 SEMSEARCH_ONNX_TEST_DIR=$(SEMSEARCH_ONNX_TEST_DIR) SEMSEARCH_ONNX_MODEL='$(SEMSEARCH_ONNX_MODEL)' go test ./provider/onnx/ -run 'TestEmbedImagesReal|TestMediaIndexReal' -v -count=1
 
 lint: ## run go linter
 	# depends on https://github.com/golangci/golangci-lint
@@ -58,6 +72,7 @@ coverage: ## check code coverage per package
 	@out=$$(TESTDBS_ALL=1 go test -cover -covermode=atomic ./...) || { echo "$$out"; exit 1; }; \
 	echo "$$out" | awk -v threshold=$(COVERAGE_THRESHOLD) ' \
 		/\[no test files\]/ { printf "⚠️  %-70s no test files\n", $$2; next } \
+		$$1 ~ /\/examples$$/ && $$2 == "coverage:" { printf "⚠️  %-70s a command wiring the real model; not gated\n", $$1; next } \
 		/coverage:/ { \
 			for (i = 1; i <= NF; i++) if ($$i == "coverage:") { cov = $$(i+1); sub(/%/, "", cov); break }; \
 			if (cov + 0 < threshold) { printf "❌ %-70s %s%% (below %s%%)\n", $$2, cov, threshold; fail = 1 } \
@@ -73,22 +88,35 @@ cover-report: ## generate a coverage report
 #==========================================================================================
 ##@ Evaluation
 #==========================================================================================
-# semeval runs TestCompareModels (eval/compare_test.go) over every model in
-# eval/testdata/models.yaml, sharing SEMSEARCH_YZMA_TEST_DIR with the real-model
+# semeval runs TestCompareModels (zarf/eval/compare_test.go) over every model in
+# zarf/eval/testdata/models.yaml, sharing SEMSEARCH_YZMA_TEST_DIR with the real-model
 # tests. Optional settings, with paths relative to the repository root:
 #   SEMEVAL_ONLY=org/a,org/b      run only these models
 #   SEMEVAL_DATASET=export.yaml   another dataset in the eval format (default: the golden set)
 #   SEMEVAL_MODELS=models.yaml    another models file
 #   SEMEVAL_JSON=results.json     also write every metric to this file
 #   SEMEVAL_THREADS=4             threads per model (default: yzma's, at most four)
-#   SEMEVAL_FLOOR=0.5             tagging cutoff to report at (default: 0.46, the Tagger's NameMinScore)
+#   SEMEVAL_FLOOR=0.5             tagging cutoff to report at (default: 0.46, the best name cutoff when every tag is judged on its own)
 # -timeout 0: downloading and running every candidate can outlast go test's default 10 minutes.
 semeval: ## compare embedding models on the golden set (downloads candidates into ~/.cache/semsearch-yzma; needs libffi8 libgomp1 libstdc++6)
 	@SEMEVAL=1 SEMSEARCH_YZMA_TEST_DIR='$(abspath $(SEMSEARCH_YZMA_TEST_DIR))' \
 		SEMEVAL_ONLY='$(SEMEVAL_ONLY)' SEMEVAL_THREADS='$(SEMEVAL_THREADS)' SEMEVAL_FLOOR='$(SEMEVAL_FLOOR)' \
 		SEMEVAL_DATASET='$(abspath $(SEMEVAL_DATASET))' SEMEVAL_MODELS='$(abspath $(SEMEVAL_MODELS))' \
 		SEMEVAL_JSON='$(abspath $(SEMEVAL_JSON))' \
-		go test ./eval/ -run '^TestCompareModels$$' -v -count=1 -timeout 0
+		go test ./zarf/eval/ -run '^TestCompareModels$$' -v -count=1 -timeout 0
+
+#==========================================================================================
+##@ Examples
+#==========================================================================================
+# example runs zarf/examples' `make run`; its settings pass through, e.g.
+# `make example MODEL=qwen3vl ADDR=0.0.0.0:8085`. `make example-prepare` fetches the
+# sample media first (needs curl and ffmpeg).
+.PHONY: example example-prepare
+example: ## serve the example pages on http://127.0.0.1:8085 (media search, auto tagging)
+	@$(MAKE) --no-print-directory -C zarf/examples run
+
+example-prepare: ## download the example's sample photos and render its sample clips (needs curl and ffmpeg)
+	@$(MAKE) --no-print-directory -C zarf/examples prepare
 
 #==========================================================================================
 ##@ Release

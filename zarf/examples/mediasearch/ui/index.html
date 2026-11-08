@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>langai · media search</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <a class="home" href="../">langai examples</a>
+  <h1>Media search</h1>
+  <div id="info" class="info">loading…</div>
+  <div class="actions">
+    <form id="textsearch" class="textsearch" hidden><input id="q" type="search" placeholder="search by text…" autocomplete="off"><button class="button" type="submit">search</button></form>
+    <label class="check" title="off: a click searches with the vectors the scan stored, no model runs; on: the file is embedded again, as an upload is"><input id="reembed" type="checkbox"> re-embed on click</label>
+    <label class="button">search with a file<input id="upload" type="file" accept="image/*,video/*" hidden></label>
+    <button id="rescan" class="button">rescan</button>
+  </div>
+</header>
+<main>
+  <section id="grid" class="grid"></section>
+  <aside id="detail" class="detail"><p class="hint">Click a thumbnail to see what looks like it, or search with a file of your own.</p></aside>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

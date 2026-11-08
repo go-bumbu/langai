@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/eval"
+	"github.com/go-bumbu/langai/zarf/eval"
 	"github.com/go-bumbu/langai/tagging"
 )
 
@@ -81,7 +81,7 @@ func TestGenerateTagsWithTheDefaultModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ds, err := eval.Load(filepath.Join("..", "..", "eval", "testdata", "golden.yaml"))
+	ds, err := eval.Load(filepath.Join("..", "..", "zarf", "eval", "testdata", "golden.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

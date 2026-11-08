@@ -18,6 +18,9 @@ type runtimeAPI interface {
 	load(dir string, logger *slog.Logger) error
 	// version is the version string the loaded libraries report.
 	version() string
+	// devices lists the ggml devices the loaded backends registered, in
+	// ggml's order (GPUs first).
+	devices() []device
 }
 
 // llamaAPI is the slice of llama.cpp the Embedder drives, with handles as
@@ -25,8 +28,9 @@ type runtimeAPI interface {
 // (llama.go) is the real implementation; backend_test.go has a fake.
 type llamaAPI interface {
 	runtimeAPI
-	// loadModel loads a GGUF file; a zero handle is an error.
-	loadModel(path string) (model uintptr, err error)
+	// loadModel loads a GGUF file with gpuLayers layers on the GPU (0: all
+	// on the CPU); a zero handle is an error.
+	loadModel(path string, gpuLayers int32) (model uintptr, err error)
 	freeModel(model uintptr)
 	nCtxTrain(model uintptr) int32
 	nEmbd(model uintptr) int32
@@ -59,7 +63,8 @@ type runtimeLoader struct {
 	once    sync.Once
 	err     error
 	dir     string
-	version string // what the loaded libraries reported, kept for Open's load log line
+	version string   // what the loaded libraries reported, kept for Open's load log line
+	devices []device // what the loaded backends registered, read once after load
 }
 
 // load loads the libraries in libDir through api on first call and checks
@@ -81,7 +86,7 @@ func (r *runtimeLoader) load(api runtimeAPI, libDir string, logger *slog.Logger)
 			r.err = fmt.Errorf("llama.cpp in %s reports version %q but provider/yzma is pinned to %s (build %s): the Go bindings only match that build", libDir, v, libVersion, LibTag)
 			return
 		}
-		r.dir, r.version = libDir, v
+		r.dir, r.version, r.devices = libDir, v, api.devices()
 	})
 	if r.err != nil {
 		return r.err
@@ -101,15 +106,17 @@ type llamaBackend struct {
 	mem   uintptr // 0 for models without a KV cache
 	embd  int32
 	lim   int
+	accel string // what runs the model, for the load log line: "cpu" or a device
 }
 
-// openLlama loads the libraries (once, through rt) and the model, and builds
+// openLlama loads the libraries (once, through rt) and the model, on the
+// GPU the accelerator resolves to (see resolveAccel) or the CPU, and builds
 // an embedding context sized to the model's training window capped at
 // maxTokens (defaultMaxTokens when <= 0), so one text of up to that many
 // tokens fits a single batch, which llama.cpp requires for non-causal
 // (encoder) models. Whatever it created is freed again when a later step
 // fails.
-func openLlama(api llamaAPI, rt *runtimeLoader, libDir, modelPath string, threads int, pooling Pooling, maxTokens int, logger *slog.Logger) (*llamaBackend, error) {
+func openLlama(api llamaAPI, rt *runtimeLoader, libDir, modelPath string, threads int, pooling Pooling, maxTokens int, accel Accel, gpuLayers int, logger *slog.Logger) (*llamaBackend, error) {
 	pooling, err := pooling.normalized()
 	if err != nil {
 		return nil, err
@@ -120,7 +127,11 @@ func openLlama(api llamaAPI, rt *runtimeLoader, libDir, modelPath string, thread
 	if err := rt.load(api, libDir, logger); err != nil {
 		return nil, err
 	}
-	model, err := api.loadModel(modelPath)
+	layers, used, err := resolveAccel(accel, gpuLayers, rt.devices)
+	if err != nil {
+		return nil, err
+	}
+	model, err := api.loadModel(modelPath, layers)
 	if err != nil {
 		return nil, fmt.Errorf("load model %s: %w", modelPath, err)
 	}
@@ -152,6 +163,7 @@ func openLlama(api llamaAPI, rt *runtimeLoader, libDir, modelPath string, thread
 		mem:   mem,
 		embd:  api.nEmbd(model),
 		lim:   lim,
+		accel: used,
 	}, nil
 }
 
