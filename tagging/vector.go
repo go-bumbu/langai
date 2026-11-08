@@ -5,8 +5,6 @@ import (
 	"math"
 	"slices"
 	"strings"
-
-	"github.com/go-bumbu/langai/vector"
 )
 
 // centroid returns the unit-length mean of vecs (dims long), or nil when
@@ -21,7 +19,7 @@ func centroid(vecs [][]float32, dims int) []float32 {
 			c[i] += m[i]
 		}
 	}
-	vector.Normalize(c)
+	normalize(c)
 	return c
 }
 
@@ -46,6 +44,21 @@ func memberMean(vecs [][]float32, dims int) []float64 {
 		sum[i] /= float64(len(vecs))
 	}
 	return sum
+}
+
+// normalize scales v to unit length in place; the zero vector stays zero.
+func normalize(v []float32) {
+	var n2 float64
+	for _, x := range v {
+		n2 += float64(x) * float64(x)
+	}
+	if n2 == 0 {
+		return
+	}
+	inv := 1 / math.Sqrt(n2)
+	for i := range v {
+		v[i] = float32(float64(v[i]) * inv)
+	}
 }
 
 // unit64 returns v made unit length, in float64; the zero vector stays zero.
@@ -95,7 +108,7 @@ func blend(nameVec []float32, memberVecs [][]float32, k float64) []float32 {
 	for i, x := range m {
 		out[i] = float32(x)
 	}
-	vector.Normalize(out)
+	normalize(out)
 	return out
 }
 

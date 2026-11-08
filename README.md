@@ -33,10 +33,11 @@ The packages form a tree, and the tree is also the plan: packages marked *planne
 not exist yet (see TODO.md).
 
 ```
-langai/                 the shared ports: Embedder, Completer, Role
+langai/                 the shared ports: Embedder, ImageEmbedder, Completer, Role
 │
 ├── search/             text → similar documents; image or video → similar images and videos
-├── tagging/            text → tags from your corpus (Tagger), text → new tags (Generator)
+├── tagging/            text → tags from your corpus (Tagger), text → new tags (Generator);
+│   │                   Tagger takes an Embedder, Generator a Completer and an Embedder
 │   ├── sqlitecache/    the Tagger's EmbeddingCache on SQLite
 │   ├── pgcache/        the Tagger's EmbeddingCache on Postgres
 │   ├── cachetest/      conformance suite for an EmbeddingCache
@@ -45,7 +46,7 @@ langai/                 the shared ports: Embedder, Completer, Role
 ├── caption/            planned: image or video → description
 │
 ├── provider/           model runtimes; each implements some of the ports
-│   ├── yzma/           llama.cpp in process: text embeddings, chat model
+│   ├── yzma/           llama.cpp in process: Embedder (New), Completer (NewCompleter)
 │   ├── onnx/           ONNX Runtime in process (CGO): SigLIP 2 and DINOv2 image embeddings
 │   ├── kronk/          planned: llama.cpp via kronk: embeddings, chat, vision, rerank
 │   ├── openai/         planned: OpenAI-compatible HTTP, remote APIs or a kronk server
@@ -65,6 +66,22 @@ langai/                 the shared ports: Embedder, Completer, Role
     ├── eval/           golden-set evaluation of embedding models
     └── examples/       the example service: a page per feature, media search and auto tagging
 ```
+
+A capability never names a model: it calls a port, and the app hands it a provider that
+implements that port. For tagging, with the default llama.cpp runtime:
+
+```
+                       port (langai)           provider (your choice)
+tagging.Tagger    ──▶  Embedder.Embed     ◀──  yzma.New            embedding model (GGUF)
+tagging.Generator ──▶  Completer.Complete ◀──  yzma.NewCompleter   chat model (GGUF): writes candidate tags
+                  ──▶  Embedder.Embed     ◀──  yzma.New            embedding model: scores them
+```
+
+The Tagger calls only the embedding model: it embeds the text and the tag names, and
+reads the tags and the hand-made links from your `Catalog`. The Generator calls both: the
+chat model proposes tag names, and the embedding model scores each against the text. The
+chat and embedding models are separate instances, and one embedding instance can serve
+both; nothing in `tagging` loads or picks a model.
 
 - **The root is the front door:** the shared ports and the capabilities (`search`,
   `tagging`, `mediatag`, `caption`) are what you import.
