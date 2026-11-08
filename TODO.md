@@ -304,4 +304,37 @@ and `todo list --json` cover the common actions — run `todo --help`.
 - [ ] sqlcache: Postgres and SQLite differ behind the shared code
   Postgres rejects NUL or invalid UTF-8 in index or model; concurrent CREATE TABLE IF NOT EXISTS at startup can fail.
 
+## providers and fetch
+
+- [ ] Vision.Embed puts raw text through the chat template
+  A NUL byte empties the chat message so every such text gets the same vector with no error; a media marker in a text fails the batch and a control token is parsed as one. Tokenize template pieces and user text separately, as the Completer does.
+- [ ] library install is unsynchronized
+  Two goroutines or processes on a fresh managed dir both download and one can remove the directory under the other's load; an Open asking for another build replaces the files under the loaded library. Mutex plus file lock, re-check after acquiring, refuse replacement when loaded.
+- [ ] NewCompleter drops Config.Accel and GPULayers
+  It builds a Runtime by hand instead of cfg.runtime(), so AccelCPU still offloads to a GPU.
+- [ ] ManagedLibDir deletes whatever LibDir points at
+  RemoveAll(libDir) after the download wipes a directory that held other files. Replace only a missing, empty or package-owned directory.
+- [ ] EmbedVideo treats unknown duration as short
+  ffprobe reports 0 for files without a container duration, and the whole file goes to libmtmd as one input; an extensionless path gives ffmpeg no muxer.
+- [ ] downloaded files are not durable and never re-checked
+  No Sync before rename, and any existing file is accepted, so a truncated file after a power loss fails every load. Sync, and compare the size when the spec has one.
+- [ ] interrupted downloads: fixed timeout, no resume, leaked temp files
+  Open overrides the caller's deadline with 15 min / 1 h, each retry starts from zero, and a killed process leaves multi-GB temp files.
+- [ ] ResizeCrop allocates gigabytes for thin images
+  A 1x20000 image allocates 664 MB. Scale only the central source rectangle.
+- [ ] hw reports CUDA from the driver alone
+  A host without the CUDA runtime gets the CUDA build, falls to CPU and stays there although Vulkan would work.
+- [ ] Vision evaluation ignores ctx
+  A video segment or photo cannot be cancelled and Close blocks behind it. Use llama's abort callback.
+- [ ] Vision.Embed errors where Embedder truncates
+  A long text fails the whole batch instead of being truncated to the context.
+- [ ] embedding length taken from n_embd, not n_embd_out
+  A custom GGUF with a smaller output size reads past llama.cpp's buffer.
+- [ ] llama.cpp log routing fixed by the first opener
+  A nil Logger on the first Open silences llama.cpp errors for every later instance.
+- [ ] transparency handled differently per provider
+  onnx premultiplies alpha (transparent becomes black), yzma composes on white. One shared flatten step.
+- [ ] digest comparison is case-sensitive
+  An uppercase SHA256 in a spec fails after the full download.
+
 # change log
