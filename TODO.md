@@ -275,4 +275,33 @@ and `todo list --json` cover the common actions — run `todo --help`.
 - [ ] MemStore differs from the SQL stores
   Scores 0 on a dimension mismatch instead of an error, accepts an empty index, aliases the caller's vectors and orders ties randomly. Covered by the conformance suite: ties by score, then doc id, then seq.
 
+## tagging and eval
+
+- [ ] one failing member text makes a space un-rebuildable
+  All single-piece texts go in one Embed call that returns nil on error, so nothing is cached and every Suggest re-embeds everything and returns ErrNotRebuilt. Embed in sub-batches, Put after each, isolate the bad text, and decide a policy for a poison member.
+- [ ] a rebuild cannot be cancelled and a panic in it kills the process
+  The flight runs under context.WithoutCancel with no recover and Tagger has no Close, so a hung embedder blocks callers and a rebuild can outlive the DB or model.
+- [ ] same Model name with another dimension gives zero scores or a panic
+  Cached vectors are never checked against Dimensions(); a ragged centroid indexes out of range. Treat a wrong-length hit as a miss, error on length mismatch in scores, refuse ragged input.
+- [ ] Prune drops vectors that are still needed
+  Only changed tags are rebuilt, so stable tags' entries never refresh their last-used time and Prune(now-30d) removes them. Add a way to retain every key of the current catalog before pruning; document the 24h refresh granularity.
+- [ ] parseTags keeps reply scaffolding as tags
+  JSON arrays, a Tags: label, think blocks and bold markers come back as tag text. Strip think blocks and fences, try JSON, cut labels, widen the trim sets.
+- [ ] cleanPath drops an existing path the model reused
+  A level over 4 words or 40 runes voids the whole path, and reused paths are not mapped back to the application's spelling.
+- [ ] one failed window discards a whole long Generate
+  No retry; an empty reply on the short path looks like no tags. Retry a window once and return partial results with a joined error.
+- [ ] best-effort cache writes fail the request
+  A failed last-used UPDATE fails Get and so Suggest although the vectors were read; a Put error discards freshly embedded vectors.
+- [ ] non-finite vectors are cached forever
+  embedBatch checks only lengths; one NaN member makes the tag never match until the cache is wiped.
+- [ ] callers at two revisions re-read the catalog on every call
+  Flights are keyed by state, so two revisions rebuild concurrently and the later Apply leaves an unrecorded state. Key the flight by space.
+- [ ] eval.aliasSim matches inside words
+  Tag ai scores 1 against container shipping; only the alias has a length floor. Match on word boundaries. Needs a re-measure of the long-set floors.
+- [ ] long-set headline numbers hide conventions
+  A zero-tag document counts as precision 0 and the F1 is that of the mean precision and recall, not the mean per-document F1.
+- [ ] sqlcache: Postgres and SQLite differ behind the shared code
+  Postgres rejects NUL or invalid UTF-8 in index or model; concurrent CREATE TABLE IF NOT EXISTS at startup can fail.
+
 # change log
