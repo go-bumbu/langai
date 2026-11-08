@@ -66,6 +66,15 @@ type ImageEmbedder interface {
 	Dimensions() int
 }
 
+// Identified is an optional port of a model runtime: Model names the model
+// whose vectors it makes, the same string for every instance of the same
+// model and a different one for any other model, so that a store can refuse
+// to mix two models' vectors in one collection even when their dimensions
+// agree. An empty name means the model is unknown, and nothing is checked.
+type Identified interface {
+	Model() string
+}
+
 // Completer is a chat model: it answers one prompt, a system message that sets
 // the task and a user message that carries the text, with the text of its
 // reply. provider/yzma's Completer is the local implementation. The user

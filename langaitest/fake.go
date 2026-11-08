@@ -20,6 +20,19 @@ type FakeEmbedder struct {
 	Dims int
 }
 
+// FakeEmbedderModel is the model name FakeEmbedder reports, whatever its
+// Dims.
+const FakeEmbedderModel = "langaitest/fake-embedder"
+
+// verify the interfaces are actually satisfied
+var (
+	_ langai.Embedder   = FakeEmbedder{}
+	_ langai.Identified = FakeEmbedder{}
+)
+
+// Model implements langai.Identified: FakeEmbedderModel.
+func (FakeEmbedder) Model() string { return FakeEmbedderModel }
+
 // Dimensions implements Embedder.
 func (f FakeEmbedder) Dimensions() int {
 	if f.Dims <= 0 {

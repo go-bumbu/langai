@@ -20,8 +20,17 @@ const fakeImageCells = 4
 // test needs.
 type FakeImageEmbedder struct{}
 
-// verify the interface is actually satisfied
-var _ langai.ImageEmbedder = FakeImageEmbedder{}
+// FakeImageEmbedderModel is the model name FakeImageEmbedder reports.
+const FakeImageEmbedderModel = "langaitest/fake-image-embedder"
+
+// verify the interfaces are actually satisfied
+var (
+	_ langai.ImageEmbedder = FakeImageEmbedder{}
+	_ langai.Identified    = FakeImageEmbedder{}
+)
+
+// Model implements langai.Identified: FakeImageEmbedderModel.
+func (FakeImageEmbedder) Model() string { return FakeImageEmbedderModel }
 
 // Dimensions implements ImageEmbedder: 4×4 cells of 3 channels.
 func (FakeImageEmbedder) Dimensions() int { return fakeImageCells * fakeImageCells * 3 }
