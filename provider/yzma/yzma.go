@@ -134,7 +134,8 @@ type ModelSpec struct {
 	File string
 	// URL is where File is downloaded from when absent. SHA256 is required
 	// with it, and Size, when non-zero, is checked too: Open never downloads
-	// unverified bytes (an unpinned file goes through Download first).
+	// unverified bytes (the evaluation tooling downloads an unpinned file itself
+	// and logs its digest).
 	URL    string
 	SHA256 string
 	Size   int64
@@ -249,7 +250,7 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 		return nil, fmt.Errorf("yzma: model %q: File is required", spec.Name)
 	}
 	if spec.URL != "" && spec.SHA256 == "" {
-		return nil, fmt.Errorf("yzma: model %q: URL without SHA256; pin the digest (Download reports it)", spec.Name)
+		return nil, fmt.Errorf("yzma: model %q: URL without SHA256; pin the digest (make semeval logs it for an unpinned entry)", spec.Name)
 	}
 	pooling, err := spec.Pooling.normalized()
 	if err != nil {

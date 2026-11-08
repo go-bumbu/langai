@@ -44,7 +44,7 @@ const (
 	// maxDownloadBytes caps any single download or extracted library; the
 	// largest evaluation candidate (bge-m3 Q8_0) is 635 MB. A download that
 	// is pinned to a larger exact size (a chat model) is capped at that size
-	// instead, see fetchFile.
+	// instead, see fetch.Downloader.
 	maxDownloadBytes = 1 << 30
 	// downloadTimeout bounds the first-use downloads as a whole.
 	downloadTimeout = 15 * time.Minute
@@ -144,25 +144,19 @@ func libFile() string {
 	return "libllama.so"
 }
 
+// downloader is how this package's downloads are made (see fetch.Downloader):
+// through httpClient, capped at maxDownloadBytes, each logged to logger under
+// this package's component.
+func downloader(logger *slog.Logger) fetch.Downloader {
+	return fetch.Downloader{Client: httpClient, UserAgent: userAgent, Limit: maxDownloadBytes, Logger: logger.With(logComponent)}
+}
+
 // ensureModelFile makes sure spec.File exists, downloading spec.URL into it
 // (verified against spec.SHA256 and, when set, spec.Size) when it is absent;
 // a download is logged to logger.
 func ensureModelFile(ctx context.Context, spec ModelSpec, logger *slog.Logger) error {
-	if _, err := os.Stat(spec.File); err == nil {
-		return nil
-	}
-	if spec.URL == "" {
-		return fmt.Errorf("model %q: %s does not exist and the spec has no URL to download it from", spec.Name, spec.File)
-	}
-	if err := os.MkdirAll(filepath.Dir(spec.File), 0o750); err != nil {
-		return err
-	}
 	a := asset{URL: spec.URL, SHA256: spec.SHA256, Size: spec.Size}
-	if err := fetchFile(ctx, "model "+spec.Name, a, spec.File, logger); err != nil {
-		return fmt.Errorf("download %s: %w", spec.Name, err)
-	}
-	logger.Info("downloaded model", logComponent, slog.String("path", spec.File))
-	return nil
+	return downloader(logger).EnsureFile(ctx, "model "+spec.Name, a, spec.File)
 }
 
 // ensureLibs makes sure libDir holds the llama.cpp libraries of the given
@@ -190,40 +184,16 @@ func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, b bui
 	if !ok {
 		return fmt.Errorf("no pinned llama.cpp %s build for %s: use an unmanaged LibDir populated with `yzma install`", b, plat)
 	}
-	parent := filepath.Dir(libDir)
-	if err := os.MkdirAll(parent, 0o750); err != nil {
-		return err
-	}
-	// Download and extract next to the final directory, then rename it into
-	// place: an interrupted install never leaves a half-filled libDir, and a
-	// half-filled one from an older crash (no libFile, see above) is replaced.
-	staging, err := os.MkdirTemp(parent, ".partial-")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(staging) }()
-	archive := filepath.Join(staging, "libs.tar.gz")
-	if err := fetchFile(ctx, "llama.cpp "+LibTag, a, archive, logger); err != nil {
-		return fmt.Errorf("download llama.cpp %s: %w", LibTag, err)
-	}
-	libs := filepath.Join(staging, "libs")
-	if err := os.Mkdir(libs, 0o750); err != nil {
-		return err
-	}
-	if err := extractLibs(archive, libs); err != nil {
-		return fmt.Errorf("extract llama.cpp %s: %w", LibTag, err)
-	}
 	rec, err := json.Marshal(libRecord{Tag: LibTag, Backend: b})
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(libs, libRecordFile), rec, 0o600); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(libDir); err != nil {
-		return err
-	}
-	if err := os.Rename(libs, libDir); err != nil {
+	// the staged install (see fetch.InstallDir) also replaces a half-filled
+	// directory from an older crash (no libFile, see above)
+	err = downloader(logger).InstallDir(ctx, fetch.DirInstall{
+		Dir: libDir, What: "llama.cpp " + LibTag, Archive: a, Extract: extractLibs, RecordFile: libRecordFile, Record: rec,
+	})
+	if err != nil {
 		return err
 	}
 	logger.Info("installed llama.cpp "+LibTag, logComponent, slog.String("dir", libDir), slog.String("build", b))
@@ -275,28 +245,6 @@ func checkInstallRecord(libDir string) error {
 		return nil
 	}
 	return fmt.Errorf("%s holds llama.cpp %s (upstream %q) but provider/yzma is pinned to build %s: reinstall it there with yzma %s's default version, or use a managed LibDir", libDir, rec.Tag, rec.UpstreamTag, LibTag, pinnedYzma)
-}
-
-// fetchFile downloads a to dest, verifying size and SHA-256 before the file
-// appears under its final name (see fetch.File). Since a download can take
-// minutes, it is logged (what names it) before it starts. The download is
-// capped at maxDownloadBytes, or at the asset's exact size when that is
-// larger.
-func fetchFile(ctx context.Context, what string, a asset, dest string, logger *slog.Logger) error {
-	logger.Info("downloading "+what, logComponent, slog.String("url", a.URL), slog.Int64("size", a.Size), slog.String("sha256", a.SHA256), slog.String("dest", dest))
-	return fetch.File(ctx, httpClient, userAgent, a, dest, maxDownloadBytes)
-}
-
-// Download fetches url into dest with nothing to verify it against and
-// returns the SHA-256 and size of what it wrote, so a new model can be pinned
-// in the evaluation command's models file. Open never calls it: a ModelSpec
-// with a URL must carry the digest.
-func Download(ctx context.Context, url, dest string, logger *slog.Logger) (string, int64, error) {
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
-	logger.Info("downloading unpinned file", logComponent, slog.String("url", url), slog.String("dest", dest))
-	return fetch.Unpinned(ctx, httpClient, userAgent, url, dest, maxDownloadBytes)
 }
 
 // wantLib reports whether an archive entry (by base name) is one of the

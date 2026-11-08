@@ -556,7 +556,7 @@ func TestNew_LoadsThroughTheAPI(t *testing.T) {
 		{"downloading llama.cpp " + LibTag, []string{"url=" + libAsset.URL, fmt.Sprintf("size=%d", libAsset.Size), "sha256=" + libAsset.SHA256, "dest="}},
 		{"installed llama.cpp " + LibTag, []string{"dir=" + libDir}},
 		{"downloading model " + DefaultModel, []string{"url=" + modelAsset.URL, fmt.Sprintf("size=%d", modelAsset.Size), "sha256=" + modelAsset.SHA256, "dest=" + modelPath}},
-		{"downloaded model", []string{"path=" + modelPath}},
+		{"downloaded model " + DefaultModel, []string{"path=" + modelPath}},
 		{"llama.cpp loaded", []string{"dir=" + libDir, "version=" + libVersion, "threads=2", "model=" + DefaultModel}},
 	})
 	// the load line reuses the version the loader read: no second FFI call

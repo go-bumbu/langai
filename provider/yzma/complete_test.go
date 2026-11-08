@@ -789,7 +789,7 @@ func TestOpenCompleter_DownloadsAndLoads(t *testing.T) {
 		{"downloading llama.cpp " + LibTag, nil},
 		{"installed llama.cpp " + LibTag, nil},
 		{"downloading model org/chat", []string{"url=" + modelAsset.URL, "sha256=" + modelAsset.SHA256, "dest=" + modelPath}},
-		{"downloaded model", []string{"path=" + modelPath}},
+		{"downloaded model org/chat", []string{"path=" + modelPath}},
 		{"llama.cpp loaded", []string{"version=" + libVersion, "threads=2", "model=org/chat"}},
 	})
 	got, err := c.Complete(context.Background(), "s", "u")

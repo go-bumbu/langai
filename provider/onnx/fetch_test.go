@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,15 @@ func serve(t *testing.T, body []byte) (*httptest.Server, asset) {
 }
 
 func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// writeInstallRecord records version and variant in dir, as an install does.
+func writeInstallRecord(dir, variant string) error {
+	data, err := json.Marshal(installRecord{Version: LibVersion, Variant: variant})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, installRecordFile), data, 0o600)
+}
 
 type tarEntry struct {
 	name, link string // link set = symlink to link

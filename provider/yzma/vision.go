@@ -195,7 +195,7 @@ func OpenVision(ctx context.Context, spec VisionSpec, cfg VisionConfig) (*Vision
 		return nil, fmt.Errorf("yzma: vision model %q: File and Projector are required", spec.Name)
 	}
 	if (spec.URL != "" && spec.SHA256 == "") || (spec.ProjectorURL != "" && spec.ProjectorSHA256 == "") {
-		return nil, fmt.Errorf("yzma: vision model %q: URL without SHA256; pin the digest (Download reports it)", spec.Name)
+		return nil, fmt.Errorf("yzma: vision model %q: URL without SHA256; pin the digest (make semeval logs it for an unpinned entry)", spec.Name)
 	}
 	if cfg.FPS < 0 || cfg.SegmentLength < 0 || cfg.MaxSegments < 0 || cfg.ContextTokens < 0 {
 		return nil, fmt.Errorf("yzma: vision model %q: FPS, SegmentLength, MaxSegments and ContextTokens must not be negative", spec.Name)

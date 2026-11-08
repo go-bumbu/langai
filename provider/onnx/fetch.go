@@ -160,34 +160,19 @@ func readInstallRecord(libDir string) (*installRecord, error) {
 	return &rec, nil
 }
 
-// writeInstallRecord records version and variant in dir.
-func writeInstallRecord(dir, variant string) error {
-	data, err := json.Marshal(installRecord{Version: LibVersion, Variant: variant})
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, installRecordFile), data, 0o600)
+// downloader is how this package's downloads are made (see fetch.Downloader):
+// through httpClient, capped at maxDownloadBytes, each logged to logger under
+// this package's component.
+func downloader(logger *slog.Logger) fetch.Downloader {
+	return fetch.Downloader{Client: httpClient, UserAgent: userAgent, Limit: maxDownloadBytes, Logger: logger.With(logComponent)}
 }
 
 // ensureModelFile makes sure spec.File exists, downloading spec.URL into it
 // (verified against spec.SHA256 and, when set, spec.Size) when it is absent;
 // a download is logged to logger.
 func ensureModelFile(ctx context.Context, spec ModelSpec, logger *slog.Logger) error {
-	if _, err := os.Stat(spec.File); err == nil {
-		return nil
-	}
-	if spec.URL == "" {
-		return fmt.Errorf("model %q: %s does not exist and the spec has no URL to download it from", spec.Name, spec.File)
-	}
-	if err := os.MkdirAll(filepath.Dir(spec.File), 0o750); err != nil {
-		return err
-	}
 	a := asset{URL: spec.URL, SHA256: spec.SHA256, Size: spec.Size}
-	if err := fetchFile(ctx, "model "+spec.Name, a, spec.File, logger); err != nil {
-		return fmt.Errorf("download %s: %w", spec.Name, err)
-	}
-	logger.Info("downloaded model", logComponent, slog.String("path", spec.File))
-	return nil
+	return downloader(logger).EnsureFile(ctx, "model "+spec.Name, a, spec.File)
 }
 
 // ensureLibs makes sure libDir holds the ONNX Runtime build the variant
@@ -219,36 +204,17 @@ func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, varia
 	if !ok {
 		return fmt.Errorf("no pinned onnxruntime %s build for %s: use an unmanaged LibDir holding the release's lib/ directory", variant, plat)
 	}
-	parent := filepath.Dir(libDir)
-	if err := os.MkdirAll(parent, 0o750); err != nil {
-		return err
-	}
-	// Download and extract next to the final directory, then rename it into
-	// place: an interrupted install never leaves a half-filled libDir, and a
-	// half-filled one from an older crash (no library, see above) is replaced.
-	staging, err := os.MkdirTemp(parent, ".partial-")
+	record, err := json.Marshal(installRecord{Version: LibVersion, Variant: variant})
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(staging) }()
-	archive := filepath.Join(staging, "libs.tgz")
-	if err := fetchFile(ctx, "onnxruntime "+LibVersion+" ("+variant+")", a, archive, logger); err != nil {
-		return fmt.Errorf("download onnxruntime %s: %w", LibVersion, err)
-	}
-	libs := filepath.Join(staging, "libs")
-	if err := os.Mkdir(libs, 0o750); err != nil {
-		return err
-	}
-	if err := extractLibs(archive, libs); err != nil {
-		return fmt.Errorf("extract onnxruntime %s: %w", LibVersion, err)
-	}
-	if err := writeInstallRecord(libs, variant); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(libDir); err != nil {
-		return err
-	}
-	if err := os.Rename(libs, libDir); err != nil {
+	// the staged install (see fetch.InstallDir) also replaces a half-filled
+	// directory from an older crash (no library, see above)
+	err = downloader(logger).InstallDir(ctx, fetch.DirInstall{
+		Dir: libDir, What: "onnxruntime " + LibVersion + " (" + variant + ")", Archive: a, Extract: extractLibs,
+		RecordFile: installRecordFile, Record: record,
+	})
+	if err != nil {
 		return err
 	}
 	logger.Info("installed onnxruntime "+LibVersion, logComponent, slog.String("dir", libDir), slog.String("variant", variant))
@@ -264,14 +230,6 @@ func checkInstallRecord(libDir string, rec *installRecord, variant string) error
 		return nil
 	}
 	return fmt.Errorf("%s holds onnxruntime %s (%s) but %s (%s) is wanted: install that build there, or use a managed LibDir", libDir, rec.Version, rec.Variant, LibVersion, variant)
-}
-
-// fetchFile downloads a to dest, verifying size and SHA-256 before the file
-// appears under its final name (see fetch.File). Since a download can take
-// minutes, it is logged (what names it) before it starts.
-func fetchFile(ctx context.Context, what string, a asset, dest string, logger *slog.Logger) error {
-	logger.Info("downloading "+what, logComponent, slog.String("url", a.URL), slog.Int64("size", a.Size), slog.String("sha256", a.SHA256), slog.String("dest", dest))
-	return fetch.File(ctx, httpClient, userAgent, a, dest, maxDownloadBytes)
 }
 
 // wantLib reports whether an archive entry is one of the runtime libraries:

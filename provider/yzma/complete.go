@@ -82,7 +82,7 @@ func (s CompleterSpec) validate() error {
 	case s.File == "":
 		return fmt.Errorf("yzma: model %q: File is required", s.Name)
 	case s.URL != "" && s.SHA256 == "":
-		return fmt.Errorf("yzma: model %q: URL without SHA256; pin the digest (Download reports it)", s.Name)
+		return fmt.Errorf("yzma: model %q: URL without SHA256; pin the digest (make semeval logs it for an unpinned entry)", s.Name)
 	case s.Template == "":
 		return fmt.Errorf("yzma: model %q: Template is required", s.Name)
 	case s.ContextTokens < 0 || s.MaxNewTokens < 0:

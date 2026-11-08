@@ -33,60 +33,6 @@ func serve(t *testing.T, body []byte) (*httptest.Server, asset) {
 // TestNew_LoadsThroughTheAPI checks the lines themselves.
 func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
-func TestFetchFile_WritesVerifiedFile(t *testing.T) {
-	_, a := serve(t, []byte("hello"))
-	dest := filepath.Join(t.TempDir(), "out.bin")
-	if err := fetchFile(context.Background(), "test file", a, dest, discardLogger()); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(dest)
-	if err != nil || string(got) != "hello" {
-		t.Fatalf("dest = %q, %v; want hello", got, err)
-	}
-	entries, _ := os.ReadDir(filepath.Dir(dest))
-	if len(entries) != 1 {
-		t.Fatalf("temp file left behind: %v", entries)
-	}
-}
-
-// TestFetchFile_RejectsDigestMismatch: a corrupted or replaced download must
-// never appear under its final name, and must not leave temp files around.
-func TestFetchFile_RejectsDigestMismatch(t *testing.T) {
-	_, a := serve(t, []byte("hello"))
-	a.SHA256 = strings.Repeat("0", 64)
-	dest := filepath.Join(t.TempDir(), "out.bin")
-	err := fetchFile(context.Background(), "test file", a, dest, discardLogger())
-	if err == nil || !strings.Contains(err.Error(), "sha256") {
-		t.Fatalf("err = %v, want a digest error", err)
-	}
-	if _, statErr := os.Stat(dest); statErr == nil {
-		t.Fatal("a file with the wrong digest must not appear under its final name")
-	}
-	entries, _ := os.ReadDir(filepath.Dir(dest))
-	if len(entries) != 0 {
-		t.Fatalf("temp file left behind: %v", entries)
-	}
-}
-
-func TestFetchFile_RejectsWrongSize(t *testing.T) {
-	_, a := serve(t, []byte("hello"))
-	a.Size = 4
-	err := fetchFile(context.Background(), "test file", a, filepath.Join(t.TempDir(), "out.bin"), discardLogger())
-	if err == nil || !strings.Contains(err.Error(), "bytes") {
-		t.Fatalf("err = %v, want a size error", err)
-	}
-}
-
-func TestFetchFile_ReportsHTTPErrors(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(srv.Close)
-	a := asset{URL: srv.URL + "/missing", SHA256: strings.Repeat("0", 64)}
-	err := fetchFile(context.Background(), "test file", a, filepath.Join(t.TempDir(), "out.bin"), discardLogger())
-	if err == nil || !strings.Contains(err.Error(), "404") {
-		t.Fatalf("err = %v, want the HTTP status", err)
-	}
-}
-
 type tarEntry struct {
 	name, link string // link set = symlink to link
 	body       string
@@ -355,40 +301,5 @@ func TestPinnedAssetsAreWellFormed(t *testing.T) {
 	}
 	if _, ok := libAssets["linux/amd64/cpu"]; !ok {
 		t.Error("linux/amd64/cpu (the release target) has no pinned llama.cpp build")
-	}
-}
-
-// TestDownload_ReportsDigestAndSize: an unpinned download lands under its
-// final name and reports what to pin, with no temp file left behind.
-func TestDownload_ReportsDigestAndSize(t *testing.T) {
-	_, a := serve(t, []byte("hello"))
-	dest := filepath.Join(t.TempDir(), "models", "out.gguf")
-	sum, n, err := Download(context.Background(), a.URL, dest, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sum != a.SHA256 || n != a.Size {
-		t.Fatalf("Download = %s, %d; want %s, %d", sum, n, a.SHA256, a.Size)
-	}
-	got, err := os.ReadFile(dest)
-	if err != nil || string(got) != "hello" {
-		t.Fatalf("dest = %q, %v; want hello", got, err)
-	}
-	entries, _ := os.ReadDir(filepath.Dir(dest))
-	if len(entries) != 1 {
-		t.Fatalf("temp file left behind: %v", entries)
-	}
-}
-
-func TestDownload_ReportsHTTPErrors(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(srv.Close)
-	dest := filepath.Join(t.TempDir(), "out.gguf")
-	_, _, err := Download(context.Background(), srv.URL+"/missing", dest, nil)
-	if err == nil || !strings.Contains(err.Error(), "404") {
-		t.Fatalf("err = %v, want the HTTP status", err)
-	}
-	if _, statErr := os.Stat(dest); statErr == nil {
-		t.Fatal("a failed download appeared under its final name")
 	}
 }
