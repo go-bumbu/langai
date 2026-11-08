@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -25,8 +26,8 @@ func openTestDB(t *testing.T) *sql.DB {
 }
 
 func TestConformance(t *testing.T) {
-	cachetest.Run(t, func(t *testing.T) tagging.EmbeddingCache {
-		c, err := New(t.Context(), openTestDB(t))
+	cachetest.Run(t, func(t *testing.T, now func() time.Time) tagging.EmbeddingCache {
+		c, err := open(t.Context(), openTestDB(t), now)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}

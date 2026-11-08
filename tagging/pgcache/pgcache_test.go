@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/go-bumbu/testdbs"
 
@@ -46,8 +47,8 @@ func newDB(t *testing.T) *sql.DB {
 }
 
 func TestConformance(t *testing.T) {
-	cachetest.Run(t, func(t *testing.T) tagging.EmbeddingCache {
-		c, err := New(t.Context(), newDB(t))
+	cachetest.Run(t, func(t *testing.T, now func() time.Time) tagging.EmbeddingCache {
+		c, err := open(t.Context(), newDB(t), now)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}

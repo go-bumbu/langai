@@ -27,7 +27,17 @@ type MemCache struct {
 
 // NewMemCache returns an empty MemCache.
 func NewMemCache() *MemCache {
-	return &MemCache{indexes: map[string]map[CacheKey]cacheEntry{}, now: time.Now}
+	return NewMemCacheWithClock(time.Now)
+}
+
+// NewMemCacheWithClock returns an empty MemCache that takes its last-used
+// times from now instead of time.Now, for a test that decides what time it is
+// (the conformance suite, cachetest, does). A nil now means time.Now.
+func NewMemCacheWithClock(now func() time.Time) *MemCache {
+	if now == nil {
+		now = time.Now
+	}
+	return &MemCache{indexes: map[string]map[CacheKey]cacheEntry{}, now: now}
 }
 
 // Get implements EmbeddingCache. The returned slices are copies.

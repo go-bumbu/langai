@@ -28,6 +28,11 @@ import (
 // New returns an EmbeddingCache using db, creating its table if needed, and
 // checks that db is a working SQLite database.
 func New(ctx context.Context, db *sql.DB) (tagging.EmbeddingCache, error) {
+	return open(ctx, db, time.Now)
+}
+
+// open is New on the clock now, which the tests set.
+func open(ctx context.Context, db *sql.DB, now func() time.Time) (tagging.EmbeddingCache, error) {
 	if db == nil {
 		return nil, errors.New("nil database handle")
 	}
@@ -35,5 +40,5 @@ func New(ctx context.Context, db *sql.DB) (tagging.EmbeddingCache, error) {
 	if err := db.QueryRowContext(ctx, `SELECT sqlite_version()`).Scan(&v); err != nil {
 		return nil, fmt.Errorf("sqlite not available: %w", err)
 	}
-	return sqlcache.New(ctx, db, sqlcache.SQLite, time.Now)
+	return sqlcache.New(ctx, db, sqlcache.SQLite, now)
 }

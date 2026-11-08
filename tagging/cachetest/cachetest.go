@@ -3,8 +3,14 @@
 // same way:
 //
 //	func TestConformance(t *testing.T) {
-//		cachetest.Run(t, func(t *testing.T) tagging.EmbeddingCache { return open(t) })
+//		cachetest.Run(t, func(t *testing.T, now func() time.Time) tagging.EmbeddingCache { return open(t, now) })
 //	}
+//
+// The suite runs on a clock of its own, which it moves by hand: a cache
+// records when an entry was last used, and what a Get or a Prune does a day
+// later can only be checked by a suite that decides what time it is. So a
+// backend must be able to take its last-used times from the clock it is
+// handed.
 package cachetest
 
 import (
@@ -36,31 +42,80 @@ var (
 	k2 = tagging.KeyFor("m", langai.RoleQuery, "two")
 )
 
+// clock is the time the cache under test runs on. It starts at a whole second,
+// since a SQL backend keeps its times in seconds, and moves only when a test
+// advances it.
+type clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+// newClock returns a clock at a fixed time.
+func newClock() *clock {
+	return &clock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
+}
+
+// Now is the clock's time: what the cache under test is handed as its now.
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+// advance moves the clock forward by d.
+func (c *clock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// timeless adapts a test that never looks at the time.
+func timeless(run func(*testing.T, tagging.EmbeddingCache)) func(*testing.T, tagging.EmbeddingCache, *clock) {
+	return func(t *testing.T, c tagging.EmbeddingCache, _ *clock) { run(t, c) }
+}
+
 // Run runs the suite against the cache newCache returns. Each subtest calls
 // newCache with its own t, so a backend can tie what it opens to t.Cleanup, and
-// the cache it returns must hold nothing yet.
-func Run(t *testing.T, newCache func(t *testing.T) tagging.EmbeddingCache) {
+// with the clock of that subtest: the cache it returns must hold nothing yet,
+// and must take every last-used time from now, never from time.Now.
+func Run(t *testing.T, newCache func(t *testing.T, now func() time.Time) tagging.EmbeddingCache) {
 	cases := []struct {
 		name string
-		run  func(t *testing.T, c tagging.EmbeddingCache)
+		run  func(t *testing.T, c tagging.EmbeddingCache, clk *clock)
 	}{
-		{"VectorsRoundTrip", vectorsRoundTrip},
-		{"MissingKeysAreAbsent", missingKeysAreAbsent},
-		{"EmptyKeysReturnEmpty", emptyKeysReturnEmpty},
-		{"PutReplaces", putReplaces},
-		{"KeysDifferByModelAndRole", keysDifferByModelAndRole},
-		{"IndexesAreIsolated", indexesAreIsolated},
-		{"EmptyIndexIsAnError", emptyIndexIsAnError},
-		{"EmptyVectorIsAnError", emptyVectorIsAnError},
-		{"SlicesAreCopies", slicesAreCopies},
-		{"DeleteIndexDropsOnlyThatIndex", deleteIndexDropsOnlyThatIndex},
+		{"VectorsRoundTrip", timeless(vectorsRoundTrip)},
+		{"MissingKeysAreAbsent", timeless(missingKeysAreAbsent)},
+		{"EmptyKeysReturnEmpty", timeless(emptyKeysReturnEmpty)},
+		{"DuplicateKeysCountOnce", timeless(duplicateKeysCountOnce)},
+		{"PutReplaces", timeless(putReplaces)},
+		{"KeysDifferByModelAndRole", timeless(keysDifferByModelAndRole)},
+		{"IndexesAreIsolated", timeless(indexesAreIsolated)},
+		{"EmptyIndexIsAnError", timeless(emptyIndexIsAnError)},
+		{"EmptyVectorIsAnError", timeless(emptyVectorIsAnError)},
+		{"SlicesAreCopies", timeless(slicesAreCopies)},
+		{"DeleteIndexDropsOnlyThatIndex", timeless(deleteIndexDropsOnlyThatIndex)},
 		{"PruneDeletesUnused", pruneDeletesUnused},
-		{"LargeBatchesRoundTrip", largeBatchesRoundTrip},
-		{"ConcurrentPutsAllLand", concurrentPutsAllLand},
-		{"OverlappingConcurrentPutsAllLand", overlappingConcurrentPutsAllLand},
+		{"PruneKeepsWhatWasUsedAtTheCutoff", pruneKeepsWhatWasUsedAtTheCutoff},
+		{"GetRefreshesStaleEntries", getRefreshesStaleEntries},
+		{"LargeBatchesRoundTrip", timeless(largeBatchesRoundTrip)},
+		{"ConcurrentPutsAllLand", timeless(concurrentPutsAllLand)},
+		{"OverlappingConcurrentPutsAllLand", timeless(overlappingConcurrentPutsAllLand)},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) { c.run(t, newCache(t)) })
+		t.Run(c.name, func(t *testing.T) {
+			clk := newClock()
+			c.run(t, newCache(t, clk.Now), clk)
+		})
+	}
+}
+
+// prune removes what was last used before cutoff and fails the test unless
+// that was want entries.
+func prune(t *testing.T, c tagging.EmbeddingCache, cutoff time.Time, want int64) {
+	t.Helper()
+	n, err := c.Prune(context.Background(), cutoff)
+	if err != nil || n != want {
+		t.Fatalf("Prune = %d, %v; want %d, nil", n, err, want)
 	}
 }
 
@@ -192,25 +247,61 @@ func deleteIndexDropsOnlyThatIndex(t *testing.T, c tagging.EmbeddingCache) {
 
 // pruneDeletesUnused: Prune removes what was last used before the cutoff, of
 // every index, and counts it.
-func pruneDeletesUnused(t *testing.T, c tagging.EmbeddingCache) {
-	ctx := context.Background()
+func pruneDeletesUnused(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
 	k3 := tagging.KeyFor("m", langai.RoleQuery, "three")
 	put(t, c, "a", map[tagging.CacheKey][]float32{k1: v1, k2: v2})
 	put(t, c, "b", map[tagging.CacheKey][]float32{k3: v1})
 
-	n, err := c.Prune(ctx, time.Now().Add(-time.Hour))
-	if err != nil || n != 0 {
-		t.Fatalf("Prune of nothing unused = %d, %v; want 0, nil", n, err)
-	}
-	n, err = c.Prune(ctx, time.Now().Add(time.Hour))
-	if err != nil || n != 3 {
-		t.Fatalf("Prune of everything = %d, %v; want 3, nil", n, err)
-	}
+	prune(t, c, clk.Now().Add(-time.Hour), 0)
+	prune(t, c, clk.Now().Add(time.Hour), 3)
 	if got := get(t, c, "a", k1, k2); len(got) != 0 {
 		t.Errorf("index a after Prune = %v, want empty", got)
 	}
 	if got := get(t, c, "b", k3); len(got) != 0 {
 		t.Errorf("index b after Prune = %v, want empty", got)
+	}
+}
+
+// pruneKeepsWhatWasUsedAtTheCutoff: the cutoff is "last used before", so an
+// entry last used at that very time stays, and goes a second later.
+func pruneKeepsWhatWasUsedAtTheCutoff(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1})
+	prune(t, c, clk.Now(), 0)
+	if got := get(t, c, idx, k1); len(got) != 1 {
+		t.Fatal("an entry last used at the cutoff was pruned")
+	}
+	prune(t, c, clk.Now().Add(time.Second), 1)
+}
+
+// getRefreshesStaleEntries: a Get of an entry last used CacheRefreshAfter ago
+// or longer rewrites its last-used time, so a Prune that follows keeps what is
+// still read, while an entry nobody read keeps its old time and goes. A
+// backend that skips the refresh passes every other test and then loses the
+// vectors in use.
+func getRefreshesStaleEntries(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1, k2: v2})
+	clk.advance(tagging.CacheRefreshAfter + time.Hour)
+	if got := get(t, c, idx, k1); !reflect.DeepEqual(got[k1], v1) {
+		t.Fatalf("k1 = %v, want %v", got[k1], v1)
+	}
+	// k1 was read a moment ago; k2 not since it was stored, a day and an hour ago
+	prune(t, c, clk.Now().Add(-time.Hour), 1)
+	if got := get(t, c, idx, k1, k2); len(got) != 1 || !reflect.DeepEqual(got[k1], v1) {
+		t.Errorf("after Prune = %v, want only k1: the Get refreshed its last-used time", got)
+	}
+}
+
+// duplicateKeysCountOnce: a key listed several times in one Get is one entry,
+// and does not disturb the others.
+func duplicateKeysCountOnce(t *testing.T, c tagging.EmbeddingCache) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1, k2: v2})
+	got := get(t, c, idx, k1, k2, k1, k1)
+	if len(got) != 2 || !reflect.DeepEqual(got[k1], v1) || !reflect.DeepEqual(got[k2], v2) {
+		t.Errorf("Get with a key listed three times = %v, want k1 and k2", got)
+	}
+	missing := tagging.KeyFor("m", langai.RoleQuery, "missing")
+	if got := get(t, c, idx, missing, missing); len(got) != 0 {
+		t.Errorf("Get with a missing key listed twice = %v, want empty", got)
 	}
 }
 
