@@ -6,7 +6,6 @@ import (
 	"image"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/vector"
 )
 
 // fakeImageCells is the thumbnail side of FakeImageEmbedder: the image is
@@ -40,7 +39,7 @@ func (f FakeImageEmbedder) EmbedImages(_ context.Context, images []image.Image) 
 			return nil, errors.New("langaitest: empty image")
 		}
 		vec := thumbnail(img, fakeImageCells)
-		vector.Normalize(vec)
+		langai.Normalize(vec)
 		out[i] = vec
 	}
 	return out, nil

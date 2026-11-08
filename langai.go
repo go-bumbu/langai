@@ -1,8 +1,9 @@
 // Package langai holds what the language-AI packages of this module share:
 // the ports a model runtime implements, Embedder for text embedding models,
 // ImageEmbedder for image embedding models and Completer for chat models, and
-// the Role an Embedder is asked to embed a text as. It imports no runtime and
-// no store.
+// the Role an Embedder is asked to embed a text as, and Normalize, which the
+// providers scale their vectors to unit length with. It imports no runtime
+// and no store.
 //
 // The capabilities live in subpackages: search answers free-text queries over
 // documents and finds the images and videos that look like a given image or

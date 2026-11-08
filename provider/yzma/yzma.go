@@ -35,7 +35,6 @@ import (
 
 	"github.com/go-bumbu/langai"
 	"github.com/go-bumbu/langai/internal/hw"
-	"github.com/go-bumbu/langai/vector"
 )
 
 // DefaultModel is the logical identity of the model New runs unless
@@ -405,7 +404,7 @@ func (e *Embedder) encode(_ context.Context, text string) ([]float32, error) {
 	if len(vec) == 0 {
 		return nil, errors.New("model returned no vector")
 	}
-	vector.Normalize(vec)
+	langai.Normalize(vec)
 	return vec, nil
 }
 

@@ -17,7 +17,6 @@ import (
 
 	"github.com/go-bumbu/langai"
 	"github.com/go-bumbu/langai/media"
-	"github.com/go-bumbu/langai/vector"
 )
 
 // DefaultVisionModel is the model NewVision runs unless VisionConfig.Model
@@ -603,7 +602,7 @@ func (v *Vision) embedLocked(_ context.Context, user string, bitmaps []uintptr) 
 	}
 	out := make([]float32, len(view))
 	copy(out, view)
-	vector.Normalize(out)
+	langai.Normalize(out)
 	return out, nil
 }
 

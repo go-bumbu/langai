@@ -9,7 +9,6 @@ import (
 	"unicode"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/vector"
 )
 
 // FakeEmbedder is a deterministic Embedder for tests: it hashes words into a
@@ -46,7 +45,7 @@ func (f FakeEmbedder) Embed(_ context.Context, _ langai.Role, texts []string) ([
 			}
 			vec[bucket] += sign
 		}
-		vector.Normalize(vec)
+		langai.Normalize(vec)
 		out[i] = vec
 	}
 	return out, nil

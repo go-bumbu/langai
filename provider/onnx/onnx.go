@@ -30,7 +30,6 @@ import (
 	"sync"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/vector"
 )
 
 // DefaultModel is the logical identity of the model New runs unless
@@ -475,7 +474,7 @@ func (e *Embedder) encode(images []image.Image) ([][]float32, error) {
 		return nil, fmt.Errorf("model returned %d-dimensional vectors, expected %d", len(out[0]), e.dims)
 	}
 	for _, vec := range out {
-		vector.Normalize(vec)
+		langai.Normalize(vec)
 	}
 	return out, nil
 }

@@ -7,10 +7,7 @@
 // with the pgvector extension).
 package vector
 
-import (
-	"context"
-	"math"
-)
+import "context"
 
 // Chunk is one embedded piece of a document as handed to a Store: its
 // position within the document, the text that was embedded, and its vector.
@@ -52,20 +49,4 @@ type Store interface {
 	Chunks(ctx context.Context, index, partition, collection, docID string) ([]Chunk, error)
 	Search(ctx context.Context, index, partition, collection string, vector []float32, limit int) ([]Match, error)
 	SearchScope(ctx context.Context, index string, f ScopeFilter, vector []float32, limit int) ([]Match, error)
-}
-
-// Normalize scales vec to unit length in place, so cosine similarity and dot
-// product rank alike. An all-zero vector has no direction and stays zero.
-func Normalize(vec []float32) {
-	var sum float64
-	for _, v := range vec {
-		sum += float64(v) * float64(v)
-	}
-	if sum == 0 {
-		return
-	}
-	inv := 1 / math.Sqrt(sum)
-	for i := range vec {
-		vec[i] = float32(float64(vec[i]) * inv)
-	}
 }
