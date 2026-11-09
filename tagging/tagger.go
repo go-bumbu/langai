@@ -8,7 +8,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // Defaults for the zero values of TaggerConfig. The two minimums are the
@@ -123,10 +123,10 @@ type Tagger struct {
 }
 
 // Close stops the Tagger: every later call on it, or on one of its Scopes,
-// returns an error wrapping langai.ErrClosed. The calls and rebuilds in
+// returns an error wrapping sense.ErrClosed. The calls and rebuilds in
 // flight have their contexts cancelled, and Close returns when they have
 // ended, so nothing of the Tagger runs after it; their callers get an error
-// wrapping langai.ErrClosed too. An Embedder or a Catalog that does not
+// wrapping sense.ErrClosed too. An Embedder or a Catalog that does not
 // return when its context ends holds Close up for as long. It does not close
 // the Embedder, the cache or the index, which the application made. Closing
 // twice is fine, and the error is always nil.
@@ -161,7 +161,7 @@ func WithTagIndex(ix TagIndex) TaggerOption {
 // +Inf would let them match none; a SmoothingK of +Inf would leave every
 // member out of its tag's vector, and one of NaN would let no tag with members
 // match.
-func NewTagger(emb langai.Embedder, cat Catalog, cache EmbeddingCache, cfg TaggerConfig, opts ...TaggerOption) (*Tagger, error) {
+func NewTagger(emb sense.Embedder, cat Catalog, cache EmbeddingCache, cfg TaggerConfig, opts ...TaggerOption) (*Tagger, error) {
 	var o taggerOptions
 	for _, opt := range opts {
 		opt(&o)
@@ -236,7 +236,7 @@ func checkConfig(cfg TaggerConfig) (TaggerConfig, string, error) {
 // or an Embed after the one that failed worked, of a later text or, when
 // there is none, of the tag's name embedded once more as a canary. An
 // embedder that fails on that too is down, and so is one whose error wraps
-// langai.ErrClosed, context.Canceled or context.DeadlineExceeded, which no
+// sense.ErrClosed, context.Canceled or context.DeadlineExceeded, which no
 // text is to blame for: the rebuild fails with the embedder's error, after a
 // handful of Embed calls rather than one per text, and records nothing.
 var ErrNotRebuilt = errors.New("tagging: tag not rebuilt")

@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/media"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/media"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 var (
@@ -98,7 +98,7 @@ type fixture struct {
 }
 
 type countingEmbedder struct {
-	langaitest.FakeImageEmbedder
+	sensetest.FakeImageEmbedder
 	calls atomic.Int32
 }
 
@@ -144,7 +144,7 @@ func TestNew_Validates(t *testing.T) {
 	if _, err := New(Config{Dir: "x"}); err == nil {
 		t.Error("nil index: want error")
 	}
-	ix, _ := search.NewMediaIndex(langaitest.FakeImageEmbedder{}, vector.NewMemStore(), "i", "p", "c")
+	ix, _ := search.NewMediaIndex(sensetest.FakeImageEmbedder{}, vector.NewMemStore(), "i", "p", "c")
 	bad := filepath.Join(t.TempDir(), "catalog.json")
 	write(t, bad, []byte("{"))
 	if _, err := New(Config{Dir: "x", Index: ix, CatalogFile: bad}); err == nil {
@@ -279,7 +279,7 @@ func TestScan_OneAtATime(t *testing.T) {
 }
 
 func TestScan_MissingDirectory(t *testing.T) {
-	ix, _ := search.NewMediaIndex(langaitest.FakeImageEmbedder{}, vector.NewMemStore(), "i", "p", "c")
+	ix, _ := search.NewMediaIndex(sensetest.FakeImageEmbedder{}, vector.NewMemStore(), "i", "p", "c")
 	lib, _ := New(Config{Dir: filepath.Join(t.TempDir(), "missing"), Index: ix})
 	if _, err := lib.Scan(context.Background()); err == nil {
 		t.Error("want error")
@@ -296,11 +296,11 @@ func TestKindOf(t *testing.T) {
 
 // colourText is a text Embedder in the fake image space: a text names a
 // colour and embeds as a picture of it, so text search can be tested.
-type colourText struct{ emb langaitest.FakeImageEmbedder }
+type colourText struct{ emb sensetest.FakeImageEmbedder }
 
 func (c colourText) Dimensions() int { return c.emb.Dimensions() }
 
-func (c colourText) Embed(ctx context.Context, _ langai.Role, texts []string) ([][]float32, error) {
+func (c colourText) Embed(ctx context.Context, _ sense.Role, texts []string) ([][]float32, error) {
 	images := make([]image.Image, len(texts))
 	for i, t := range texts {
 		col := map[string]color.RGBA{"red": red, "green": green, "blue": blue}[t]

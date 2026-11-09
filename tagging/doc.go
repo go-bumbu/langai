@@ -48,8 +48,8 @@
 // never recorded as a rebuild. Losing the cache or the index costs time, never
 // correctness.
 //
-// A Generator starts from nothing: a language model (a langai.Completer)
-// proposes tags for the text, an embedding model (a langai.Embedder) scores
+// A Generator starts from nothing: a language model (a sense.Completer)
+// proposes tags for the text, an embedding model (a sense.Embedder) scores
 // each one by how close it sits to the text, and Generate returns the ones
 // that reach the caller's cutoff, best first. A short text (up to
 // GeneratorConfig.ChunkBytes, 2 KB by default) takes one model call and is
@@ -67,7 +67,7 @@
 // between a text and a tag is on a fixed scale: one cutoff means the same on
 // every text, and a tag the model invented, or one that has little to do with
 // the text, falls below it. The text goes to the embedder as
-// langai.RoleQuery and the tags as langai.RoleDocument, the roles a Tagger
+// sense.RoleQuery and the tags as sense.RoleDocument, the roles a Tagger
 // gives an item and a tag name, so the scores sit on the scale of
 // TaggerConfig.NameMinScore.
 //

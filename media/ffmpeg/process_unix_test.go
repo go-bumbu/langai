@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/media"
+	"github.com/go-bumbu/sense/media"
 )
 
 // script writes an executable shell script into a fresh directory and

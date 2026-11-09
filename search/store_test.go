@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/media"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/media"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // TestIndex_EmptyPartitionIsNotAWildcard: an Index over an empty partition
@@ -22,7 +22,7 @@ import (
 func TestIndex_EmptyPartitionIsNotAWildcard(t *testing.T) {
 	ctx := context.Background()
 	store := vector.NewMemStore()
-	emb := langaitest.FakeEmbedder{}
+	emb := sensetest.FakeEmbedder{}
 	for _, part := range []string{"", "tenant-a", "tenant-b"} {
 		ix, err := New(emb, store, "i", part, "notes")
 		if err != nil {
@@ -81,13 +81,13 @@ func TestAboveFloor(t *testing.T) {
 
 // namedEmbedder is the fake text embedder under another model name.
 type namedEmbedder struct {
-	langaitest.FakeEmbedder
+	sensetest.FakeEmbedder
 	model string
 }
 
 func (e namedEmbedder) Model() string { return e.model }
 
-var _ langai.Identified = namedEmbedder{}
+var _ sense.Identified = namedEmbedder{}
 
 // TestIndex_RefusesAnotherModel: the embedder's model is recorded with the
 // collection's first vectors, so another model of the same dimensions can
@@ -95,7 +95,7 @@ var _ langai.Identified = namedEmbedder{}
 func TestIndex_RefusesAnotherModel(t *testing.T) {
 	ctx := context.Background()
 	store := vector.NewMemStore()
-	first, err := New(langaitest.FakeEmbedder{}, store, "i", "p", "c")
+	first, err := New(sensetest.FakeEmbedder{}, store, "i", "p", "c")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestIndex_RefusesAnotherModel(t *testing.T) {
 		t.Errorf("Search with another model: %v, want ErrModelMismatch", err)
 	}
 	// an embedder that names no model is not checked
-	anonymous, err := New(langaitest.FakeEmbedder{}, store, "i", "p", "c")
+	anonymous, err := New(sensetest.FakeEmbedder{}, store, "i", "p", "c")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func (e renamedImages) Model() string { return e.model }
 func TestIndex_ModelChangeMigratesThroughReset(t *testing.T) {
 	ctx := context.Background()
 	store := vector.NewMemStore()
-	old, err := New(langaitest.FakeEmbedder{}, store, "i", "p", "c")
+	old, err := New(sensetest.FakeEmbedder{}, store, "i", "p", "c")
 	if err != nil {
 		t.Fatal(err)
 	}

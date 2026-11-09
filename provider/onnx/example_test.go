@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/media/ffmpeg"
-	"github.com/go-bumbu/langai/provider/onnx"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/media/ffmpeg"
+	"github.com/go-bumbu/sense/provider/onnx"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // The examples mirror the README's. They have no output, so they are
@@ -66,7 +66,7 @@ func ExampleLookupSpec() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	emb := langai.NewLazyImageEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (langai.ImageEmbedder, error) {
+	emb := sense.NewLazyImageEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (sense.ImageEmbedder, error) {
 		return onnx.Open(ctx, spec, cpuRuntime())
 	})
 	defer func() { _ = emb.Close() }()

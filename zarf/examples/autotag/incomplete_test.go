@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 // poisonedNotebook is a notebook whose embedder refuses every text that
@@ -19,7 +19,7 @@ func poisonedNotebook(t *testing.T) (nb *Notebook, calls *atomic.Int64, tag Tag,
 	t.Helper()
 	ctx := context.Background()
 	calls = &atomic.Int64{}
-	emb := langaitest.FakeEmbedder{Calls: calls, Fail: func(text string) error {
+	emb := sensetest.FakeEmbedder{Calls: calls, Fail: func(text string) error {
 		if strings.Contains(text, "poison") {
 			return errors.New("the model cannot take this text")
 		}
@@ -28,7 +28,7 @@ func poisonedNotebook(t *testing.T) (nb *Notebook, calls *atomic.Int64, tag Tag,
 	nb, err := New(ctx, Config{
 		Cache:    tagging.NewMemCache(),
 		Tagging:  tagging.TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2},
-		Chat:     &langaitest.FakeCompleter{},
+		Chat:     &sensetest.FakeCompleter{},
 		Embedder: emb,
 	})
 	if err != nil {

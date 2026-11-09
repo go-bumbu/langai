@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 // lockedBuffer is a log sink the test reads while KeepCachePruned writes.
@@ -49,8 +49,8 @@ func agedNotebook(t *testing.T) (*Notebook, *lockedBuffer) {
 	nb, err := New(ctx, Config{
 		Cache:    cache,
 		Tagging:  tagging.TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2},
-		Chat:     &langaitest.FakeCompleter{},
-		Embedder: langaitest.FakeEmbedder{},
+		Chat:     &sensetest.FakeCompleter{},
+		Embedder: sensetest.FakeEmbedder{},
 		Logger:   slog.New(slog.NewTextHandler(logs, nil)),
 	})
 	if err != nil {

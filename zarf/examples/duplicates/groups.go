@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-bumbu/langai/provider/phash"
-	"github.com/go-bumbu/langai/search"
+	"github.com/go-bumbu/sense/provider/phash"
+	"github.com/go-bumbu/sense/search"
 )
 
 // Member is one picture of a group.

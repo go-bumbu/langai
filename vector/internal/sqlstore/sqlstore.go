@@ -25,8 +25,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/go-bumbu/langai/internal/tablename"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/internal/tablename"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // prefix is what every table name of the stores starts with (see

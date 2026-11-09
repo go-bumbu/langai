@@ -1,4 +1,4 @@
-package langaitest
+package sensetest
 
 import (
 	"context"
@@ -10,14 +10,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // FakeVideoSegment is the length of every segment FakeVideoEmbedder returns.
 const FakeVideoSegment = 10 * time.Second
 
 // FakeVideoEmbedderModel is the model name FakeVideoEmbedder reports.
-const FakeVideoEmbedderModel = "langaitest/fake-video-embedder"
+const FakeVideoEmbedderModel = "sensetest/fake-video-embedder"
 
 // FakeVideoEmbedder is a deterministic VideoEmbedder for tests. A video is
 // a list of pictures, one per segment, each FakeVideoSegment long and
@@ -41,23 +41,23 @@ type FakeVideoEmbedder struct {
 
 // verify the interfaces are actually satisfied
 var (
-	_ langai.VideoEmbedder = (*FakeVideoEmbedder)(nil)
-	_ langai.Identified    = (*FakeVideoEmbedder)(nil)
+	_ sense.VideoEmbedder = (*FakeVideoEmbedder)(nil)
+	_ sense.Identified    = (*FakeVideoEmbedder)(nil)
 )
 
-// Model implements langai.Identified: FakeVideoEmbedderModel.
+// Model implements sense.Identified: FakeVideoEmbedderModel.
 func (*FakeVideoEmbedder) Model() string { return FakeVideoEmbedderModel }
 
-// Dimensions implements langai.VideoEmbedder: FakeImageEmbedder's.
+// Dimensions implements sense.VideoEmbedder: FakeImageEmbedder's.
 func (*FakeVideoEmbedder) Dimensions() int { return FakeImageEmbedder{}.Dimensions() }
 
 // Calls returns how many times EmbedVideo was called, the failed calls
 // included.
 func (f *FakeVideoEmbedder) Calls() int { return int(f.calls.Load()) }
 
-// EmbedVideo implements langai.VideoEmbedder. It fails with ctx's error when
+// EmbedVideo implements sense.VideoEmbedder. It fails with ctx's error when
 // ctx is done and with Err when that is set.
-func (f *FakeVideoEmbedder) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
+func (f *FakeVideoEmbedder) EmbedVideo(ctx context.Context, path string) ([]sense.Segment, error) {
 	f.calls.Add(1)
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -73,10 +73,10 @@ func (f *FakeVideoEmbedder) EmbedVideo(ctx context.Context, path string) ([]lang
 	if err != nil {
 		return nil, err
 	}
-	out := make([]langai.Segment, len(pictures))
+	out := make([]sense.Segment, len(pictures))
 	for i, vec := range vectors {
 		start := time.Duration(i) * FakeVideoSegment
-		out[i] = langai.Segment{Start: start, End: start + FakeVideoSegment, Vector: vec}
+		out[i] = sense.Segment{Start: start, End: start + FakeVideoSegment, Vector: vec}
 	}
 	return out, nil
 }
@@ -88,7 +88,7 @@ func (f *FakeVideoEmbedder) pictures(path string) ([]image.Image, error) {
 	if f.Clips != nil {
 		pictures, ok := f.Clips[name]
 		if !ok {
-			return nil, errors.New("langaitest: not a video: " + path)
+			return nil, errors.New("sensetest: not a video: " + path)
 		}
 		return pictures, nil
 	}

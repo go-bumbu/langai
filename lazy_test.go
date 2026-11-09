@@ -1,4 +1,4 @@
-package langai_test
+package sense_test
 
 import (
 	"context"
@@ -11,28 +11,28 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 // The loaded values of the tests: the fakes, with a Close that counts.
 
 type closingEmbedder struct {
-	langaitest.FakeEmbedder
+	sensetest.FakeEmbedder
 	closes *atomic.Int32
 }
 
 func (e closingEmbedder) Close() error { e.closes.Add(1); return nil }
 
 type closingImageEmbedder struct {
-	langaitest.FakeImageEmbedder
+	sensetest.FakeImageEmbedder
 	closes *atomic.Int32
 }
 
 func (e closingImageEmbedder) Close() error { e.closes.Add(1); return nil }
 
 type closingCompleter struct {
-	*langaitest.FakeCompleter
+	*sensetest.FakeCompleter
 	closes *atomic.Int32
 }
 
@@ -43,7 +43,7 @@ type subject struct {
 	// call makes one call through the port: Embed, EmbedImages or Complete.
 	call  func(ctx context.Context) error
 	load  func(ctx context.Context) error
-	state func() (langai.LazyState, error)
+	state func() (sense.LazyState, error)
 	close func() error
 }
 
@@ -68,14 +68,14 @@ func (l *loader) run(ctx context.Context) error {
 // test covers the behaviour they share.
 var kinds = map[string]func(l *loader) subject{
 	"LazyEmbedder": func(l *loader) subject {
-		emb := langai.NewLazyEmbedder(langaitest.FakeEmbedderModel, 4, func(ctx context.Context) (langai.Embedder, error) {
+		emb := sense.NewLazyEmbedder(sensetest.FakeEmbedderModel, 4, func(ctx context.Context) (sense.Embedder, error) {
 			if err := l.run(ctx); err != nil {
 				return nil, err
 			}
-			return closingEmbedder{langaitest.FakeEmbedder{Dims: 4}, &l.closes}, nil
+			return closingEmbedder{sensetest.FakeEmbedder{Dims: 4}, &l.closes}, nil
 		})
 		return subject{load: emb.Load, state: emb.State, close: emb.Close, call: func(ctx context.Context) error {
-			vecs, err := emb.Embed(ctx, langai.RoleDocument, []string{"x"})
+			vecs, err := emb.Embed(ctx, sense.RoleDocument, []string{"x"})
 			if err == nil && (len(vecs) != 1 || len(vecs[0]) != 4) {
 				return errors.New("Embed did not return one 4-dimensional vector")
 			}
@@ -83,12 +83,12 @@ var kinds = map[string]func(l *loader) subject{
 		}}
 	},
 	"LazyImageEmbedder": func(l *loader) subject {
-		dims := langaitest.FakeImageEmbedder{}.Dimensions()
-		emb := langai.NewLazyImageEmbedder(langaitest.FakeImageEmbedderModel, dims, func(ctx context.Context) (langai.ImageEmbedder, error) {
+		dims := sensetest.FakeImageEmbedder{}.Dimensions()
+		emb := sense.NewLazyImageEmbedder(sensetest.FakeImageEmbedderModel, dims, func(ctx context.Context) (sense.ImageEmbedder, error) {
 			if err := l.run(ctx); err != nil {
 				return nil, err
 			}
-			return closingImageEmbedder{langaitest.FakeImageEmbedder{}, &l.closes}, nil
+			return closingImageEmbedder{sensetest.FakeImageEmbedder{}, &l.closes}, nil
 		})
 		return subject{load: emb.Load, state: emb.State, close: emb.Close, call: func(ctx context.Context) error {
 			vecs, err := emb.EmbedImages(ctx, []image.Image{image.NewRGBA(image.Rect(0, 0, 8, 8))})
@@ -99,11 +99,11 @@ var kinds = map[string]func(l *loader) subject{
 		}}
 	},
 	"LazyCompleter": func(l *loader) subject {
-		chat := langai.NewLazyCompleter(func(ctx context.Context) (langai.Completer, error) {
+		chat := sense.NewLazyCompleter(func(ctx context.Context) (sense.Completer, error) {
 			if err := l.run(ctx); err != nil {
 				return nil, err
 			}
-			return closingCompleter{&langaitest.FakeCompleter{Replies: []string{"reply"}}, &l.closes}, nil
+			return closingCompleter{&sensetest.FakeCompleter{Replies: []string{"reply"}}, &l.closes}, nil
 		})
 		return subject{load: chat.Load, state: chat.State, close: chat.Close, call: func(ctx context.Context) error {
 			reply, err := chat.Complete(ctx, "system", "user")
@@ -127,7 +127,7 @@ func eachKind(t *testing.T, test func(t *testing.T, l *loader, s subject)) {
 }
 
 // wantState fails the test unless the subject is in the given state.
-func wantState(t *testing.T, s subject, want langai.LazyState) error {
+func wantState(t *testing.T, s subject, want sense.LazyState) error {
 	t.Helper()
 	got, err := s.state()
 	if got != want {
@@ -161,7 +161,7 @@ var errBoom = errors.New("boom")
 // the downloads.
 func TestLazy_DoesNotLoadOnConstruction(t *testing.T) {
 	eachKind(t, func(t *testing.T, l *loader, s subject) {
-		if err := wantState(t, s, langai.LazyNotStarted); err != nil {
+		if err := wantState(t, s, sense.LazyNotStarted); err != nil {
 			t.Errorf("State() reports %v before anything happened", err)
 		}
 		if n := l.loads.Load(); n != 0 {
@@ -188,7 +188,7 @@ func TestLazy_ConcurrentFirstCallsLoadOnce(t *testing.T) {
 			})
 		}
 		<-started
-		if err := wantState(t, s, langai.LazyLoading); err != nil {
+		if err := wantState(t, s, sense.LazyLoading); err != nil {
 			t.Errorf("State() reports %v while loading", err)
 		}
 		release()
@@ -201,7 +201,7 @@ func TestLazy_ConcurrentFirstCallsLoadOnce(t *testing.T) {
 		if n := l.loads.Load(); n != 1 {
 			t.Errorf("the loader ran %d times, want 1", n)
 		}
-		if err := wantState(t, s, langai.LazyLoaded); err != nil {
+		if err := wantState(t, s, sense.LazyLoaded); err != nil {
 			t.Errorf("State() reports %v once loaded", err)
 		}
 		// later calls and a late Load reuse the model
@@ -231,7 +231,7 @@ func TestLazy_CallerDeadlineDoesNotCancelTheLoad(t *testing.T) {
 		if err := s.load(short); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("the impatient Load got %v, want its deadline", err)
 		}
-		if err := wantState(t, s, langai.LazyLoading); err != nil {
+		if err := wantState(t, s, sense.LazyLoading); err != nil {
 			t.Errorf("State() reports %v: the caller's deadline reached the load", err)
 		}
 
@@ -254,7 +254,7 @@ func TestLazy_DoneContextDoesNotStartALoad(t *testing.T) {
 		if err := s.call(ctx); !errors.Is(err, context.Canceled) {
 			t.Errorf("call = %v, want context.Canceled", err)
 		}
-		_ = wantState(t, s, langai.LazyNotStarted)
+		_ = wantState(t, s, sense.LazyNotStarted)
 		if n := l.loads.Load(); n != 0 {
 			t.Errorf("the loader ran %d times", n)
 		}
@@ -278,7 +278,7 @@ func TestLazy_FailedLoadIsKept(t *testing.T) {
 		if n := l.loads.Load(); n != 1 {
 			t.Errorf("the loader ran %d times, want 1: a failure is not retried", n)
 		}
-		if err := wantState(t, s, langai.LazyFailed); !errors.Is(err, errBoom) {
+		if err := wantState(t, s, sense.LazyFailed); !errors.Is(err, errBoom) {
 			t.Errorf("State() reports %v, want the load's error", err)
 		}
 		if err := s.close(); err != nil {
@@ -298,7 +298,7 @@ func TestLazy_PanickingLoadIsAnError(t *testing.T) {
 		l.gate = func(context.Context) error { panic("the model file is corrupt") }
 		for i := range 2 {
 			err := s.call(context.Background())
-			var panicked *langai.LoadPanicError
+			var panicked *sense.LoadPanicError
 			if !errors.As(err, &panicked) {
 				t.Fatalf("call %d = %v, want a *LoadPanicError", i, err)
 			}
@@ -309,7 +309,7 @@ func TestLazy_PanickingLoadIsAnError(t *testing.T) {
 				t.Errorf("call %d: message %q, want the panic value and no stack", i, err)
 			}
 		}
-		if err := wantState(t, s, langai.LazyFailed); err == nil {
+		if err := wantState(t, s, sense.LazyFailed); err == nil {
 			t.Error("State() reports no error after a panic")
 		}
 		if n := l.loads.Load(); n != 1 {
@@ -346,10 +346,10 @@ func TestLazy_CloseDuringLoad(t *testing.T) {
 		if err, _ := loadCtxErr.Load().(error); !errors.Is(err, context.Canceled) {
 			t.Errorf("the load's context ended with %v, want cancellation", err)
 		}
-		if err := <-waiting; !errors.Is(err, langai.ErrClosed) {
+		if err := <-waiting; !errors.Is(err, sense.ErrClosed) {
 			t.Errorf("the waiting caller got %v, want the closed error", err)
 		}
-		if err := wantState(t, s, langai.LazyClosed); !errors.Is(err, langai.ErrClosed) {
+		if err := wantState(t, s, sense.LazyClosed); !errors.Is(err, sense.ErrClosed) {
 			t.Errorf("State() reports %v, want the closed error", err)
 		}
 	})
@@ -373,7 +373,7 @@ func TestLazy_CloseDuringLoadClosesWhatTheLoadStillReturns(t *testing.T) {
 
 		closed := make(chan error, 1)
 		go func() { closed <- s.close() }()
-		if err := <-waiting; !errors.Is(err, langai.ErrClosed) {
+		if err := <-waiting; !errors.Is(err, sense.ErrClosed) {
 			t.Errorf("the waiting caller got %v while the load was still running, want the closed error", err)
 		}
 		select {
@@ -388,7 +388,7 @@ func TestLazy_CloseDuringLoadClosesWhatTheLoadStillReturns(t *testing.T) {
 		if n := l.closes.Load(); n != 1 {
 			t.Errorf("the model the load returned was closed %d times, want 1", n)
 		}
-		_ = wantState(t, s, langai.LazyClosed)
+		_ = wantState(t, s, sense.LazyClosed)
 	})
 }
 
@@ -412,13 +412,13 @@ func TestLazy_CloseAfterLoad(t *testing.T) {
 		if n := l.closes.Load(); n != 1 {
 			t.Errorf("the model was closed %d times, want 1", n)
 		}
-		if err := s.call(context.Background()); !errors.Is(err, langai.ErrClosed) {
+		if err := s.call(context.Background()); !errors.Is(err, sense.ErrClosed) {
 			t.Errorf("call after Close = %v, want the closed error", err)
 		}
-		if err := s.load(context.Background()); !errors.Is(err, langai.ErrClosed) {
+		if err := s.load(context.Background()); !errors.Is(err, sense.ErrClosed) {
 			t.Errorf("Load after Close = %v, want the closed error", err)
 		}
-		if err := wantState(t, s, langai.LazyClosed); !errors.Is(err, langai.ErrClosed) {
+		if err := wantState(t, s, sense.LazyClosed); !errors.Is(err, sense.ErrClosed) {
 			t.Errorf("State() reports %v, want the closed error", err)
 		}
 		if n := l.loads.Load(); n != 1 {
@@ -434,10 +434,10 @@ func TestLazy_CloseBeforeAnyLoad(t *testing.T) {
 		if err := s.close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-		if err := s.call(context.Background()); !errors.Is(err, langai.ErrClosed) {
+		if err := s.call(context.Background()); !errors.Is(err, sense.ErrClosed) {
 			t.Errorf("call after Close = %v, want the closed error", err)
 		}
-		_ = wantState(t, s, langai.LazyClosed)
+		_ = wantState(t, s, sense.LazyClosed)
 		if n := l.loads.Load(); n != 0 {
 			t.Errorf("the loader ran %d times", n)
 		}
@@ -445,15 +445,15 @@ func TestLazy_CloseBeforeAnyLoad(t *testing.T) {
 }
 
 // failingCloser is a model whose Close fails.
-type failingCloser struct{ langaitest.FakeEmbedder }
+type failingCloser struct{ sensetest.FakeEmbedder }
 
 func (failingCloser) Close() error { return errBoom }
 
 // TestLazyEmbedder_CloseReturnsTheModelsError: the first Close reports what
 // closing the model returned; the ones after it have nothing left to report.
 func TestLazyEmbedder_CloseReturnsTheModelsError(t *testing.T) {
-	emb := langai.NewLazyEmbedder("", 4, func(context.Context) (langai.Embedder, error) {
-		return failingCloser{langaitest.FakeEmbedder{Dims: 4}}, nil
+	emb := sense.NewLazyEmbedder("", 4, func(context.Context) (sense.Embedder, error) {
+		return failingCloser{sensetest.FakeEmbedder{Dims: 4}}, nil
 	})
 	if err := emb.Load(context.Background()); err != nil {
 		t.Fatal(err)
@@ -472,25 +472,25 @@ func TestLazyEmbedder_CloseReturnsTheModelsError(t *testing.T) {
 func TestLazy_NilModelIsAnError(t *testing.T) {
 	var noEmbedder *closingEmbedder
 	var noImageEmbedder *closingImageEmbedder
-	var noCompleter *langaitest.FakeCompleter
+	var noCompleter *sensetest.FakeCompleter
 	ctx := context.Background()
 	cases := map[string]subject{}
-	add := func(name string, load func(ctx context.Context) error, state func() (langai.LazyState, error)) {
+	add := func(name string, load func(ctx context.Context) error, state func() (sense.LazyState, error)) {
 		cases[name] = subject{load: load, state: state}
 	}
-	e1 := langai.NewLazyEmbedder("", 4, func(context.Context) (langai.Embedder, error) { return nil, nil })
+	e1 := sense.NewLazyEmbedder("", 4, func(context.Context) (sense.Embedder, error) { return nil, nil })
 	add("embedder, nil", e1.Load, e1.State)
-	e2 := langai.NewLazyEmbedder("", 4, func(context.Context) (langai.Embedder, error) { return noEmbedder, nil })
+	e2 := sense.NewLazyEmbedder("", 4, func(context.Context) (sense.Embedder, error) { return noEmbedder, nil })
 	add("embedder, nil pointer", e2.Load, e2.State)
-	i1 := langai.NewLazyImageEmbedder("", 4, func(context.Context) (langai.ImageEmbedder, error) { return nil, nil })
+	i1 := sense.NewLazyImageEmbedder("", 4, func(context.Context) (sense.ImageEmbedder, error) { return nil, nil })
 	add("image embedder, nil", i1.Load, i1.State)
-	i2 := langai.NewLazyImageEmbedder("", 4, func(context.Context) (langai.ImageEmbedder, error) { return noImageEmbedder, nil })
+	i2 := sense.NewLazyImageEmbedder("", 4, func(context.Context) (sense.ImageEmbedder, error) { return noImageEmbedder, nil })
 	add("image embedder, nil pointer", i2.Load, i2.State)
-	c1 := langai.NewLazyCompleter(func(context.Context) (langai.Completer, error) { return nil, nil })
+	c1 := sense.NewLazyCompleter(func(context.Context) (sense.Completer, error) { return nil, nil })
 	add("completer, nil", c1.Load, c1.State)
-	c2 := langai.NewLazyCompleter(func(context.Context) (langai.Completer, error) { return noCompleter, nil })
+	c2 := sense.NewLazyCompleter(func(context.Context) (sense.Completer, error) { return noCompleter, nil })
 	add("completer, nil pointer", c2.Load, c2.State)
-	c3 := langai.NewLazyCompleter(nil)
+	c3 := sense.NewLazyCompleter(nil)
 	add("completer, no load function", c3.Load, c3.State)
 
 	for name, s := range cases {
@@ -499,12 +499,12 @@ func TestLazy_NilModelIsAnError(t *testing.T) {
 			if first == nil || second == nil {
 				t.Fatalf("Load = %v, then %v; want an error both times", first, second)
 			}
-			if err := wantState(t, s, langai.LazyFailed); err == nil {
+			if err := wantState(t, s, sense.LazyFailed); err == nil {
 				t.Error("State() reports no error")
 			}
 		})
 	}
-	if _, err := e2.Embed(ctx, langai.RoleQuery, []string{"x"}); err == nil {
+	if _, err := e2.Embed(ctx, sense.RoleQuery, []string{"x"}); err == nil {
 		t.Error("Embed on a nil model: want the load's error")
 	}
 	if _, err := i2.EmbedImages(ctx, []image.Image{image.NewRGBA(image.Rect(0, 0, 1, 1))}); err == nil {
@@ -524,11 +524,11 @@ type named struct {
 func (n named) Model() string { return n.model }
 
 // anonymous is an embedder that names no model at all.
-type anonymous struct{ inner langaitest.FakeEmbedder }
+type anonymous struct{ inner sensetest.FakeEmbedder }
 
 func (a anonymous) Dimensions() int { return a.inner.Dimensions() }
 
-func (a anonymous) Embed(ctx context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (a anonymous) Embed(ctx context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	return a.inner.Embed(ctx, role, texts)
 }
 
@@ -556,9 +556,9 @@ func TestLazyEmbedder_ModelAndDimensions(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var loads, closes atomic.Int32
-			emb := langai.NewLazyEmbedder(tc.model, tc.dims, func(context.Context) (langai.Embedder, error) {
+			emb := sense.NewLazyEmbedder(tc.model, tc.dims, func(context.Context) (sense.Embedder, error) {
 				loads.Add(1)
-				fake := langaitest.FakeEmbedder{Dims: tc.loadedDims}
+				fake := sensetest.FakeEmbedder{Dims: tc.loadedDims}
 				if tc.loadedModel == "-" {
 					return anonymous{fake}, nil
 				}
@@ -569,8 +569,8 @@ func TestLazyEmbedder_ModelAndDimensions(t *testing.T) {
 					emb.Model(), emb.Dimensions(), loads.Load())
 			}
 			ctx := context.Background()
-			_, first := emb.Embed(ctx, langai.RoleDocument, []string{"x"})
-			_, second := emb.Embed(ctx, langai.RoleDocument, []string{"y"})
+			_, first := emb.Embed(ctx, sense.RoleDocument, []string{"x"})
+			_, second := emb.Embed(ctx, sense.RoleDocument, []string{"y"})
 			if tc.wantErr == "" {
 				if first != nil || second != nil {
 					t.Fatalf("Embed = %v, then %v", first, second)
@@ -579,7 +579,7 @@ func TestLazyEmbedder_ModelAndDimensions(t *testing.T) {
 				if first == nil || second == nil || !strings.Contains(first.Error(), tc.wantErr) || second.Error() != first.Error() {
 					t.Fatalf("Embed = %v, then %v; want an error saying %q both times", first, second, tc.wantErr)
 				}
-				if state, _ := emb.State(); state != langai.LazyFailed {
+				if state, _ := emb.State(); state != sense.LazyFailed {
 					t.Errorf("State() = %v, want failed", state)
 				}
 				if closes.Load() != 1 {
@@ -600,26 +600,26 @@ func TestLazyEmbedder_ModelAndDimensions(t *testing.T) {
 // TestLazyImageEmbedder_ModelAndDimensions: the image embedder checks the
 // loaded model the same way.
 func TestLazyImageEmbedder_ModelAndDimensions(t *testing.T) {
-	dims := langaitest.FakeImageEmbedder{}.Dimensions()
-	load := func(context.Context) (langai.ImageEmbedder, error) { return langaitest.FakeImageEmbedder{}, nil }
+	dims := sensetest.FakeImageEmbedder{}.Dimensions()
+	load := func(context.Context) (sense.ImageEmbedder, error) { return sensetest.FakeImageEmbedder{}, nil }
 	cases := []struct {
 		name    string
 		model   string
 		dims    int
 		wantErr string
 	}{
-		{name: "the same model", model: langaitest.FakeImageEmbedderModel, dims: dims},
+		{name: "the same model", model: sensetest.FakeImageEmbedderModel, dims: dims},
 		{name: "no model configured", model: "", dims: dims},
 		{name: "another model", model: "siglip", dims: dims, wantErr: `configured for "siglip"`},
-		{name: "other dimensions", model: langaitest.FakeImageEmbedderModel, dims: 768, wantErr: "configured for 768"},
+		{name: "other dimensions", model: sensetest.FakeImageEmbedderModel, dims: 768, wantErr: "configured for 768"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			emb := langai.NewLazyImageEmbedder(tc.model, tc.dims, load)
+			emb := sense.NewLazyImageEmbedder(tc.model, tc.dims, load)
 			if emb.Model() != tc.model || emb.Dimensions() != tc.dims {
 				t.Fatalf("Model() = %q, Dimensions() = %d; want the configuration", emb.Model(), emb.Dimensions())
 			}
-			if state, _ := emb.State(); state != langai.LazyNotStarted {
+			if state, _ := emb.State(); state != sense.LazyNotStarted {
 				t.Fatalf("Model and Dimensions loaded the model: %v", state)
 			}
 			err := emb.Load(context.Background())
@@ -632,13 +632,13 @@ func TestLazyImageEmbedder_ModelAndDimensions(t *testing.T) {
 
 // roleRecorder wraps an Embedder and records each call's role.
 type roleRecorder struct {
-	inner langai.Embedder
-	roles []langai.Role
+	inner sense.Embedder
+	roles []sense.Role
 }
 
 func (r *roleRecorder) Dimensions() int { return r.inner.Dimensions() }
 
-func (r *roleRecorder) Embed(ctx context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (r *roleRecorder) Embed(ctx context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	r.roles = append(r.roles, role)
 	return r.inner.Embed(ctx, role, texts)
 }
@@ -648,16 +648,16 @@ func (r *roleRecorder) Embed(ctx context.Context, role langai.Role, texts []stri
 // differently, so a LazyEmbedder that fixed the role (or dropped it) would
 // silently skew every search made through it.
 func TestLazyEmbedder_ForwardsRole(t *testing.T) {
-	rec := &roleRecorder{inner: langaitest.FakeEmbedder{Dims: 4}}
-	l := langai.NewLazyEmbedder("", 4, func(context.Context) (langai.Embedder, error) { return rec, nil })
+	rec := &roleRecorder{inner: sensetest.FakeEmbedder{Dims: 4}}
+	l := sense.NewLazyEmbedder("", 4, func(context.Context) (sense.Embedder, error) { return rec, nil })
 	ctx := context.Background()
-	if _, err := l.Embed(ctx, langai.RoleQuery, []string{"x"}); err != nil {
+	if _, err := l.Embed(ctx, sense.RoleQuery, []string{"x"}); err != nil {
 		t.Fatalf("Embed as query: %v", err)
 	}
-	if _, err := l.Embed(ctx, langai.RoleDocument, []string{"x"}); err != nil {
+	if _, err := l.Embed(ctx, sense.RoleDocument, []string{"x"}); err != nil {
 		t.Fatalf("Embed as document: %v", err)
 	}
-	want := []langai.Role{langai.RoleQuery, langai.RoleDocument}
+	want := []sense.Role{sense.RoleQuery, sense.RoleDocument}
 	if !slices.Equal(rec.roles, want) {
 		t.Fatalf("the loaded embedder saw roles %v, want %v", rec.roles, want)
 	}
@@ -666,25 +666,25 @@ func TestLazyEmbedder_ForwardsRole(t *testing.T) {
 // TestLazyCompleter_ForwardsThePrompt: the loaded model gets the system and
 // user messages as they came.
 func TestLazyCompleter_ForwardsThePrompt(t *testing.T) {
-	fake := &langaitest.FakeCompleter{Replies: []string{"bread"}}
-	chat := langai.NewLazyCompleter(func(context.Context) (langai.Completer, error) { return fake, nil })
+	fake := &sensetest.FakeCompleter{Replies: []string{"bread"}}
+	chat := sense.NewLazyCompleter(func(context.Context) (sense.Completer, error) { return fake, nil })
 	reply, err := chat.Complete(context.Background(), "write tags", "sourdough")
 	if err != nil || reply != "bread" {
 		t.Fatalf("Complete = %q, %v", reply, err)
 	}
-	if want := []langaitest.CompleterCall{{System: "write tags", User: "sourdough"}}; !slices.Equal(fake.Calls(), want) {
+	if want := []sensetest.CompleterCall{{System: "write tags", User: "sourdough"}}; !slices.Equal(fake.Calls(), want) {
 		t.Errorf("the loaded model saw %+v, want %+v", fake.Calls(), want)
 	}
 }
 
 func TestLazyState_String(t *testing.T) {
-	want := map[langai.LazyState]string{
-		langai.LazyNotStarted: "not started",
-		langai.LazyLoading:    "loading",
-		langai.LazyLoaded:     "loaded",
-		langai.LazyFailed:     "failed",
-		langai.LazyClosed:     "closed",
-		langai.LazyState(42):  "LazyState(42)",
+	want := map[sense.LazyState]string{
+		sense.LazyNotStarted: "not started",
+		sense.LazyLoading:    "loading",
+		sense.LazyLoaded:     "loaded",
+		sense.LazyFailed:     "failed",
+		sense.LazyClosed:     "closed",
+		sense.LazyState(42):  "LazyState(42)",
 	}
 	for state, text := range want {
 		if state.String() != text {

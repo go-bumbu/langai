@@ -26,9 +26,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/zarf/eval"
 )
 
 // Errors the handler maps to statuses.
@@ -61,8 +61,8 @@ type Config struct {
 	// Chat writes the recommended tags and Embedder scores them: Recommend
 	// builds a tagging.Generator over them with the options of each request.
 	// Embedder is the Tagger's embedder too.
-	Chat     langai.Completer
-	Embedder langai.Embedder
+	Chat     sense.Completer
+	Embedder sense.Embedder
 	// File is the notebook's JSON file; empty keeps it in memory only.
 	File string
 	// SamplesFile is an eval dataset (zarf/eval/testdata/golden.yaml) that
@@ -209,7 +209,7 @@ func New(ctx context.Context, cfg Config) (*Notebook, error) {
 // Close stops the notebook's Tagger and waits for what it has running (a
 // rebuild after a change, a View in flight) to end, so nothing reads the
 // embedder or the cache after it: call it before closing those. Every later
-// View and LoadSamples fails with langai.ErrClosed. It does not close the
+// View and LoadSamples fails with sense.ErrClosed. It does not close the
 // Embedder, the Chat model or the Cache, which the caller made.
 func (nb *Notebook) Close() error { return nb.tagger.Close() }
 
@@ -246,7 +246,7 @@ func (nb *Notebook) KeepCachePruned(ctx context.Context, unusedFor, interval tim
 	for {
 		removed, err := nb.PruneCache(ctx, time.Now().Add(-unusedFor))
 		switch {
-		case ctx.Err() != nil || errors.Is(err, langai.ErrClosed):
+		case ctx.Err() != nil || errors.Is(err, sense.ErrClosed):
 			return
 		case err != nil:
 			nb.logger.Warn("tag cache not pruned", "err", err)

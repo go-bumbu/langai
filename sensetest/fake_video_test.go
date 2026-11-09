@@ -1,4 +1,4 @@
-package langaitest
+package sensetest
 
 import (
 	"context"

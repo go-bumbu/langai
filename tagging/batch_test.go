@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // poisonText is a member the embedder of these tests refuses, alone or in a
@@ -40,7 +40,7 @@ func cached(t *testing.T, cache EmbeddingCache, texts ...string) map[string]bool
 	t.Helper()
 	keys := make([]CacheKey, len(texts))
 	for i, text := range texts {
-		keys[i] = KeyFor("fake", langai.RoleQuery, text)
+		keys[i] = KeyFor("fake", sense.RoleQuery, text)
 	}
 	got, err := cache.Get(context.Background(), "1", keys)
 	if err != nil {
@@ -77,7 +77,7 @@ func TestEngine_APoisonMemberIsSkippedAndReported(t *testing.T) {
 	}
 	// the item, seven batches of members, and the failed batch once more, one
 	// text at a time
-	if n, want := r.emb.callsOf(langai.RoleQuery), 1+7+embedBatchSize; n != want {
+	if n, want := r.emb.callsOf(sense.RoleQuery), 1+7+embedBatchSize; n != want {
 		t.Errorf("%d Embed calls of items, want %d", n, want)
 	}
 	for text, ok := range cached(t, r.cache, members...) {
@@ -90,14 +90,14 @@ func TestEngine_APoisonMemberIsSkippedAndReported(t *testing.T) {
 		t.Errorf("the skipped member was reported %d times, want once; log:\n%s", len(warned), strings.Join(rec.lines(), "\n"))
 	}
 
-	calls, embedded := r.emb.callsOf(langai.RoleQuery), r.emb.total()
+	calls, embedded := r.emb.callsOf(sense.RoleQuery), r.emb.total()
 	_, memberCalls := cat.counts()
 	for i := range 2 {
 		if again := r.scores(t, "1", croissantText); !reflect.DeepEqual(again, first) {
 			t.Errorf("call %d scored %+v, the first %+v", i+2, again, first)
 		}
 	}
-	if n := r.emb.callsOf(langai.RoleQuery) - calls; n != 0 || r.emb.total() != embedded {
+	if n := r.emb.callsOf(sense.RoleQuery) - calls; n != 0 || r.emb.total() != embedded {
 		t.Errorf("two more calls made %d Embed calls, want none: the space is built", n)
 	}
 	if _, m := cat.counts(); m != memberCalls {
@@ -154,11 +154,11 @@ func TestEngine_ATagNameThatFailsFailsTheRebuildNamingTheTag(t *testing.T) {
 		t.Fatalf("scores %+v, err %v: want no scores and only bread named", ss, err)
 	}
 	r.emb.failContaining("", nil)
-	japan := r.emb.times(langai.RoleDocument, "travel / japan")
+	japan := r.emb.times(sense.RoleDocument, "travel / japan")
 	if got := picked(r.scores(t, "1", diaryText)); !slices.Equal(got, []string{"japan"}) {
 		t.Fatalf("retry: %v, want [japan]", got)
 	}
-	if n := r.emb.times(langai.RoleDocument, "travel / japan") - japan; n != 0 {
+	if n := r.emb.times(sense.RoleDocument, "travel / japan") - japan; n != 0 {
 		t.Errorf("the retry embedded the name that had worked %d times, want 0", n)
 	}
 }
@@ -181,15 +181,15 @@ func TestEngine_WarmKeepsWhatItEmbeddedBeforeACancel(t *testing.T) {
 	if err := r.e.warm(ctx, "1", "10", "1", texts); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if n := r.emb.callsOf(langai.RoleQuery); n != 4 {
+	if n := r.emb.callsOf(sense.RoleQuery); n != 4 {
 		t.Fatalf("%d Embed calls, want 4: three batches and the cancelled one", n)
 	}
 	r.emb.atCall(nil)
-	before := r.emb.count(langai.RoleQuery)
+	before := r.emb.count(sense.RoleQuery)
 	if err := r.e.warm(context.Background(), "1", "10", "1", texts); err != nil {
 		t.Fatal(err)
 	}
-	if n, want := r.emb.count(langai.RoleQuery)-before, len(texts)-3*embedBatchSize; n != want {
+	if n, want := r.emb.count(sense.RoleQuery)-before, len(texts)-3*embedBatchSize; n != want {
 		t.Errorf("the second Warm embedded %d texts, want %d: the first kept three batches", n, want)
 	}
 }

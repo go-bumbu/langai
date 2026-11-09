@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-bumbu/langai/internal/fetch"
+	"github.com/go-bumbu/sense/internal/fetch"
 )
 
 // Pinned runtime. The onnxruntime_go bindings are written against one
@@ -46,7 +46,7 @@ const (
 	// is ~370 MB and the CUDA build ~450 MB.
 	downloadTimeout = 30 * time.Minute
 	// userAgent names this package's downloads.
-	userAgent = "langai-onnx"
+	userAgent = "sense-onnx"
 )
 
 // Variants of the runtime build; the key of libAssets is platform/variant.

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/zarf/eval"
 )
 
 // TestGenerateTagsWithTheDefaultModels runs a tagging.Generator end to end on the real

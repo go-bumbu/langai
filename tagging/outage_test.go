@@ -10,11 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
-// outageRig is a rig over a langaitest.FakeEmbedder a test takes down and
+// outageRig is a rig over a sensetest.FakeEmbedder a test takes down and
 // brings back: while down holds an error every Embed fails with it, and a text
 // containing "boom" always fails with errBoom, alone or in a batch. calls
 // counts the Embed calls, the failed ones included.
@@ -29,7 +29,7 @@ type outageRig struct {
 func newOutageRig(t *testing.T, cat *fakeCatalog) *outageRig {
 	t.Helper()
 	o := &outageRig{rig: newRig(t, engineCfg, cat, nil, nil)}
-	o.emb.inner = langaitest.FakeEmbedder{Calls: &o.calls, Fail: func(text string) error {
+	o.emb.inner = sensetest.FakeEmbedder{Calls: &o.calls, Fail: func(text string) error {
 		if cause := o.down.Load(); cause != nil {
 			return *cause
 		}
@@ -154,7 +154,7 @@ func TestEngine_AnOutageThatStartsMidRebuildIsNotRecorded(t *testing.T) {
 			added := recipes(tc.added)
 			o.cat.set(breadAt("2", append(slices.Clone(croissantRecipes), added...)))
 			var calls atomic.Int64
-			o.emb.inner = langaitest.FakeEmbedder{Calls: &calls, Fail: func(string) error {
+			o.emb.inner = sensetest.FakeEmbedder{Calls: &calls, Fail: func(string) error {
 				if calls.Load() > 2 { // the third Embed of the rebuild and every one after
 					return refused
 				}
@@ -175,10 +175,10 @@ func TestEngine_AnOutageThatStartsMidRebuildIsNotRecorded(t *testing.T) {
 				}
 			}
 
-			o.emb.inner = langaitest.FakeEmbedder{}
-			embedded := o.emb.count(langai.RoleQuery)
+			o.emb.inner = sensetest.FakeEmbedder{}
+			embedded := o.emb.count(sense.RoleQuery)
 			o.scores(t, "r2", croissantText)
-			if n, want := o.emb.count(langai.RoleQuery)-embedded, tc.added-2*embedBatchSize; n != want {
+			if n, want := o.emb.count(sense.RoleQuery)-embedded, tc.added-2*embedBatchSize; n != want {
 				t.Errorf("the call after the outage embedded %d members, want %d: the ones that were missing", n, want)
 			}
 			if state, skipped := o.recorded(t); state != o.e.state("r2") || len(skipped) != 0 {
@@ -189,7 +189,7 @@ func TestEngine_AnOutageThatStartsMidRebuildIsNotRecorded(t *testing.T) {
 }
 
 // TestEngine_AClosedEmbedderFailsTheRebuild: an embedder that was closed says
-// so with an error wrapping langai.ErrClosed, whatever the text. That is the
+// so with an error wrapping sense.ErrClosed, whatever the text. That is the
 // whole call's error: nothing is tried again one text at a time, no member is
 // skipped, and nothing is recorded.
 func TestEngine_AClosedEmbedderFailsTheRebuild(t *testing.T) {
@@ -199,11 +199,11 @@ func TestEngine_AClosedEmbedderFailsTheRebuild(t *testing.T) {
 	built := o.e.state("r1")
 
 	o.cat.set(breadAt("2", append(slices.Clone(croissantRecipes), recipes(40)...)))
-	o.fail(fmt.Errorf("yzma: embedder: %w", langai.ErrClosed))
+	o.fail(fmt.Errorf("yzma: embedder: %w", sense.ErrClosed))
 	before := o.calls.Load()
 	ss, err := o.e.scores(ctx, "1", "10", "r2", croissantText)
-	if !errors.Is(err, ErrNotRebuilt) || !errors.Is(err, langai.ErrClosed) || ss != nil {
-		t.Fatalf("with a closed embedder: %+v, %v; want no scores and an error wrapping ErrNotRebuilt and langai.ErrClosed", ss, err)
+	if !errors.Is(err, ErrNotRebuilt) || !errors.Is(err, sense.ErrClosed) || ss != nil {
+		t.Fatalf("with a closed embedder: %+v, %v; want no scores and an error wrapping ErrNotRebuilt and sense.ErrClosed", ss, err)
 	}
 	if n := o.calls.Load() - before; n != 1 {
 		t.Errorf("a closed embedder was called %d times, want once", n)
@@ -213,12 +213,12 @@ func TestEngine_AClosedEmbedderFailsTheRebuild(t *testing.T) {
 	}
 
 	// the same for the text of the call itself, and for a Warm
-	if _, err := o.e.scores(ctx, "1", "10", "r1", "a text nobody asked about"); !errors.Is(err, langai.ErrClosed) {
-		t.Errorf("scores of a new text: err = %v, want one wrapping langai.ErrClosed", err)
+	if _, err := o.e.scores(ctx, "1", "10", "r1", "a text nobody asked about"); !errors.Is(err, sense.ErrClosed) {
+		t.Errorf("scores of a new text: err = %v, want one wrapping sense.ErrClosed", err)
 	}
 	before = o.calls.Load()
-	if err := o.e.warm(ctx, "1", "10", "r1", recipes(100)); !errors.Is(err, langai.ErrClosed) {
-		t.Errorf("warm: err = %v, want one wrapping langai.ErrClosed", err)
+	if err := o.e.warm(ctx, "1", "10", "r1", recipes(100)); !errors.Is(err, sense.ErrClosed) {
+		t.Errorf("warm: err = %v, want one wrapping sense.ErrClosed", err)
 	}
 	if n := o.calls.Load() - before; n != 1 {
 		t.Errorf("warm called a closed embedder %d times, want once", n)
@@ -231,7 +231,7 @@ func TestEngine_AClosedEmbedderFailsTheRebuild(t *testing.T) {
 func TestEngine_ALazyEmbedderThatCannotLoadFailsTheRebuild(t *testing.T) {
 	notFound := errors.New("model file not found")
 	var loads atomic.Int64
-	lazy := langai.NewLazyEmbedder("fake", 64, func(context.Context) (langai.Embedder, error) {
+	lazy := sense.NewLazyEmbedder("fake", 64, func(context.Context) (sense.Embedder, error) {
 		loads.Add(1)
 		return nil, notFound
 	})
@@ -311,7 +311,7 @@ func TestEngine_ABadTextAmongGoodOnesIsStillSkipped(t *testing.T) {
 
 			// the next revision of the space tries the members again, although
 			// the tag's own revision is the same
-			o.emb.inner = langaitest.FakeEmbedder{}
+			o.emb.inner = sensetest.FakeEmbedder{}
 			o.scores(t, "r3", croissantText)
 			if ids, err := o.e.incomplete(ctx, "1", "10"); err != nil || len(ids) != 0 {
 				t.Errorf("incomplete after the next revision = %v, %v; want none", ids, err)
@@ -367,7 +367,7 @@ func TestEngine_ACachedTextVouchesForTheEmbedder(t *testing.T) {
 // their members.
 func TestScope_IncompleteNamesTheTagsBuiltWithoutAMember(t *testing.T) {
 	ctx := context.Background()
-	emb := langaitest.FakeEmbedder{Fail: func(text string) error {
+	emb := sensetest.FakeEmbedder{Fail: func(text string) error {
 		if strings.Contains(text, "boom") {
 			return errBoom
 		}

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 func tv(id string, dim int) tagging.TagVector {

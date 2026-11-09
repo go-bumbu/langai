@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 const breadDoc = `# Baking bread
@@ -41,7 +41,7 @@ func write(t *testing.T, path, text string) {
 
 // otherModel is the FakeEmbedder under another name: the same vectors, but
 // to a store another model.
-type otherModel struct{ langaitest.FakeEmbedder }
+type otherModel struct{ sensetest.FakeEmbedder }
 
 func (otherModel) Model() string { return "another-model" }
 
@@ -63,13 +63,13 @@ func newFixture(t *testing.T) *fixture {
 	write(t, filepath.Join(dir, "picture.png"), "not a document")
 	write(t, filepath.Join(dir, ".hidden", "secret.md"), "never read")
 	f := &fixture{dir: dir, store: vector.NewMemStore(), calls: &atomic.Int64{}}
-	f.lib = f.library(t, langaitest.FakeEmbedder{Calls: f.calls})
+	f.lib = f.library(t, sensetest.FakeEmbedder{Calls: f.calls})
 	return f
 }
 
 // library builds a Library over the fixture's directory and store with the
 // given embedder.
-func (f *fixture) library(t *testing.T, emb langai.Embedder) *Library {
+func (f *fixture) library(t *testing.T, emb sense.Embedder) *Library {
 	t.Helper()
 	ix, err := search.New(emb, f.store, "examples", "local", "docs")
 	if err != nil {
@@ -108,7 +108,7 @@ func doc(t *testing.T, lib *Library, id string) Doc {
 }
 
 func TestNew_Validates(t *testing.T) {
-	ix, err := search.New(langaitest.FakeEmbedder{}, vector.NewMemStore(), "examples", "local", "docs")
+	ix, err := search.New(sensetest.FakeEmbedder{}, vector.NewMemStore(), "examples", "local", "docs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestScan_ADocumentThatCannotBeIndexedFailsAlone(t *testing.T) {
 func TestScan_AnEmbedderThatIsDownStopsTheBatch(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
-	down := f.library(t, langaitest.FakeEmbedder{Err: errors.New("the model is gone")})
+	down := f.library(t, sensetest.FakeEmbedder{Err: errors.New("the model is gone")})
 	stats, err := down.Scan(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -268,7 +268,7 @@ func TestScan_AnotherModelIsAMismatchUntilReset(t *testing.T) {
 	if !stats.Mismatch || stats.Indexed != 0 || stats.Error == "" {
 		t.Fatalf("scan with another model: %+v", stats)
 	}
-	if got := other.StoredModel(ctx); got != langaitest.FakeEmbedderModel {
+	if got := other.StoredModel(ctx); got != sensetest.FakeEmbedderModel {
 		t.Errorf("stored model %q, want the one that built the collection", got)
 	}
 	if _, err := other.Search(ctx, "bread", 0); !errors.Is(err, vector.ErrModelMismatch) {
@@ -306,7 +306,7 @@ func TestScan_OneAtATimeAndAMissingDirectory(t *testing.T) {
 	f.lib.scanning.Store(false)
 
 	// a directory that is not there yet holds no documents
-	ix, err := search.New(langaitest.FakeEmbedder{}, vector.NewMemStore(), "examples", "local", "docs")
+	ix, err := search.New(sensetest.FakeEmbedder{}, vector.NewMemStore(), "examples", "local", "docs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestSearch_AHitWhoseFileIsUnknownKeepsItsID(t *testing.T) {
 	ctx := context.Background()
 	f := scanned(t)
 	// another catalog over the same index, which has not scanned
-	fresh := f.library(t, langaitest.FakeEmbedder{})
+	fresh := f.library(t, sensetest.FakeEmbedder{})
 	res, err := fresh.Search(ctx, "sourdough starter", 1)
 	if err != nil || len(res.Hits) != 1 || res.Hits[0].Doc.ID != "bread.md" || res.Hits[0].Doc.Name != "bread.md" || res.Hits[0].Heading != "" {
 		t.Errorf("hit without a catalog entry: %+v, %v", res, err)

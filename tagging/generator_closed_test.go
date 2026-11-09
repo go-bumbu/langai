@@ -8,16 +8,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 // TestGenerate_DoesNotAskAClosedModelAgain: a Completer that was closed
-// answers every prompt with an error wrapping langai.ErrClosed. It used to be
+// answers every prompt with an error wrapping sense.ErrClosed. It used to be
 // asked twice for each window of a long text, 22 times for 64 KB. Asking it
 // again cannot help: the first such error is the answer.
 func TestGenerate_DoesNotAskAClosedModelAgain(t *testing.T) {
-	closed := fmt.Errorf("yzma: completer: %w", langai.ErrClosed)
+	closed := fmt.Errorf("yzma: completer: %w", sense.ErrClosed)
 	for _, tc := range []struct {
 		name string
 		text string
@@ -27,11 +27,11 @@ func TestGenerate_DoesNotAskAClosedModelAgain(t *testing.T) {
 		{"a text of 64 KB", strings.TrimSpace("A title\n" + strings.Repeat("word and more words. ", 3000))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			llm, emb := &langaitest.FakeCompleter{Err: closed}, newFlat()
+			llm, emb := &sensetest.FakeCompleter{Err: closed}, newFlat()
 			g := newLongGenerator(t, llm, emb, GeneratorConfig{})
 			got, err := g.Generate(context.Background(), tc.text, 0)
-			if !errors.Is(err, langai.ErrClosed) || errors.Is(err, ErrPartial) || got != nil {
-				t.Fatalf("got %v, %v; want no tags and an error wrapping langai.ErrClosed, not ErrPartial", got, err)
+			if !errors.Is(err, sense.ErrClosed) || errors.Is(err, ErrPartial) || got != nil {
+				t.Fatalf("got %v, %v; want no tags and an error wrapping sense.ErrClosed, not ErrPartial", got, err)
 			}
 			if n := len(llm.Calls()); n != 1 || len(emb.calls) != 0 {
 				t.Errorf("asked %d times and embedded %v, want one question and nothing embedded", n, emb.calls)
@@ -44,9 +44,9 @@ func TestGenerate_DoesNotAskAClosedModelAgain(t *testing.T) {
 // a long text is read. The windows read before count, as for any window that
 // is lost, and no window after it is asked about.
 func TestGenerate_LongTextStopsAtAModelClosedHalfway(t *testing.T) {
-	closed := fmt.Errorf("yzma: completer: %w", langai.ErrClosed)
+	closed := fmt.Errorf("yzma: completer: %w", sense.ErrClosed)
 	ws := windowsOf(t, threeWindows, 3)
-	llm := &langaitest.FakeCompleter{}
+	llm := &sensetest.FakeCompleter{}
 	llm.Reply = func(_, user string) (string, error) {
 		if user == ws[0] {
 			return "alpha", nil
@@ -55,8 +55,8 @@ func TestGenerate_LongTextStopsAtAModelClosedHalfway(t *testing.T) {
 	}
 	g := newLongGenerator(t, llm, newFlat(), GeneratorConfig{})
 	got, err := g.Generate(context.Background(), threeWindows, 0)
-	if !errors.Is(err, ErrPartial) || !errors.Is(err, langai.ErrClosed) || !strings.Contains(err.Error(), "window 2 of 3") {
-		t.Fatalf("err = %v, want one wrapping ErrPartial and langai.ErrClosed, naming window 2 of 3", err)
+	if !errors.Is(err, ErrPartial) || !errors.Is(err, sense.ErrClosed) || !strings.Contains(err.Error(), "window 2 of 3") {
+		t.Fatalf("err = %v, want one wrapping ErrPartial and sense.ErrClosed, naming window 2 of 3", err)
 	}
 	if !strings.Contains(err.Error(), "2 of 3 windows") {
 		t.Errorf("err = %v, want it to say that 2 of 3 windows are missing", err)
@@ -77,11 +77,11 @@ func TestGenerate_LongTextGivesUpOnAModelThatIsDown(t *testing.T) {
 		t.Fatalf("the text makes %d windows, want ten or more", n)
 	}
 	for name, tc := range map[string]struct {
-		llm   *langaitest.FakeCompleter
+		llm   *sensetest.FakeCompleter
 		cause error
 	}{
-		"the model fails":           {&langaitest.FakeCompleter{Err: errBoom}, errBoom},
-		"the model replies nothing": {&langaitest.FakeCompleter{Replies: []string{"\n"}}, ErrEmptyReply},
+		"the model fails":           {&sensetest.FakeCompleter{Err: errBoom}, errBoom},
+		"the model replies nothing": {&sensetest.FakeCompleter{Replies: []string{"\n"}}, ErrEmptyReply},
 	} {
 		t.Run(name, func(t *testing.T) {
 			emb := newFlat()
@@ -100,7 +100,7 @@ func TestGenerate_LongTextGivesUpOnAModelThatIsDown(t *testing.T) {
 	// asked about, however many of them fail
 	t.Run("not once a window was read", func(t *testing.T) {
 		ws := Chunk(long, windowBytes)
-		llm := &langaitest.FakeCompleter{}
+		llm := &sensetest.FakeCompleter{}
 		llm.Reply = func(_, user string) (string, error) {
 			if user == ws[0] {
 				return "alpha", nil

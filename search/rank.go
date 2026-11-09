@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // defaultLimit is the number of hits a search returns when the caller asks

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 // engineCfg is the configuration of ExampleTagger: FakeEmbedder's scores run
@@ -115,7 +115,7 @@ func breadWithRecipes(rev string) *fakeCatalog {
 }
 
 func TestEngine_RequiresItsParts(t *testing.T) {
-	emb, cat, cache, ix := langaitest.FakeEmbedder{}, &fakeCatalog{}, NewMemCache(), NewMemIndex(0)
+	emb, cat, cache, ix := sensetest.FakeEmbedder{}, &fakeCatalog{}, NewMemCache(), NewMemIndex(0)
 	for _, tc := range []struct {
 		name string
 		err  func() error
@@ -181,7 +181,7 @@ func TestEngine_RevisionChangeRebuildsOnlyChangedTags(t *testing.T) {
 	r := newRig(t, engineCfg, cat, nil, nil)
 	r.scores(t, "1", croissantText)
 	_, members := r.cat.counts()
-	names := r.emb.count(langai.RoleDocument)
+	names := r.emb.count(sense.RoleDocument)
 
 	bumped := slices.Clone(tags)
 	bumped[1].Revision = "2"
@@ -193,7 +193,7 @@ func TestEngine_RevisionChangeRebuildsOnlyChangedTags(t *testing.T) {
 	if got := r.cat.lastMemberIDs(); !slices.Equal(got, []string{"japan"}) {
 		t.Fatalf("Members asked for %v, want [japan]", got)
 	}
-	if got := r.emb.count(langai.RoleDocument); got != names {
+	if got := r.emb.count(sense.RoleDocument); got != names {
 		t.Fatalf("embedded %d names, want 0: the cache holds them", got-names)
 	}
 }
@@ -207,7 +207,7 @@ func TestEngine_RenameIsSeenWithoutATagRevision(t *testing.T) {
 	renamed := []CatalogTag{{"bread", "cooking / bread", "1"}, {"japan", "sports / football", "1"}}
 	cat.set(renamed, nil)
 	got := r.scores(t, "2", diaryText)
-	if n := r.emb.times(langai.RoleDocument, "sports / football"); n != 1 {
+	if n := r.emb.times(sense.RoleDocument, "sports / football"); n != 1 {
 		t.Fatalf("the new name was embedded %d times, want once", n)
 	}
 	want := newRig(t, engineCfg, &fakeCatalog{tags: renamed}, nil, nil).scores(t, "1", diaryText)
@@ -254,7 +254,7 @@ func TestEngine_CatalogErrorFailsAndRetries(t *testing.T) {
 func TestEngine_EmbedderErrorFailsAndRetries(t *testing.T) {
 	boom := errors.New("embedder down")
 	r := newRig(t, engineCfg, &fakeCatalog{tags: breadAndJapan("1")}, nil, nil)
-	r.emb.failRole(langai.RoleDocument, boom)
+	r.emb.failRole(sense.RoleDocument, boom)
 	ss, err := r.e.scores(context.Background(), "1", "10", "1", diaryText)
 	if !errors.Is(err, ErrNotRebuilt) || !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want one wrapping ErrNotRebuilt and the cause", err)
@@ -262,15 +262,15 @@ func TestEngine_EmbedderErrorFailsAndRetries(t *testing.T) {
 	if ss != nil {
 		t.Fatalf("scores = %+v, want none on an error", ss)
 	}
-	r.emb.failRole(langai.RoleDocument, nil)
-	items, names := r.emb.count(langai.RoleQuery), r.emb.count(langai.RoleDocument)
+	r.emb.failRole(sense.RoleDocument, nil)
+	items, names := r.emb.count(sense.RoleQuery), r.emb.count(sense.RoleDocument)
 	if got := picked(r.scores(t, "1", diaryText)); !slices.Equal(got, []string{"japan"}) {
 		t.Fatalf("retry: %v, want [japan]", got)
 	}
-	if n := r.emb.count(langai.RoleQuery) - items; n != 0 {
+	if n := r.emb.count(sense.RoleQuery) - items; n != 0 {
 		t.Fatalf("retry embedded %d items, want 0: the item vector is cached", n)
 	}
-	if n := r.emb.count(langai.RoleDocument) - names; n != 2 {
+	if n := r.emb.count(sense.RoleDocument) - names; n != 2 {
 		t.Fatalf("retry embedded %d names, want 2", n)
 	}
 }
@@ -302,9 +302,9 @@ func TestEngine_AMemberWithAPieceThatFailsIsSkippedWhole(t *testing.T) {
 		t.Errorf("the member was reported %d times, want once, naming the piece; log:\n%s", n, strings.Join(rec.lines(), "\n"))
 	}
 	r.emb.failContaining("", nil)
-	embedded := r.emb.count(langai.RoleQuery)
+	embedded := r.emb.count(sense.RoleQuery)
 	r.scores(t, "2", item)
-	if n := r.emb.count(langai.RoleQuery) - embedded; n != 1 {
+	if n := r.emb.count(sense.RoleQuery) - embedded; n != 1 {
 		t.Errorf("the next revision embedded %d pieces, want 1: only the piece that had failed", n)
 	}
 }
@@ -370,15 +370,15 @@ func TestEngine_ToleratesOddMembers(t *testing.T) {
 	}
 	r := newRig(t, engineCfg, cat, nil, nil)
 	ss := r.scores(t, "1", croissantText)
-	if n := r.emb.times(langai.RoleQuery, ghost); n != 0 {
+	if n := r.emb.times(sense.RoleQuery, ghost); n != 0 {
 		t.Errorf("a member of a tag not asked for was embedded %d times", n)
 	}
 	for _, blank := range []string{"", "  ", " \t"} {
-		if n := r.emb.times(langai.RoleQuery, blank); n != 0 {
+		if n := r.emb.times(sense.RoleQuery, blank); n != 0 {
 			t.Errorf("blank member %q was embedded %d times", blank, n)
 		}
 	}
-	if n := r.emb.times(langai.RoleQuery, croissantRecipes[0]); n != 1 {
+	if n := r.emb.times(sense.RoleQuery, croissantRecipes[0]); n != 1 {
 		t.Errorf("a member listed twice was embedded %d times, want once", n)
 	}
 	if got := scoreOf(t, ss, "japan").Cutoff; got != engineCfg.NameMinScore {
@@ -408,7 +408,7 @@ func TestEngine_RefusesAMemberOfAnotherLength(t *testing.T) {
 func TestEngine_RefusesABrokenEmbedder(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		emb  langai.Embedder
+		emb  sense.Embedder
 		want string
 	}{
 		{"no vectors", vectorlessEmbedder{}, "returned 0 vectors"},
@@ -424,7 +424,7 @@ func TestEngine_RefusesABrokenEmbedder(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) || ss != nil {
 			t.Errorf("%s: %+v, %v; want no scores and an error saying %q", tc.name, ss, err, tc.want)
 		}
-		got, err := cache.Get(context.Background(), "1", []CacheKey{KeyFor("fake", langai.RoleQuery, diaryText)})
+		got, err := cache.Get(context.Background(), "1", []CacheKey{KeyFor("fake", sense.RoleQuery, diaryText)})
 		if err != nil || len(got) != 0 {
 			t.Errorf("%s: the cache holds %v (%v), want nothing", tc.name, got, err)
 		}
@@ -636,12 +636,12 @@ func TestEngine_ModelSwitchReembeds(t *testing.T) {
 	b := newRig(t, cfg, breadWithRecipes("1"), cache, nil)
 	b.scores(t, "1", croissantText)
 	for _, name := range []string{"cooking / bread", "travel / japan"} {
-		if n := b.emb.times(langai.RoleDocument, name); n != 1 {
+		if n := b.emb.times(sense.RoleDocument, name); n != 1 {
 			t.Errorf("name %q embedded %d times under the new model, want once", name, n)
 		}
 	}
 	for _, text := range append(slices.Clone(croissantRecipes), croissantText) {
-		if n := b.emb.times(langai.RoleQuery, text); n != 1 {
+		if n := b.emb.times(sense.RoleQuery, text); n != 1 {
 			t.Errorf("text %q embedded %d times under the new model, want once", text, n)
 		}
 	}
@@ -654,7 +654,7 @@ func TestEngine_ChunkBytesChangeReembedsItemsOnly(t *testing.T) {
 	cfg.ChunkBytes = 20
 	b := newRig(t, cfg, breadWithRecipes("1"), cache, nil)
 	b.scores(t, "1", croissantText)
-	if n := b.emb.count(langai.RoleDocument); n != 0 {
+	if n := b.emb.count(sense.RoleDocument); n != 0 {
 		t.Errorf("embedded %d names, want 0: names are not chunked", n)
 	}
 	// every member and the item is longer than 20 bytes, so each is embedded
@@ -665,11 +665,11 @@ func TestEngine_ChunkBytesChangeReembedsItemsOnly(t *testing.T) {
 	}
 	slices.Sort(pieces)
 	pieces = slices.Compact(pieces)
-	if n := b.emb.count(langai.RoleQuery); n != len(pieces) {
+	if n := b.emb.count(sense.RoleQuery); n != len(pieces) {
 		t.Errorf("embedded %d item texts, want the %d distinct pieces of the item and the members", n, len(pieces))
 	}
 	for _, p := range pieces {
-		if n := b.emb.times(langai.RoleQuery, p); n != 1 {
+		if n := b.emb.times(sense.RoleQuery, p); n != 1 {
 			t.Errorf("piece %q embedded %d times, want once", p, n)
 		}
 	}
@@ -700,7 +700,7 @@ func TestEngine_IndexesAreIsolated(t *testing.T) {
 	r := newRig(t, engineCfg, &fakeCatalog{tags: breadAndJapan("1")}, nil, nil)
 	r.scoresIn(t, "a", "1", diaryText)
 	r.scoresIn(t, "b", "1", diaryText)
-	if n := r.emb.times(langai.RoleQuery, diaryText); n != 2 {
+	if n := r.emb.times(sense.RoleQuery, diaryText); n != 2 {
 		t.Fatalf("the text was embedded %d times across two indexes, want 2", n)
 	}
 }
@@ -710,7 +710,7 @@ func TestEngine_WarmFillsTheCacheAndTheIndex(t *testing.T) {
 	if err := r.e.warm(context.Background(), "1", "10", "1", []string{guideText, diaryText, "  "}); err != nil {
 		t.Fatal(err)
 	}
-	if n := r.emb.times(langai.RoleQuery, "  "); n != 0 {
+	if n := r.emb.times(sense.RoleQuery, "  "); n != 0 {
 		t.Errorf("warm embedded a blank text %d times", n)
 	}
 	tags, members := r.cat.counts()
@@ -728,12 +728,12 @@ func TestEngine_RolesAreQueriesAndDocuments(t *testing.T) {
 	r := newRig(t, engineCfg, breadWithRecipes("1"), nil, nil)
 	r.scores(t, "1", croissantText)
 	for _, name := range []string{"cooking / bread", "travel / japan"} {
-		if r.emb.times(langai.RoleDocument, name) != 1 || r.emb.times(langai.RoleQuery, name) != 0 {
+		if r.emb.times(sense.RoleDocument, name) != 1 || r.emb.times(sense.RoleQuery, name) != 0 {
 			t.Errorf("name %q: want it embedded once, as a document only", name)
 		}
 	}
 	for _, text := range append(slices.Clone(croissantRecipes), croissantText) {
-		if r.emb.times(langai.RoleQuery, text) != 1 || r.emb.times(langai.RoleDocument, text) != 0 {
+		if r.emb.times(sense.RoleQuery, text) != 1 || r.emb.times(sense.RoleDocument, text) != 0 {
 			t.Errorf("text %q: want it embedded once, as a query only", text)
 		}
 	}

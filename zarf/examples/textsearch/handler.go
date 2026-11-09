@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/vector"
 )
 
 //go:embed ui

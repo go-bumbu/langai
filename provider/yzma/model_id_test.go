@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // TestModelSpec_ModelIDIsTheLoadedModel: the identity a spec gives before
@@ -95,16 +95,16 @@ func TestLazyEmbedder_AroundYzma(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := ModelSpec{Name: "org/m", File: file, QueryPrefix: "q: ", DocumentPrefix: "d: ", Dims: 4}
-	load := func(ctx context.Context) (langai.Embedder, error) { return Open(ctx, spec, rt) }
+	load := func(ctx context.Context) (sense.Embedder, error) { return Open(ctx, spec, rt) }
 
-	emb := langai.NewLazyEmbedder(spec.ModelID(), spec.Dims, load)
+	emb := sense.NewLazyEmbedder(spec.ModelID(), spec.Dims, load)
 	defer func() { _ = emb.Close() }()
-	vecs, err := emb.Embed(context.Background(), langai.RoleQuery, []string{"hello"})
+	vecs, err := emb.Embed(context.Background(), sense.RoleQuery, []string{"hello"})
 	if err != nil || len(vecs) != 1 || len(vecs[0]) != spec.Dims {
 		t.Fatalf("Embed through the LazyEmbedder: %d vectors, %v", len(vecs), err)
 	}
 
-	byName := langai.NewLazyEmbedder(spec.Name, spec.Dims, load)
+	byName := sense.NewLazyEmbedder(spec.Name, spec.Dims, load)
 	defer func() { _ = byName.Close() }()
 	if err := byName.Load(context.Background()); err == nil || !strings.Contains(err.Error(), "must not mix") {
 		t.Errorf("a LazyEmbedder configured with the bare name loaded: %v", err)
@@ -112,7 +112,7 @@ func TestLazyEmbedder_AroundYzma(t *testing.T) {
 }
 
 // identified is the optional port a store asks for the identity of the
-// vectors it is handed (langai.Identified); both embedders offer it.
+// vectors it is handed (sense.Identified); both embedders offer it.
 type identified interface{ Model() string }
 
 var (

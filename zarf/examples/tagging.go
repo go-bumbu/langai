@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/zarf/examples/autotag"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/zarf/examples/autotag"
 )
 
 // chunkBytes is the most of a note the Tagger embeds at once. EmbeddingGemma

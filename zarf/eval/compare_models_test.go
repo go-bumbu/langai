@@ -10,7 +10,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/go-bumbu/langai/provider/yzma"
+	"github.com/go-bumbu/sense/provider/yzma"
 )
 
 // entry is one row of the models file: a GGUF to evaluate and how to run it.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"iter"
 
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // docsPage is how many documents Docs reads from the store per call.

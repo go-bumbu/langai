@@ -1,6 +1,6 @@
-// Package langaitest provides fakes of the langai ports for tests: of this
+// Package sensetest provides fakes of the sense ports for tests: of this
 // module's packages and of the code that uses them.
-package langaitest
+package sensetest
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"unicode"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // FakeEmbedder is a deterministic Embedder for tests: it hashes words into a
@@ -22,7 +22,7 @@ import (
 // before the first call; Embed is safe for concurrent use when Fail is.
 //
 //	var calls atomic.Int64
-//	emb := langaitest.FakeEmbedder{Calls: &calls, Fail: func(text string) error {
+//	emb := sensetest.FakeEmbedder{Calls: &calls, Fail: func(text string) error {
 //		if strings.Contains(text, "poison") {
 //			return errors.New("the model cannot take this text")
 //		}
@@ -44,15 +44,15 @@ type FakeEmbedder struct {
 
 // FakeEmbedderModel is the model name FakeEmbedder reports, whatever its
 // Dims.
-const FakeEmbedderModel = "langaitest/fake-embedder"
+const FakeEmbedderModel = "sensetest/fake-embedder"
 
 // verify the interfaces are actually satisfied
 var (
-	_ langai.Embedder   = FakeEmbedder{}
-	_ langai.Identified = FakeEmbedder{}
+	_ sense.Embedder   = FakeEmbedder{}
+	_ sense.Identified = FakeEmbedder{}
 )
 
-// Model implements langai.Identified: FakeEmbedderModel.
+// Model implements sense.Identified: FakeEmbedderModel.
 func (FakeEmbedder) Model() string { return FakeEmbedderModel }
 
 // Dimensions implements Embedder.
@@ -66,7 +66,7 @@ func (f FakeEmbedder) Dimensions() int {
 // Embed implements Embedder. It counts the call in Calls, then fails with
 // ctx's error when ctx is done, with Err when that is set, and with the first
 // error Fail returns for one of texts; otherwise it embeds them all.
-func (f FakeEmbedder) Embed(ctx context.Context, _ langai.Role, texts []string) ([][]float32, error) {
+func (f FakeEmbedder) Embed(ctx context.Context, _ sense.Role, texts []string) ([][]float32, error) {
 	if f.Calls != nil {
 		f.Calls.Add(1)
 	}
@@ -98,7 +98,7 @@ func (f FakeEmbedder) Embed(ctx context.Context, _ langai.Role, texts []string) 
 			}
 			vec[bucket] += sign
 		}
-		langai.Normalize(vec)
+		sense.Normalize(vec)
 		out[i] = vec
 	}
 	return out, nil

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 // flatReply and treeReply are what the chat model of newNotebookModel
@@ -33,7 +33,7 @@ func cannedReply(flat, tree string) func(system, user string) (string, error) {
 }
 
 // lastSystem is the system prompt of the last call model received.
-func lastSystem(t *testing.T, model *langaitest.FakeCompleter) string {
+func lastSystem(t *testing.T, model *sensetest.FakeCompleter) string {
 	t.Helper()
 	calls := model.Calls()
 	if len(calls) == 0 {
@@ -50,11 +50,11 @@ func newNotebook(t *testing.T, file string) *Notebook {
 	return nb
 }
 
-func newNotebookModel(t *testing.T, file string) (*Notebook, *langaitest.FakeCompleter) {
+func newNotebookModel(t *testing.T, file string) (*Notebook, *sensetest.FakeCompleter) {
 	t.Helper()
 	ctx := context.Background()
-	emb := langaitest.FakeEmbedder{}
-	model := &langaitest.FakeCompleter{Reply: cannedReply(flatReply, treeReply)}
+	emb := sensetest.FakeEmbedder{}
+	model := &sensetest.FakeCompleter{Reply: cannedReply(flatReply, treeReply)}
 	nb, err := New(ctx, Config{
 		Cache:       tagging.NewMemCache(),
 		Tagging:     tagging.TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2},

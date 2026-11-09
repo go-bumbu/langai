@@ -106,10 +106,10 @@ func TestFile_UsesTheClientAndUserAgent(t *testing.T) {
 	t.Cleanup(srv.Close)
 	sum := sha256.Sum256([]byte("x"))
 	a := Asset{URL: srv.URL, SHA256: hex.EncodeToString(sum[:])}
-	if err := (Downloader{Client: srv.Client(), UserAgent: "langai-test", Limit: cap}).File(context.Background(), "test", a, filepath.Join(t.TempDir(), "x")); err != nil {
+	if err := (Downloader{Client: srv.Client(), UserAgent: "sense-test", Limit: cap}).File(context.Background(), "test", a, filepath.Join(t.TempDir(), "x")); err != nil {
 		t.Fatal(err)
 	}
-	if agent != "langai-test" {
+	if agent != "sense-test" {
 		t.Errorf("user agent = %q", agent)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // idsOf collects the ids Docs lists, failing the test on an error.

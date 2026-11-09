@@ -15,12 +15,12 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/tagging/pgcache"
-	"github.com/go-bumbu/langai/tagging/sqlitecache"
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/vector/pgvec"
-	"github.com/go-bumbu/langai/vector/sqlitevec"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/tagging/pgcache"
+	"github.com/go-bumbu/sense/tagging/sqlitecache"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/vector/pgvec"
+	"github.com/go-bumbu/sense/vector/sqlitevec"
 )
 
 // stores opens what the pages keep their derived data in: a vector store

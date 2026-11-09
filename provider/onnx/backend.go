@@ -55,7 +55,7 @@ var libs = &runtimeLoader{}
 
 // runtimeLoader loads the shared library once per process (the bindings
 // keep it in package globals and never unload it) and remembers the outcome:
-// a failure is permanent, which matches langai.LazyEmbedder's cached-error
+// a failure is permanent, which matches sense.LazyEmbedder's cached-error
 // contract, and a second library is refused.
 type runtimeLoader struct {
 	once sync.Once

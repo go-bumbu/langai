@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // offline keeps a test from downloading a real model: requests to anything
@@ -75,7 +75,7 @@ func TestNew_RunsTheSelectedModel(t *testing.T) {
 		t.Errorf("loadModel(%v), want %s", args[0], modelPath)
 	}
 	f.calls = nil
-	if _, err := e.Embed(context.Background(), langai.RoleQuery, []string{"x"}); err != nil {
+	if _, err := e.Embed(context.Background(), sense.RoleQuery, []string{"x"}); err != nil {
 		t.Fatal(err)
 	}
 	if args := f.only(t, "tokenize"); args[1] != "query: x" {
@@ -173,10 +173,10 @@ func TestOpen_TwoModelsSideBySide(t *testing.T) {
 		t.Fatalf("the libraries were loaded %d times, want once", n)
 	}
 	f.calls = nil
-	if _, err := current.Embed(context.Background(), langai.RoleQuery, []string{"x"}); err != nil {
+	if _, err := current.Embed(context.Background(), sense.RoleQuery, []string{"x"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := next.Embed(context.Background(), langai.RoleQuery, []string{"x"}); err != nil {
+	if _, err := next.Embed(context.Background(), sense.RoleQuery, []string{"x"}); err != nil {
 		t.Fatal(err)
 	}
 	var seen []any

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai/search"
+	"github.com/go-bumbu/sense/search"
 )
 
 func serve(t *testing.T) (*fixture, *httptest.Server) {

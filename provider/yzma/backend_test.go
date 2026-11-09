@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // Handles the fake hands out. They are distinct so a test can tell which one
@@ -238,7 +238,7 @@ func TestRuntimeLoader_LoadsOnceAndRefusesAnotherDir(t *testing.T) {
 }
 
 // TestRuntimeLoader_LoadErrorIsCached: a failed load is permanent for the
-// process, matching langai.LazyEmbedder's cached error, and nothing else is
+// process, matching sense.LazyEmbedder's cached error, and nothing else is
 // called on libraries that did not load.
 func TestRuntimeLoader_LoadErrorIsCached(t *testing.T) {
 	boom := errors.New("dlopen failed")
@@ -613,7 +613,7 @@ func TestNew_LoadsThroughTheAPI(t *testing.T) {
 	// the load line reuses the version the loader read: no second FFI call
 	f.only(t, "version")
 
-	vecs, err := e.Embed(context.Background(), langai.RoleDocument, []string{"first text", "second text"})
+	vecs, err := e.Embed(context.Background(), sense.RoleDocument, []string{"first text", "second text"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -776,7 +776,7 @@ func TestOpen_PassesPoolingPrefixesAndCap(t *testing.T) {
 		t.Errorf("newContext(nCtx=%v, pooling=%v), want 128 and cls", args[1], args[3])
 	}
 	f.calls = nil
-	if _, err := e.Embed(context.Background(), langai.RoleQuery, []string{"x"}); err != nil {
+	if _, err := e.Embed(context.Background(), sense.RoleQuery, []string{"x"}); err != nil {
 		t.Fatal(err)
 	}
 	if args := f.only(t, "tokenize"); args[1] != "q: x" {

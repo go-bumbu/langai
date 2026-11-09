@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // embedBatch is the most chunk texts IndexBatch hands the embedder in one
@@ -146,7 +146,7 @@ func (ix *Index) writeGroup(ctx context.Context, group []pendingDoc, res *BatchR
 	vectors := make([][]float32, 0, len(texts))
 	for start := 0; start < len(texts); start += embedBatch {
 		batch := texts[start:min(start+embedBatch, len(texts))]
-		got, err := ix.embedder.Embed(ctx, langai.RoleDocument, batch)
+		got, err := ix.embedder.Embed(ctx, sense.RoleDocument, batch)
 		if err != nil {
 			return fmt.Errorf("search: embed documents: %w", err)
 		}

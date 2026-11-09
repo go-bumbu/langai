@@ -1,4 +1,4 @@
-package langai
+package sense
 
 import "errors"
 
@@ -7,4 +7,4 @@ import "errors"
 // a lazy model, and a tagging.Tagger. It stays unusable. Test for it with
 // errors.Is to tell a call that arrived after shutdown from one that failed
 // while the model ran.
-var ErrClosed = errors.New("langai: closed")
+var ErrClosed = errors.New("sense: closed")

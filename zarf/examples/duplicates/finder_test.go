@@ -19,7 +19,7 @@ import (
 
 	"golang.org/x/image/draw"
 
-	"github.com/go-bumbu/langai/search"
+	"github.com/go-bumbu/sense/search"
 )
 
 // scene is a picture with structure for a hash to hold on to: a diagonal

@@ -16,10 +16,10 @@ import (
 
 	xdraw "golang.org/x/image/draw"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/internal/fetch"
-	"github.com/go-bumbu/langai/internal/imageutil"
-	"github.com/go-bumbu/langai/media"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/internal/fetch"
+	"github.com/go-bumbu/sense/internal/imageutil"
+	"github.com/go-bumbu/sense/media"
 )
 
 // DefaultVisionModel is the model NewVision runs unless Config.Model
@@ -427,8 +427,8 @@ const maxTruncations = 8
 // language model trained for embedding: the model's chat template lays out
 // an instruction and the input, the projector turns pictures and frames
 // into tokens, and the vector is the last token's hidden state, unit
-// length. It is a langai.Embedder, a langai.ImageEmbedder and a
-// langai.VideoEmbedder; search.MediaIndex takes it as all three.
+// length. It is a sense.Embedder, a sense.ImageEmbedder and a
+// sense.VideoEmbedder; search.MediaIndex takes it as all three.
 type Vision struct {
 	// a llama.cpp context is not safe for concurrent use, so calls are
 	// serialized
@@ -456,9 +456,9 @@ type Vision struct {
 
 // verify the interfaces are actually satisfied
 var (
-	_ langai.Embedder      = (*Vision)(nil)
-	_ langai.ImageEmbedder = (*Vision)(nil)
-	_ langai.VideoEmbedder = (*Vision)(nil)
+	_ sense.Embedder      = (*Vision)(nil)
+	_ sense.ImageEmbedder = (*Vision)(nil)
+	_ sense.VideoEmbedder = (*Vision)(nil)
 )
 
 // openVision loads the libraries (once, through rt), the model and the
@@ -552,8 +552,8 @@ func (v *Vision) release() {
 	}
 }
 
-// Dimensions implements langai.Embedder, langai.ImageEmbedder and
-// langai.VideoEmbedder.
+// Dimensions implements sense.Embedder, sense.ImageEmbedder and
+// sense.VideoEmbedder.
 func (v *Vision) Dimensions() int { return v.dims }
 
 // Accel says what runs the model, as the load log line does: "cpu" or the
@@ -602,7 +602,7 @@ func (v *Vision) Close() error {
 	return nil
 }
 
-// Embed implements langai.Embedder: each text is one input under the
+// Embed implements sense.Embedder: each text is one input under the
 // instruction. The role makes no difference: the model is symmetric and the
 // instruction says what the vectors are for. A text is plain text to the
 // model whatever it spells (a control token, libmtmd's media marker, a NUL
@@ -610,7 +610,7 @@ func (v *Vision) Close() error {
 // context next to the instruction: the model then sees its beginning, as
 // with the text Embedder. A ctx that ends stops the evaluation (see
 // visionAPI.setAbort) and is the error.
-func (v *Vision) Embed(ctx context.Context, _ langai.Role, texts []string) ([][]float32, error) {
+func (v *Vision) Embed(ctx context.Context, _ sense.Role, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i, text := range texts {
 		if err := ctx.Err(); err != nil {
@@ -625,7 +625,7 @@ func (v *Vision) Embed(ctx context.Context, _ langai.Role, texts []string) ([][]
 	return out, nil
 }
 
-// EmbedImages implements langai.ImageEmbedder: each picture is one input
+// EmbedImages implements sense.ImageEmbedder: each picture is one input
 // under the instruction, scaled down to maxImageSide first when larger.
 func (v *Vision) EmbedImages(ctx context.Context, images []image.Image) ([][]float32, error) {
 	out := make([][]float32, len(images))
@@ -652,7 +652,7 @@ func (v *Vision) EmbedImages(ctx context.Context, images []image.Image) ([][]flo
 	return out, nil
 }
 
-// EmbedVideo implements langai.VideoEmbedder: the video is cut into segments
+// EmbedVideo implements sense.VideoEmbedder: the video is cut into segments
 // of SegmentLength (the Cutter does it, by stream copy), each sampled at
 // FPS and embedded as one input under the instruction. A video no longer
 // than a segment is one input, uncut. At most MaxSegments segments are
@@ -678,7 +678,7 @@ func (v *Vision) EmbedImages(ctx context.Context, images []image.Image) ([][]flo
 // embedded, and the directory when the call returns. So a video takes the
 // room of one segment there, and one without a length that of its copy as
 // well, which is at most MaxSegments segments long.
-func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
+func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]sense.Segment, error) {
 	if v.cutter == nil {
 		return nil, errors.New("yzma: no Cutter: set VisionOptions.Cutter (media/ffmpeg) to embed videos")
 	}
@@ -694,9 +694,9 @@ func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]langai.Segment,
 		if err != nil {
 			return nil, err
 		}
-		return []langai.Segment{{Start: 0, End: duration, Vector: vec}}, nil
+		return []sense.Segment{{Start: 0, End: duration, Vector: vec}}, nil
 	}
-	dir, err := os.MkdirTemp(v.tempDir, "langai-vision-*")
+	dir, err := os.MkdirTemp(v.tempDir, "sense-vision-*")
 	if err != nil {
 		return nil, fmt.Errorf("yzma: a directory for the segments (VisionOptions.TempDir): %w", err)
 	}
@@ -784,9 +784,9 @@ func segmentCount(duration, segment time.Duration, limit int) int {
 // and embeds each; MaxSegments caps how many. The length is a plan and not
 // a fact: the walk ends early where the Cutter finds the video over
 // (media.ErrPastEnd), and nothing is sized by the count.
-func (v *Vision) embedSegments(ctx context.Context, path string, duration time.Duration, dir string) ([]langai.Segment, error) {
+func (v *Vision) embedSegments(ctx context.Context, path string, duration time.Duration, dir string) ([]sense.Segment, error) {
 	ext := segmentExt(path)
-	var out []langai.Segment
+	var out []sense.Segment
 	for i := range segmentCount(duration, v.segment, v.maxSegments) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -808,7 +808,7 @@ func (v *Vision) embedSegments(ctx context.Context, path string, duration time.D
 		if err != nil {
 			return nil, fmt.Errorf("yzma: segment %d: %w", i, err)
 		}
-		out = append(out, langai.Segment{Start: start, End: end, Vector: vec})
+		out = append(out, sense.Segment{Start: start, End: end, Vector: vec})
 	}
 	return out, nil
 }
@@ -855,7 +855,7 @@ func (v *Vision) embedBitmap(ctx context.Context, open func() (uintptr, func(), 
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
-		return nil, fmt.Errorf("yzma: vision embedder: %w", langai.ErrClosed)
+		return nil, fmt.Errorf("yzma: vision embedder: %w", sense.ErrClosed)
 	}
 	bitmap, free, err := open()
 	if err != nil {
@@ -870,7 +870,7 @@ func (v *Vision) embedText(ctx context.Context, text string) ([]float32, error) 
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
-		return nil, fmt.Errorf("yzma: vision embedder: %w", langai.ErrClosed)
+		return nil, fmt.Errorf("yzma: vision embedder: %w", sense.ErrClosed)
 	}
 	return v.embedLocked(ctx, text, nil)
 }
@@ -973,7 +973,7 @@ func (v *Vision) embedLocked(ctx context.Context, text string, bitmaps []uintptr
 	}
 	out := make([]float32, len(view))
 	copy(out, view)
-	langai.Normalize(out)
+	sense.Normalize(out)
 	return out, nil
 }
 

@@ -1,4 +1,4 @@
-package langai_test
+package sense_test
 
 import (
 	"context"
@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 // This example defers a model's load to its first use. The identity and the
@@ -16,13 +16,13 @@ import (
 // be set up first; the loaded model must then report exactly that identity.
 func ExampleNewLazyEmbedder() {
 	ctx := context.Background()
-	emb := langai.NewLazyEmbedder(langaitest.FakeEmbedderModel, 64, func(context.Context) (langai.Embedder, error) {
-		return langaitest.FakeEmbedder{}, nil // an app returns yzma.New(ctx, cfg)
+	emb := sense.NewLazyEmbedder(sensetest.FakeEmbedderModel, 64, func(context.Context) (sense.Embedder, error) {
+		return sensetest.FakeEmbedder{}, nil // an app returns yzma.New(ctx, cfg)
 	})
 	state, _ := emb.State()
 	fmt.Println(emb.Model(), emb.Dimensions(), state)
 
-	vecs, err := emb.Embed(ctx, langai.RoleQuery, []string{"hello"})
+	vecs, err := emb.Embed(ctx, sense.RoleQuery, []string{"hello"})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -32,10 +32,10 @@ func ExampleNewLazyEmbedder() {
 	if err := emb.Close(); err != nil {
 		log.Fatal(err)
 	}
-	_, err = emb.Embed(ctx, langai.RoleQuery, []string{"hello"})
-	fmt.Println(errors.Is(err, langai.ErrClosed))
+	_, err = emb.Embed(ctx, sense.RoleQuery, []string{"hello"})
+	fmt.Println(errors.Is(err, sense.ErrClosed))
 	// Output:
-	// langaitest/fake-embedder 64 not started
+	// sensetest/fake-embedder 64 not started
 	// 64 loaded
 	// true
 }

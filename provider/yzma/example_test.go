@@ -5,12 +5,12 @@ import (
 	"log"
 	"path/filepath"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/media/ffmpeg"
-	"github.com/go-bumbu/langai/provider/yzma"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/media/ffmpeg"
+	"github.com/go-bumbu/sense/provider/yzma"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // The examples mirror the README's. They have no output, so they are
@@ -60,7 +60,7 @@ func ExampleLookupSpec() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	emb := langai.NewLazyEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (langai.Embedder, error) {
+	emb := sense.NewLazyEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (sense.Embedder, error) {
 		return yzma.New(ctx, cfg) // ctx is the LazyEmbedder's own: only Close cancels it
 	})
 	defer func() { _ = emb.Close() }()

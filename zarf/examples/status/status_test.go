@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // fixture is a Service over the library's own lazy loaders, each loading a
@@ -20,7 +20,7 @@ import (
 // a search.Index over the text embedder on a MemStore.
 type fixture struct {
 	svc    *Service
-	text   *langai.LazyEmbedder
+	text   *sense.LazyEmbedder
 	store  *vector.MemStore
 	index  *search.Index
 	coord  vector.Coord
@@ -32,15 +32,15 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{store: vector.NewMemStore(), coord: vector.Coord{Index: "examples", Partition: "local", Collection: "docs"}, pageModel: langaitest.FakeEmbedderModel}
-	f.text = langai.NewLazyEmbedder(langaitest.FakeEmbedderModel, 64, func(context.Context) (langai.Embedder, error) {
-		return langaitest.FakeEmbedder{}, nil
+	f := &fixture{store: vector.NewMemStore(), coord: vector.Coord{Index: "examples", Partition: "local", Collection: "docs"}, pageModel: sensetest.FakeEmbedderModel}
+	f.text = sense.NewLazyEmbedder(sensetest.FakeEmbedderModel, 64, func(context.Context) (sense.Embedder, error) {
+		return sensetest.FakeEmbedder{}, nil
 	})
-	image := langai.NewLazyImageEmbedder(langaitest.FakeImageEmbedderModel, 48, func(context.Context) (langai.ImageEmbedder, error) {
+	image := sense.NewLazyImageEmbedder(sensetest.FakeImageEmbedderModel, 48, func(context.Context) (sense.ImageEmbedder, error) {
 		return nil, errors.New("the model file is missing")
 	})
-	chat := langai.NewLazyCompleter(func(context.Context) (langai.Completer, error) {
-		return &langaitest.FakeCompleter{}, nil
+	chat := sense.NewLazyCompleter(func(context.Context) (sense.Completer, error) {
+		return &sensetest.FakeCompleter{}, nil
 	})
 	t.Cleanup(func() { _ = f.text.Close(); _ = image.Close(); _ = chat.Close() })
 	ix, err := search.New(f.text, f.store, f.coord.Index, f.coord.Partition, f.coord.Collection)
@@ -140,13 +140,13 @@ func TestSnapshot_ShowsLazyStatesWithoutLoading(t *testing.T) {
 	f := newFixture(t)
 	snap := f.svc.Snapshot(context.Background())
 	text := model(t, snap, "text")
-	if !text.Lazy || text.State != "not started" || text.ID != langaitest.FakeEmbedderModel || text.Dimensions != 64 || text.RunsOn != "cpu" || text.Error != "" {
+	if !text.Lazy || text.State != "not started" || text.ID != sensetest.FakeEmbedderModel || text.Dimensions != 64 || text.RunsOn != "cpu" || text.Error != "" {
 		t.Errorf("text model before any use: %+v", text)
 	}
 	if hash := model(t, snap, "hash"); hash.Lazy || hash.State != "no model" {
 		t.Errorf("a model without a loader: %+v", hash)
 	}
-	if state, _ := f.text.State(); state != langai.LazyNotStarted {
+	if state, _ := f.text.State(); state != sense.LazyNotStarted {
 		t.Errorf("the snapshot loaded the model: %v", state)
 	}
 	if len(snap.Pages) != 1 || len(snap.Setup) != 1 || snap.Started.IsZero() {
@@ -188,9 +188,9 @@ func TestLoad_LoadsOnceAndKeepsAFailure(t *testing.T) {
 
 func TestLoad_AWaitThatEndsLeavesTheLoadRunning(t *testing.T) {
 	release := make(chan struct{})
-	slow := langai.NewLazyEmbedder(langaitest.FakeEmbedderModel, 64, func(context.Context) (langai.Embedder, error) {
+	slow := sense.NewLazyEmbedder(sensetest.FakeEmbedderModel, 64, func(context.Context) (sense.Embedder, error) {
 		<-release
-		return langaitest.FakeEmbedder{}, nil
+		return sensetest.FakeEmbedder{}, nil
 	})
 	t.Cleanup(func() { _ = slow.Close() })
 	svc, err := New(Config{Models: []Model{{Key: "slow", Lazy: slow}}})
@@ -224,7 +224,7 @@ func TestCollections_RecordedModelCountAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	c = collection(t, f.svc.Snapshot(ctx), "docs")
-	if c.Docs != 3 || c.Recorded != langaitest.FakeEmbedderModel || c.Mismatch {
+	if c.Docs != 3 || c.Recorded != sensetest.FakeEmbedderModel || c.Mismatch {
 		t.Errorf("a filled collection: %+v", c)
 	}
 	// the page now runs another model than the store recorded

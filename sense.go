@@ -1,4 +1,4 @@
-// Package langai holds what the language-AI packages of this module share:
+// Package sense holds what the language-AI packages of this module share:
 // the ports a model runtime implements, Embedder for text embedding models,
 // ImageEmbedder for image embedding models, VideoEmbedder for models that
 // embed a video as Segments, and Completer for chat models; the Role an
@@ -18,9 +18,9 @@
 // ONNX Runtime, provider/phash hashes pictures perceptually to find duplicates
 // without a model, media/ffmpeg samples and cuts videos for the media ports in
 // media, and vector/sqlitevec and vector/pgvec store search vectors.
-// langaitest has the fakes for tests, and zarf/eval measures an Embedder's
+// sensetest has the fakes for tests, and zarf/eval measures an Embedder's
 // search and tagging quality over a labelled dataset.
-package langai
+package sense
 
 import (
 	"context"

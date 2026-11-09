@@ -7,15 +7,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 func newTestIndex(t *testing.T) (*Index, *vector.MemStore) {
 	t.Helper()
 	store := vector.NewMemStore()
-	ix, err := New(langaitest.FakeEmbedder{}, store, "t", "p", "c")
+	ix, err := New(sensetest.FakeEmbedder{}, store, "t", "p", "c")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -183,7 +183,7 @@ type vectorCountEmbedder struct{ n int }
 
 func (v vectorCountEmbedder) Dimensions() int { return 8 }
 
-func (v vectorCountEmbedder) Embed(_ context.Context, _ langai.Role, _ []string) ([][]float32, error) {
+func (v vectorCountEmbedder) Embed(_ context.Context, _ sense.Role, _ []string) ([][]float32, error) {
 	out := make([][]float32, v.n)
 	for i := range out {
 		out[i] = []float32{1, 0, 0, 0, 0, 0, 0, 0}
@@ -227,7 +227,7 @@ func TestSearchMinScore(t *testing.T) {
 		"golang":  "# Go\n\nNotes about the Go programming language, goroutines and channels.",
 		"hiking":  "# Hiking\n\nTrails, mountain routes and camping equipment.",
 	}
-	ix, err := New(langaitest.FakeEmbedder{}, store, "t", "p", "c")
+	ix, err := New(sensetest.FakeEmbedder{}, store, "t", "p", "c")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestSearchMinScore(t *testing.T) {
 
 func newFlooredIndex(t *testing.T, store vector.Store, min float64) (*Index, error) {
 	t.Helper()
-	return New(langaitest.FakeEmbedder{}, store, "t", "p", "c", WithMinScore(min))
+	return New(sensetest.FakeEmbedder{}, store, "t", "p", "c", WithMinScore(min))
 }
 
 func hitsOf(matches []Match) string {
@@ -310,15 +310,15 @@ func hitsOf(matches []Match) string {
 // records the role of each one (to observe what the index asks for).
 type countingEmbedder struct {
 	calls int
-	roles []langai.Role
+	roles []sense.Role
 }
 
 func (c *countingEmbedder) Dimensions() int { return 8 }
 
-func (c *countingEmbedder) Embed(ctx context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (c *countingEmbedder) Embed(ctx context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	c.calls++
 	c.roles = append(c.roles, role)
-	return langaitest.FakeEmbedder{Dims: 8}.Embed(ctx, role, texts)
+	return sensetest.FakeEmbedder{Dims: 8}.Embed(ctx, role, texts)
 }
 
 // TestIndexPassesRolesToEmbedder: indexed text is a document, a search is a
@@ -337,7 +337,7 @@ func TestIndexPassesRolesToEmbedder(t *testing.T) {
 	if _, err := ix.Search(ctx, "some", 5); err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	want := []langai.Role{langai.RoleDocument, langai.RoleQuery}
+	want := []sense.Role{sense.RoleDocument, sense.RoleQuery}
 	if len(emb.roles) != len(want) {
 		t.Fatalf("roles = %v, want %v", emb.roles, want)
 	}

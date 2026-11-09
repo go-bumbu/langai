@@ -24,9 +24,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-bumbu/langai/provider/phash"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/provider/phash"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // DefaultKind is the hash the page starts with: phash's own default.

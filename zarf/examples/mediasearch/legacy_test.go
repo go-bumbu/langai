@@ -9,10 +9,10 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/go-bumbu/langai/internal/tablename"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/vector/sqlitevec"
+	"github.com/go-bumbu/sense/internal/tablename"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/vector/sqlitevec"
 )
 
 // legacyLibrary is a Library over a SQLite store whose index "examples" is

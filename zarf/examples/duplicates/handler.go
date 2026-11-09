@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/go-bumbu/langai/search"
+	"github.com/go-bumbu/sense/search"
 )
 
 //go:embed ui

@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-bumbu/langai/provider/onnx"
-	"github.com/go-bumbu/langai/provider/yzma"
-	"github.com/go-bumbu/langai/zarf/examples/duplicates"
-	"github.com/go-bumbu/langai/zarf/examples/status"
+	"github.com/go-bumbu/sense/provider/onnx"
+	"github.com/go-bumbu/sense/provider/yzma"
+	"github.com/go-bumbu/sense/zarf/examples/duplicates"
+	"github.com/go-bumbu/sense/zarf/examples/status"
 )
 
 // The overview's model choices: for every feature, each model it needs and

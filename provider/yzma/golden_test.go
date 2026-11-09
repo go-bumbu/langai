@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/sense/zarf/eval"
 )
 
 // floor is one asserted minimum for the default model: a task ("search" for

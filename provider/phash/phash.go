@@ -1,4 +1,4 @@
-// Package phash hashes pictures perceptually, as a langai.ImageEmbedder
+// Package phash hashes pictures perceptually, as a sense.ImageEmbedder
 // without a model: a picture becomes 64 (or 256) bits that survive a
 // re-encode, a resize or a small edit, and the bits become a unit-length
 // vector of +1/sqrt(bits) and -1/sqrt(bits) entries. The cosine of two such
@@ -66,7 +66,7 @@ import (
 	"fmt"
 	"image"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // Algorithm selects how a picture becomes bits.
@@ -106,7 +106,7 @@ type Config struct {
 	Bits int
 }
 
-// Embedder implements langai.ImageEmbedder by hashing. It is immutable, so
+// Embedder implements sense.ImageEmbedder by hashing. It is immutable, so
 // one serves any number of goroutines.
 type Embedder struct {
 	alg   Algorithm
@@ -117,8 +117,8 @@ type Embedder struct {
 
 // verify the interfaces are actually satisfied
 var (
-	_ langai.ImageEmbedder = (*Embedder)(nil)
-	_ langai.Identified    = (*Embedder)(nil)
+	_ sense.ImageEmbedder = (*Embedder)(nil)
+	_ sense.Identified    = (*Embedder)(nil)
 )
 
 // New returns the Embedder cfg describes, or an error naming what is wrong
@@ -147,15 +147,15 @@ func New(cfg Config) (*Embedder, error) {
 	return e, nil
 }
 
-// Model implements langai.Identified: the algorithm and the size, "phash-64",
+// Model implements sense.Identified: the algorithm and the size, "phash-64",
 // "dhash-64", "phash-256" or "dhash-256". Each is a vector space of its own,
 // which a store keeps apart from the others and from any model's.
 func (e *Embedder) Model() string { return e.model }
 
-// Dimensions implements langai.ImageEmbedder: one entry per bit of the hash.
+// Dimensions implements sense.ImageEmbedder: one entry per bit of the hash.
 func (e *Embedder) Dimensions() int { return e.side * e.side }
 
-// EmbedImages implements langai.ImageEmbedder: each picture's hash as a
+// EmbedImages implements sense.ImageEmbedder: each picture's hash as a
 // unit-length vector, +1/sqrt(bits) where a bit is set and -1/sqrt(bits)
 // where it is not, so no vector is ever zero. A nil picture, one without
 // pixels or one of more than 256 megapixels is an error naming its index.

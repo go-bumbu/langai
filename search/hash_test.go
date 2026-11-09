@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/media"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/media"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // lineChunker is a Chunker without a fingerprint: one chunk per non-empty
@@ -49,7 +49,7 @@ func TestIndex_SettingsThatShapeTheVectorsReindex(t *testing.T) {
 		{"another custom chunker", false, []Option{WithChunker(wordChunker{})}, true},
 		{"a named model now", true, []Option{WithChunker(wordChunker{})}, true},
 	} {
-		var e langai.Embedder = emb
+		var e sense.Embedder = emb
 		if step.named {
 			e = namedCounting{emb}
 		}
@@ -70,7 +70,7 @@ func TestIndex_SettingsThatShapeTheVectorsReindex(t *testing.T) {
 // namedCounting is countingEmbedder under the fake's model name.
 type namedCounting struct{ *countingEmbedder }
 
-func (namedCounting) Model() string { return langaitest.FakeEmbedderModel }
+func (namedCounting) Model() string { return sensetest.FakeEmbedderModel }
 
 // TestMarkdownChunker_Fingerprint: the fingerprint names the effective
 // MaxChars, so the zero value and the default spelled out agree.

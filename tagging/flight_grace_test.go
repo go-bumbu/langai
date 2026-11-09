@@ -10,7 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // within is run under a ctx that ends after d.
@@ -199,8 +199,8 @@ func TestFlight_NoGoroutineOutlivesClose(t *testing.T) {
 				_, err := f.do(ctx, Space{"k", string(rune('a' + g%3))}, "tag", fn)
 				cancel()
 				// context.Canceled is the error of a run that close cut short
-				if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && !errors.Is(err, langai.ErrClosed) {
-					t.Errorf("err = %v, want nil, the caller's deadline, a closed run's context.Canceled or langai.ErrClosed", err)
+				if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && !errors.Is(err, sense.ErrClosed) {
+					t.Errorf("err = %v, want nil, the caller's deadline, a closed run's context.Canceled or sense.ErrClosed", err)
 				}
 			}
 		})
@@ -295,7 +295,7 @@ func TestEngine_RebuildGrace(t *testing.T) {
 				cfg.RebuildGrace = tc.grace
 				r := newRig(t, cfg, &fakeCatalog{tags: breadAndJapan("1")}, nil, nil)
 				defer r.e.close()
-				r.emb.hangOn(langai.RoleDocument, true)
+				r.emb.hangOn(sense.RoleDocument, true)
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 				defer cancel()
 				if _, err := r.e.scores(ctx, "1", "10", "1", diaryText); !errors.Is(err, context.DeadlineExceeded) {
@@ -320,7 +320,7 @@ func TestEngine_RebuildGrace(t *testing.T) {
 	t.Run("Close does not wait for it", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			r := newRig(t, engineCfg, &fakeCatalog{tags: breadAndJapan("1")}, nil, nil)
-			r.emb.hangOn(langai.RoleDocument, true)
+			r.emb.hangOn(sense.RoleDocument, true)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			_, _ = r.e.scores(ctx, "1", "10", "1", diaryText)

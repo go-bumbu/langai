@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/media"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/media"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 var (
@@ -56,7 +56,7 @@ func encoded(t *testing.T, img image.Image) []byte {
 
 // countingImageEmbedder counts the EmbedImages calls and can fail them.
 type countingImageEmbedder struct {
-	langaitest.FakeImageEmbedder
+	sensetest.FakeImageEmbedder
 	calls atomic.Int32
 	err   error
 	short bool // answer one vector too few
@@ -111,7 +111,7 @@ func TestNewMediaIndex_RejectsNilDependencies(t *testing.T) {
 	if _, err := NewMediaIndex(nil, vector.NewMemStore(), "t", "p", "c"); err == nil {
 		t.Error("nil embedder: want an error")
 	}
-	if _, err := NewMediaIndex(langaitest.FakeImageEmbedder{}, nil, "t", "p", "c"); err == nil {
+	if _, err := NewMediaIndex(sensetest.FakeImageEmbedder{}, nil, "t", "p", "c"); err == nil {
 		t.Error("nil store: want an error")
 	}
 }
@@ -215,7 +215,7 @@ func clipFrames() []media.Frame {
 // checkClipChunks checks what IndexVideo stored for clipFrames: one chunk per
 // frame, Seq in milliseconds, and a store search that finds the clip once,
 // by its frame closest to the query.
-func checkClipChunks(t *testing.T, store vector.Store, emb langai.ImageEmbedder) {
+func checkClipChunks(t *testing.T, store vector.Store, emb sense.ImageEmbedder) {
 	t.Helper()
 	ctx := context.Background()
 	coord := vector.Coord{Index: "t", Partition: "p", Collection: "c"}
@@ -510,7 +510,7 @@ func TestDecodeImage_RefusesHugePictures(t *testing.T) {
 	}
 }
 
-func mustEmbed(t *testing.T, emb langai.ImageEmbedder, img image.Image) []float32 {
+func mustEmbed(t *testing.T, emb sense.ImageEmbedder, img image.Image) []float32 {
 	t.Helper()
 	vecs, err := emb.EmbedImages(context.Background(), []image.Image{img})
 	if err != nil {
@@ -521,11 +521,11 @@ func mustEmbed(t *testing.T, emb langai.ImageEmbedder, img image.Image) []float3
 
 // colourText is a text Embedder in the fake image space: a text names a
 // colour, and embeds as a picture of it.
-type colourText struct{ emb langaitest.FakeImageEmbedder }
+type colourText struct{ emb sensetest.FakeImageEmbedder }
 
 func (c colourText) Dimensions() int { return c.emb.Dimensions() }
 
-func (c colourText) Embed(ctx context.Context, _ langai.Role, texts []string) ([][]float32, error) {
+func (c colourText) Embed(ctx context.Context, _ sense.Role, texts []string) ([][]float32, error) {
 	images := make([]image.Image, len(texts))
 	for i, t := range texts {
 		col := map[string]color.RGBA{"red": red, "green": green, "blue": blue}[t]
@@ -538,7 +538,7 @@ func (c colourText) Embed(ctx context.Context, _ langai.Role, texts []string) ([
 // is its segments, found by an image at the segment's start time, and a
 // video query says which of its segments matched.
 func TestMediaIndex_VideoEmbedderStoresSegments(t *testing.T) {
-	ve := &langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{
+	ve := &sensetest.FakeVideoEmbedder{Clips: map[string][]image.Image{
 		"clip.mp4":  {pic(64, 48, red, red), pic(64, 48, green, green)},
 		"query.mp4": {pic(64, 48, blue, blue), pic(64, 48, green, green)},
 	}}
@@ -587,7 +587,7 @@ func TestMediaIndex_VideoEmbedderStoresSegments(t *testing.T) {
 // TestMediaIndex_SearchText: a text in the model's space finds the segment
 // that shows it; a blank text finds nothing.
 func TestMediaIndex_SearchText(t *testing.T) {
-	ve := &langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": {pic(64, 48, red, red), pic(64, 48, green, green)}}}
+	ve := &sensetest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": {pic(64, 48, red, red), pic(64, 48, green, green)}}}
 	ix, _, _ := newMediaIndex(t, WithVideoEmbedder(ve), WithTextEmbedder(colourText{}))
 	ctx := context.Background()
 	if err := ix.IndexVideo(ctx, "clip", tempFile(t, "clip.mp4", []byte("clip"))); err != nil {
@@ -608,17 +608,17 @@ func TestMediaIndex_SearchText(t *testing.T) {
 func TestMediaIndex_VideoEmbedderErrors(t *testing.T) {
 	ctx := context.Background()
 	// dimension mismatches are refused up front
-	if _, err := NewMediaIndex(langaitest.FakeImageEmbedder{}, vector.NewMemStore(), "t", "p", "c", WithVideoEmbedder(dims{7})); err == nil || !strings.Contains(err.Error(), "7 dimensions") {
+	if _, err := NewMediaIndex(sensetest.FakeImageEmbedder{}, vector.NewMemStore(), "t", "p", "c", WithVideoEmbedder(dims{7})); err == nil || !strings.Contains(err.Error(), "7 dimensions") {
 		t.Errorf("video dims: %v", err)
 	}
-	if _, err := NewMediaIndex(langaitest.FakeImageEmbedder{}, vector.NewMemStore(), "t", "p", "c", WithTextEmbedder(langaitest.FakeEmbedder{Dims: 7})); err == nil || !strings.Contains(err.Error(), "7 dimensions") {
+	if _, err := NewMediaIndex(sensetest.FakeImageEmbedder{}, vector.NewMemStore(), "t", "p", "c", WithTextEmbedder(sensetest.FakeEmbedder{Dims: 7})); err == nil || !strings.Contains(err.Error(), "7 dimensions") {
 		t.Errorf("text dims: %v", err)
 	}
 	ix, _, _ := newMediaIndex(t)
 	if _, err := ix.SearchText(ctx, "red", 10); err == nil || !strings.Contains(err.Error(), "WithTextEmbedder") {
 		t.Errorf("no text embedder: %v", err)
 	}
-	ve := &langaitest.FakeVideoEmbedder{Err: errors.New("boom")}
+	ve := &sensetest.FakeVideoEmbedder{Err: errors.New("boom")}
 	ix, _, _ = newMediaIndex(t, WithVideoEmbedder(ve))
 	clip := tempFile(t, "clip.mp4", []byte("clip"))
 	if err := ix.IndexVideo(ctx, "clip", clip); err == nil || !strings.Contains(err.Error(), "boom") {
@@ -628,7 +628,7 @@ func TestMediaIndex_VideoEmbedderErrors(t *testing.T) {
 		t.Errorf("search embed error: %v", err)
 	}
 	// a segment of the wrong width is refused
-	bad := &langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": {pic(8, 8, red, red)}}}
+	bad := &sensetest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": {pic(8, 8, red, red)}}}
 	ix, _, _ = newMediaIndex(t, WithVideoEmbedder(wrongWidth{bad}))
 	if err := ix.IndexVideo(ctx, "clip", clip); err == nil || !strings.Contains(err.Error(), "dimensions") {
 		t.Errorf("wrong width: %v", err)
@@ -639,14 +639,14 @@ func TestMediaIndex_VideoEmbedderErrors(t *testing.T) {
 type dims struct{ n int }
 
 func (d dims) Dimensions() int { return d.n }
-func (dims) EmbedVideo(context.Context, string) ([]langai.Segment, error) {
+func (dims) EmbedVideo(context.Context, string) ([]sense.Segment, error) {
 	return nil, errors.New("unexpected call")
 }
 
 // wrongWidth claims the right width but answers short vectors.
-type wrongWidth struct{ *langaitest.FakeVideoEmbedder }
+type wrongWidth struct{ *sensetest.FakeVideoEmbedder }
 
-func (w wrongWidth) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
+func (w wrongWidth) EmbedVideo(ctx context.Context, path string) ([]sense.Segment, error) {
 	segs, err := w.FakeVideoEmbedder.EmbedVideo(ctx, path)
 	for i := range segs {
 		segs[i].Vector = segs[i].Vector[:2]

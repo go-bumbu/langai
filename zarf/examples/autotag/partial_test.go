@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 // markedModel writes the same tags for every prompt but the ones that hold
@@ -31,7 +31,7 @@ func partialNotebook(t *testing.T, chat markedModel) (*Notebook, Note) {
 		Cache:    tagging.NewMemCache(),
 		Tagging:  tagging.TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2},
 		Chat:     chat,
-		Embedder: langaitest.FakeEmbedder{},
+		Embedder: sensetest.FakeEmbedder{},
 		Info:     Info{MinScore: 0.3},
 	})
 	if err != nil {
@@ -102,7 +102,7 @@ func TestNotebook_CloseStopsTheTagger(t *testing.T) {
 			t.Fatalf("Close: %v", err)
 		}
 	}
-	if msg := scoreError(); !strings.Contains(msg, langai.ErrClosed.Error()) {
-		t.Errorf("after Close the note's error is %q, want %q", msg, langai.ErrClosed)
+	if msg := scoreError(); !strings.Contains(msg, sense.ErrClosed.Error()) {
+		t.Errorf("after Close the note's error is %q, want %q", msg, sense.ErrClosed)
 	}
 }

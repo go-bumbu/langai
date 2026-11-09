@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 const idx = "tenant"
@@ -38,8 +38,8 @@ var (
 
 // k1 and k2 are two keys that differ only in their text.
 var (
-	k1 = tagging.KeyFor("m", langai.RoleQuery, "one")
-	k2 = tagging.KeyFor("m", langai.RoleQuery, "two")
+	k1 = tagging.KeyFor("m", sense.RoleQuery, "one")
+	k2 = tagging.KeyFor("m", sense.RoleQuery, "two")
 )
 
 // clock is the time the cache under test runs on. It starts at a whole second,
@@ -174,9 +174,9 @@ func putReplaces(t *testing.T, c tagging.EmbeddingCache) {
 // keysDifferByModelAndRole: the same text under another model or role is
 // another entry.
 func keysDifferByModelAndRole(t *testing.T, c tagging.EmbeddingCache) {
-	a := tagging.KeyFor("m1", langai.RoleQuery, "x")
-	b := tagging.KeyFor("m2", langai.RoleQuery, "x")
-	d := tagging.KeyFor("m1", langai.RoleDocument, "x")
+	a := tagging.KeyFor("m1", sense.RoleQuery, "x")
+	b := tagging.KeyFor("m2", sense.RoleQuery, "x")
+	d := tagging.KeyFor("m1", sense.RoleDocument, "x")
 	put(t, c, idx, map[tagging.CacheKey][]float32{a: {1}, b: {2}, d: {3}})
 	got := get(t, c, idx, a, b, d)
 	if len(got) != 3 {
@@ -230,7 +230,7 @@ func namesNoDatabaseStoresAreErrors(t *testing.T, c tagging.EmbeddingCache) {
 		if err := c.Touch(ctx, bad, []tagging.CacheKey{k1}); err == nil {
 			t.Errorf("Touch with an index holding %s: no error", name)
 		}
-		k := tagging.KeyFor(bad, langai.RoleQuery, "one")
+		k := tagging.KeyFor(bad, sense.RoleQuery, "one")
 		if err := c.Touch(ctx, idx, []tagging.CacheKey{k1, k}); err == nil {
 			t.Errorf("Touch with a model holding %s: no error", name)
 		}
@@ -291,7 +291,7 @@ func deleteIndexDropsOnlyThatIndex(t *testing.T, c tagging.EmbeddingCache) {
 // pruneDeletesUnused: Prune removes what was last used before the cutoff, of
 // every index, and counts it.
 func pruneDeletesUnused(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
-	k3 := tagging.KeyFor("m", langai.RoleQuery, "three")
+	k3 := tagging.KeyFor("m", sense.RoleQuery, "three")
 	put(t, c, "a", map[tagging.CacheKey][]float32{k1: v1, k2: v2})
 	put(t, c, "b", map[tagging.CacheKey][]float32{k3: v1})
 
@@ -427,7 +427,7 @@ func duplicateKeysCountOnce(t *testing.T, c tagging.EmbeddingCache) {
 	if len(got) != 2 || !reflect.DeepEqual(got[k1], v1) || !reflect.DeepEqual(got[k2], v2) {
 		t.Errorf("Get with a key listed three times = %v, want k1 and k2", got)
 	}
-	missing := tagging.KeyFor("m", langai.RoleQuery, "missing")
+	missing := tagging.KeyFor("m", sense.RoleQuery, "missing")
 	if got := get(t, c, idx, missing, missing); len(got) != 0 {
 		t.Errorf("Get with a missing key listed twice = %v, want empty", got)
 	}
@@ -440,7 +440,7 @@ func largeBatchesRoundTrip(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
 	vecs := make(map[tagging.CacheKey][]float32, n)
 	keys := make([]tagging.CacheKey, 0, n)
 	for i := range n {
-		k := tagging.KeyFor("m", langai.RoleQuery, strconv.Itoa(i))
+		k := tagging.KeyFor("m", sense.RoleQuery, strconv.Itoa(i))
 		vecs[k] = []float32{float32(i), 1}
 		keys = append(keys, k)
 	}
@@ -470,7 +470,7 @@ func concurrentPutsAllLand(t *testing.T, c tagging.EmbeddingCache) {
 	for w := range writers {
 		vecs := make(map[tagging.CacheKey][]float32, each)
 		for i := range each {
-			k := tagging.KeyFor("m", langai.RoleQuery, strconv.Itoa(w*each+i))
+			k := tagging.KeyFor("m", sense.RoleQuery, strconv.Itoa(w*each+i))
 			vecs[k] = []float32{float32(w), float32(i)}
 			keys = append(keys, k)
 		}
@@ -501,7 +501,7 @@ func overlappingConcurrentPutsAllLand(t *testing.T, c tagging.EmbeddingCache) {
 	vecs := make(map[tagging.CacheKey][]float32, n)
 	keys := make([]tagging.CacheKey, 0, n)
 	for i := range n {
-		k := tagging.KeyFor("m", langai.RoleQuery, strconv.Itoa(i))
+		k := tagging.KeyFor("m", sense.RoleQuery, strconv.Itoa(i))
 		vecs[k] = []float32{float32(i), 1}
 		keys = append(keys, k)
 	}

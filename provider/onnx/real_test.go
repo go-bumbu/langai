@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/media"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/media"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/vector"
 	xdraw "golang.org/x/image/draw"
 )
 
@@ -226,7 +226,7 @@ func encodePNG(t *testing.T, img image.Image) *bytes.Buffer {
 
 // realCorpus indexes two pictures and a "video" of three frames (a sampler
 // stands in for ffmpeg) and returns the index and the video's path.
-func realCorpus(t *testing.T, emb langai.ImageEmbedder) (*search.MediaIndex, string) {
+func realCorpus(t *testing.T, emb sense.ImageEmbedder) (*search.MediaIndex, string) {
 	t.Helper()
 	ctx := context.Background()
 	clip := media.SamplerFunc(func(_ context.Context, _ string) ([]media.Frame, error) {

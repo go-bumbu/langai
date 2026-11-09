@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/image/draw"
 
-	"github.com/go-bumbu/langai/internal/imageutil"
+	"github.com/go-bumbu/sense/internal/imageutil"
 )
 
 // preprocessor turns pictures into the model's input tensor the way the

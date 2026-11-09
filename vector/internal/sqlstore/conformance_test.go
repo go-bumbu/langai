@@ -7,9 +7,9 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/vector/sqlitevec"
-	"github.com/go-bumbu/langai/vector/vectortest"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/vector/sqlitevec"
+	"github.com/go-bumbu/sense/vector/vectortest"
 )
 
 // TestConformance_SQLite runs the suite through sqlitevec, the Dialect that

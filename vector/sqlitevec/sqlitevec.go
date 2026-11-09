@@ -35,8 +35,8 @@ import (
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/vector/internal/sqlstore"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/vector/internal/sqlstore"
 )
 
 func init() { sqlite_vec.Auto() }

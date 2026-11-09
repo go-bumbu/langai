@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/internal/fetch"
-	"github.com/go-bumbu/langai/provider/yzma"
-	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/sense/internal/fetch"
+	"github.com/go-bumbu/sense/provider/yzma"
+	"github.com/go-bumbu/sense/zarf/eval"
 )
 
 // TestCompareModels compares GGUF embedding models on the golden set (or any
@@ -135,7 +135,7 @@ func envOr(name, def string) string {
 // unpinned downloads a candidate that has no digest yet, capped at 1 GiB as
 // the provider caps its own downloads, and reports what to pin.
 func unpinned(logger *slog.Logger) fetch.Downloader {
-	return fetch.Downloader{UserAgent: "langai-semeval", Limit: 1 << 30, Logger: logger}
+	return fetch.Downloader{UserAgent: "sense-semeval", Limit: 1 << 30, Logger: logger}
 }
 
 // evaluate opens one model (downloading an unpinned one first and reporting

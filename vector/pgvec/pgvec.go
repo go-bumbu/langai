@@ -20,8 +20,8 @@ import (
 
 	"github.com/pgvector/pgvector-go"
 
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/vector/internal/sqlstore"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/vector/internal/sqlstore"
 )
 
 // Store implements vector.Store on Postgres + pgvector, with one physical

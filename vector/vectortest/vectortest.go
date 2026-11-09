@@ -20,7 +20,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // Dims is the number of dimensions of every vector the suite writes; the

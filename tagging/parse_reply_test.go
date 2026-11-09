@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 // TestParseTags_SplitsKeepsAndDrops is the table of what the parser makes of
@@ -156,8 +156,8 @@ func TestParseTags_ReadsALongReplyInLinearTime(t *testing.T) {
 // that it has no tag for a text returns none, not its sentence as a tag.
 func TestGenerate_AnAnswerOfNoTagsInWordsIsNoTags(t *testing.T) {
 	for _, answer := range []string{"No tags.", "none", "N/A", `{"tags": []}`, `{"language": "en"}`} {
-		llm := &langaitest.FakeCompleter{Replies: []string{answer}}
-		g, err := NewGenerator(llm, langaitest.FakeEmbedder{}, GeneratorConfig{})
+		llm := &sensetest.FakeCompleter{Replies: []string{answer}}
+		g, err := NewGenerator(llm, sensetest.FakeEmbedder{}, GeneratorConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}

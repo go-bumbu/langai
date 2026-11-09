@@ -8,8 +8,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/tagging/cachetest"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/tagging/cachetest"
 )
 
 // openTestDB opens a SQLite file in a per-test temp dir, the way the package

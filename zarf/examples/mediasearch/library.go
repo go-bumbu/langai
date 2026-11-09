@@ -3,7 +3,7 @@
 // catalog of what it found, answers "what looks like this" for an item or an
 // uploaded file, and makes the thumbnails and storyboards the page shows.
 // Handler serves it over HTTP. It knows the library's ports only, so its
-// tests run on langaitest's fakes.
+// tests run on sensetest's fakes.
 package mediasearch
 
 import (
@@ -24,9 +24,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-bumbu/langai/media"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/media"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // Kinds of items.

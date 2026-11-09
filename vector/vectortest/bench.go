@@ -6,7 +6,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // BenchDims is the number of dimensions of every vector BenchSearch writes;

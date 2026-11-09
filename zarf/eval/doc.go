@@ -1,4 +1,4 @@
-// Package eval measures how well a langai.Embedder serves the two tasks
+// Package eval measures how well a sense.Embedder serves the two tasks
 // this module uses embeddings for, over a labelled dataset:
 //
 //   - retrieval: free-text query → relevant documents, what search.Index

@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // the Embedder offers the optional port a store asks for the identity of
-// the vectors it is handed (langai.Identified)
+// the vectors it is handed (sense.Identified)
 var _ interface{ Model() string } = (*Embedder)(nil)
 
 // TestModelSpec_ModelIDIsTheLoadedModel: the identity a spec gives before
@@ -50,16 +50,16 @@ func TestLazyImageEmbedder_AroundOnnx(t *testing.T) {
 	libDir, modelFile := fakeInstall(t)
 	useFake(t, &fakeAPI{dims: 4})
 	spec := ModelSpec{Name: "org/m", File: modelFile, Side: 8, Dims: 4}
-	load := func(ctx context.Context) (langai.ImageEmbedder, error) {
+	load := func(ctx context.Context) (sense.ImageEmbedder, error) {
 		return Open(ctx, spec, Runtime{LibDir: libDir})
 	}
-	emb := langai.NewLazyImageEmbedder(spec.ModelID(), spec.Dims, load)
+	emb := sense.NewLazyImageEmbedder(spec.ModelID(), spec.Dims, load)
 	defer func() { _ = emb.Close() }()
 	vecs, err := emb.EmbedImages(context.Background(), []image.Image{image.NewRGBA(image.Rect(0, 0, 8, 8))})
 	if err != nil || len(vecs) != 1 {
 		t.Fatalf("EmbedImages through the LazyImageEmbedder: %d vectors, %v", len(vecs), err)
 	}
-	byName := langai.NewLazyImageEmbedder(spec.Name, spec.Dims, load)
+	byName := sense.NewLazyImageEmbedder(spec.Name, spec.Dims, load)
 	defer func() { _ = byName.Close() }()
 	if err := byName.Load(context.Background()); err == nil || !strings.Contains(err.Error(), "must not mix") {
 		t.Errorf("a LazyImageEmbedder configured with the bare name loaded: %v", err)

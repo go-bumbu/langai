@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/provider/yzma"
-	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/provider/yzma"
+	"github.com/go-bumbu/sense/zarf/eval"
 )
 
 // longCatalog is a space of name-only tags, one per distinct topic label of
@@ -109,7 +109,7 @@ func TestTaggerLongTags(t *testing.T) {
 		if len(need) == 0 {
 			return
 		}
-		out, err := embedTexts(ctx, emb, langai.RoleDocument, need)
+		out, err := embedTexts(ctx, emb, sense.RoleDocument, need)
 		if err != nil {
 			t.Fatalf("embed names: %v", err)
 		}

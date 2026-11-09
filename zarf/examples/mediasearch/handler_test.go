@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 func serve(t *testing.T) (*fixture, *httptest.Server) {
@@ -210,7 +210,7 @@ func TestHandler_TextSearch(t *testing.T) {
 		t.Errorf("no q: %d", status)
 	}
 	f := newFixture(t) // no text embedder on this one
-	ix, _ := search.NewMediaIndex(langaitest.FakeImageEmbedder{}, vector.NewMemStore(), "i", "p", "c")
+	ix, _ := search.NewMediaIndex(sensetest.FakeImageEmbedder{}, vector.NewMemStore(), "i", "p", "c")
 	f.lib.cfg.Index = ix
 	if _, err := f.lib.SearchText(context.Background(), "green", 0); err == nil || !strings.Contains(err.Error(), "WithTextEmbedder") {
 		t.Errorf("no text embedder: %v", err)

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 const day = 24 * time.Hour
@@ -205,7 +205,7 @@ func TestTagger_PruneAndTouch(t *testing.T) {
 	if err := tg.Scope(Space{"", "10"}).Touch(ctx); err == nil {
 		t.Error("Touch with an empty index succeeded")
 	}
-	got, err := cache.Get(ctx, "1", []CacheKey{KeyFor("fake", langai.RoleDocument, "cooking / bread")})
+	got, err := cache.Get(ctx, "1", []CacheKey{KeyFor("fake", sense.RoleDocument, "cooking / bread")})
 	if err != nil || len(got) != 1 {
 		t.Errorf("the tag's name is gone from the cache: %v, %v", got, err)
 	}

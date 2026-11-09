@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/tagging/internal/sqlcache"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/tagging/internal/sqlcache"
 )
 
 // Cache is a tagging.EmbeddingCache on Postgres, in one table of db: Get,

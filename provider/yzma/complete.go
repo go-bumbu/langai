@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/internal/fetch"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/internal/fetch"
 )
 
 // DefaultCompleterModel is the logical identity of the chat model NewCompleter
@@ -185,7 +185,7 @@ type chatAPI interface {
 	tokenText(model uintptr, token int32) []byte
 }
 
-// Completer implements langai.Completer over a loaded chat model: it answers
+// Completer implements sense.Completer over a loaded chat model: it answers
 // a system message and a user message with the text the model writes.
 type Completer struct {
 	// a llama.cpp context is not safe for concurrent use, so calls are
@@ -276,7 +276,7 @@ func (c *Completer) Close() error {
 	return nil
 }
 
-// Complete implements langai.Completer: it lays system and user out with the
+// Complete implements sense.Completer: it lays system and user out with the
 // model's chat template and returns the text the model writes next, at most
 // MaxNewTokens long. Decoding is greedy, so the same messages give the same
 // reply. Both messages are plain text to the model, even when they spell its
@@ -292,7 +292,7 @@ func (c *Completer) Complete(ctx context.Context, system, user string) (string, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return "", fmt.Errorf("yzma: completer: %w", langai.ErrClosed)
+		return "", fmt.Errorf("yzma: completer: %w", sense.ErrClosed)
 	}
 	if ctx.Done() != nil {
 		c.api.setAbort(c.ctx, func() bool { return ctx.Err() != nil })

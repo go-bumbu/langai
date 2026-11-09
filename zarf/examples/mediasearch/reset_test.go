@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai/search"
+	"github.com/go-bumbu/sense/search"
 )
 
 func TestReset_EmptiesTheIndexAndTheNextScanEmbedsAgain(t *testing.T) {

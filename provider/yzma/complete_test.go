@@ -12,11 +12,11 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // the Completer must be what a tagging.Generator asks for
-var _ langai.Completer = (*Completer)(nil)
+var _ sense.Completer = (*Completer)(nil)
 
 // Handles and tokens the fake hands out.
 const (
@@ -651,8 +651,8 @@ func TestCompleter_CloseFreesTheContextThenTheModel(t *testing.T) {
 		t.Fatalf("calls %s: want the context freed before its model, once", names)
 	}
 	f.calls = nil
-	if _, err := c.Complete(context.Background(), "s", "u"); !errors.Is(err, langai.ErrClosed) {
-		t.Fatalf("a closed Completer answered %v, want langai.ErrClosed", err)
+	if _, err := c.Complete(context.Background(), "s", "u"); !errors.Is(err, sense.ErrClosed) {
+		t.Fatalf("a closed Completer answered %v, want sense.ErrClosed", err)
 	}
 	if len(f.calls) != 0 {
 		t.Errorf("a closed Completer reached llama.cpp: %v", f.names())

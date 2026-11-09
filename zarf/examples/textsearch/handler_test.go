@@ -163,7 +163,7 @@ func TestHandler_AMismatchIsAConflictThatNamesTheStoredModel(t *testing.T) {
 		LastScan ScanStats `json:"lastScan"`
 	}
 	decode(t, body, &info)
-	if !info.LastScan.Mismatch || info.Stored != "langaitest/fake-embedder" {
+	if !info.LastScan.Mismatch || info.Stored != "sensetest/fake-embedder" {
 		t.Errorf("info after a mismatch: %+v", info)
 	}
 }

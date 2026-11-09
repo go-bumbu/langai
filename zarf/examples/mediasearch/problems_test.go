@@ -12,11 +12,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/media"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/media"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // otherImageModel is the FakeImageEmbedder under another name: the same
@@ -27,7 +27,7 @@ func (*otherImageModel) Model() string { return "another-image-model" }
 
 // libraryOn builds a Library over dir and store with the given embedder and
 // sampler, as newFixture does, told how to ask the store for its model.
-func libraryOn(t *testing.T, dir string, store vector.Store, emb langai.ImageEmbedder, sampler media.Sampler, opts ...search.MediaOption) *Library {
+func libraryOn(t *testing.T, dir string, store vector.Store, emb sense.ImageEmbedder, sampler media.Sampler, opts ...search.MediaOption) *Library {
 	t.Helper()
 	coord := vector.Coord{Index: "examples", Partition: "local", Collection: "media"}
 	ix, err := search.NewMediaIndex(emb, store, coord.Index, coord.Partition, coord.Collection, append([]search.MediaOption{search.WithSampler(sampler)}, opts...)...)
@@ -85,7 +85,7 @@ func TestScan_AnotherModelStopsTheScanUntilReset(t *testing.T) {
 	if it, _ := lib.Item("broken.jpg"); it.Error != "" {
 		t.Errorf("the file the scan stopped at carries the collection's error: %+v", it)
 	}
-	if got := lib.StoredModel(ctx); got != langaitest.FakeImageEmbedderModel {
+	if got := lib.StoredModel(ctx); got != sensetest.FakeImageEmbedderModel {
 		t.Errorf("stored model %q, want the one that built the index", got)
 	}
 	if _, err := lib.Similar(ctx, "red.png", 0, false); !errors.Is(err, vector.ErrModelMismatch) {
@@ -134,7 +134,7 @@ func TestHandler_AMismatchIsAConflictWithAReset(t *testing.T) {
 		LastScan ScanStats `json:"lastScan"`
 	}
 	decode(t, body, &info)
-	if !info.LastScan.Mismatch || info.Stored != langaitest.FakeImageEmbedderModel {
+	if !info.LastScan.Mismatch || info.Stored != sensetest.FakeImageEmbedderModel {
 		t.Errorf("info after a mismatch: %+v", info)
 	}
 	status, body, _ = get(t, srv.URL+"/api/similar/red.png")
