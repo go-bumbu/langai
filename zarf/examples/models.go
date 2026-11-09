@@ -191,7 +191,7 @@ func newMediaModel(ctx context.Context, o options, llama yzma.Config, sampler *f
 	m := &mediaModel{
 		name: spec.Name, id: spec.ModelID(), runtime: "ONNX Runtime " + onnx.LibVersion + " (provider/onnx)",
 		runsOn: runsOn{asked: o.provider},
-		info:   mediasearch.Info{Model: spec.Name, Dimensions: spec.Dims, MinScore: o.minScore, Mode: "frames", Provider: o.provider},
+		info:   mediasearch.Info{Model: spec.Name, ID: spec.ModelID(), Dimensions: spec.Dims, MinScore: o.minScore, Mode: "frames", Provider: o.provider},
 	}
 	m.lazy = langai.NewLazyImageEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (langai.ImageEmbedder, error) {
 		start := time.Now()
@@ -219,7 +219,7 @@ func newVisionModel(ctx context.Context, o options, llama yzma.Config, sampler *
 		runtime: "llama.cpp " + yzma.LibTag + " with libmtmd (provider/yzma)",
 		opts:    []search.MediaOption{search.WithVideoEmbedder(v), search.WithTextEmbedder(v)},
 		info: mediasearch.Info{
-			Model: yzma.DefaultVisionModel, Dimensions: v.Dimensions(), MinScore: o.minScore, Provider: v.Accel(),
+			Model: yzma.DefaultVisionModel, ID: v.Model(), Dimensions: v.Dimensions(), MinScore: o.minScore, Provider: v.Accel(),
 			Mode: "segments", SegmentMs: v.SegmentLength().Milliseconds(), Text: true,
 		},
 	}

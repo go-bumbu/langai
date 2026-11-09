@@ -50,7 +50,7 @@
       : (d.scanning ? ' · scanning…' : '');
     const model = d.modelState ? ` · model ${d.modelState}` : '';
     const videos = info.mode === 'segments' ? `videos as ${ms(info.segmentMs)} segments` : 'videos as sampled frames';
-    infoEl.innerHTML = `<b>${info.model}</b> · ${info.dimensions} dims · ${info.provider}${model} · ${videos} · min score ${info.minScore} · limit ${d.limit}<br>` +
+    infoEl.innerHTML = `<b title="${info.id || ''}">${info.model}</b> · ${info.dimensions} dims · ${info.provider}${model} · ${videos} · min score ${info.minScore} · limit ${d.limit}<br>` +
       `<b>${d.images}</b> images, <b>${d.videos}</b> videos in ${d.dir}${scan}`;
     $('#textsearch').hidden = !info.text;
     banner(d);
@@ -80,7 +80,7 @@
     });
     b.replaceChildren(el('div', { class: 'what' }, el('b', {}, 'The index was built by another model. '),
       d.storedModel ? `The database holds this collection's vectors under ${d.storedModel}; ` : 'The database holds this collection under another model; ',
-      `the page runs ${info.model}. Vectors of two models never mix, so nothing is indexed or searched until the collection is emptied (MediaIndex.Reset).`), btn);
+      `the page runs ${info.id || info.model}. Vectors of two models never mix, so nothing is indexed or searched until the collection is emptied (MediaIndex.Reset).`), btn);
   }
 
   // segmentOf names the segment a time falls in, in the segments mode

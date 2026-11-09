@@ -92,7 +92,11 @@ type Config struct {
 
 // Info is what the page shows about the setup.
 type Info struct {
-	Model      string  `json:"model"`
+	Model string `json:"model"`
+	// ID is the identity of the model's vectors, the string the store
+	// records with them: its name and the settings that decide a vector.
+	// Empty leaves it out.
+	ID         string  `json:"id,omitempty"`
 	Dimensions int     `json:"dimensions"`
 	Provider   string  `json:"provider"` // what runs the model: an ONNX provider, or "cpu" or a GPU device for a GGUF model
 	MinScore   float64 `json:"minScore"`
