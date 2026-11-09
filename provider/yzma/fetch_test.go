@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -217,6 +218,90 @@ func TestEnsureLibsFor_ManagedDownloadsAndInstalls(t *testing.T) {
 	libAssets["test/arch/cpu"] = asset{URL: "http://127.0.0.1:1/unreachable", SHA256: a.SHA256}
 	if err := ensureLibsFor(context.Background(), "test/arch", libDir, true, "cpu", discardLogger()); err != nil {
 		t.Fatalf("installed libraries must be reused, got %v", err)
+	}
+}
+
+// TestNeedsReinstall: a managed directory serves a request as it is when
+// its record names the pinned llama.cpp build and a backend that covers the
+// one wanted (a GPU build runs the CPU too). A record of another tag is the
+// install an older version of this package left: its libraries would fail
+// the version check at every load, so it is replaced whatever the backend.
+func TestNeedsReinstall(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		record string // the record file's content, "" for none
+		build  build
+		want   bool
+	}{
+		{"no record, cpu wanted", "", "cpu", false},
+		{"no record, a GPU build wanted", "", "vulkan", true},
+		{"the pinned cpu build, cpu wanted", `{"tag":"` + LibTag + `","backend":"cpu"}`, "cpu", false},
+		{"the pinned cpu build, vulkan wanted", `{"tag":"` + LibTag + `","backend":"cpu"}`, "vulkan", true},
+		{"the pinned vulkan build, cpu wanted", `{"tag":"` + LibTag + `","backend":"vulkan"}`, "cpu", false},
+		{"the pinned vulkan build, vulkan wanted", `{"tag":"` + LibTag + `","backend":"vulkan"}`, "vulkan", false},
+		{"the pinned vulkan build, cuda wanted", `{"tag":"` + LibTag + `","backend":"vulkan"}`, "cuda", true},
+		{"an older tag's cpu build, cpu wanted", `{"tag":"b0001","backend":"cpu"}`, "cpu", true},
+		{"an older tag's vulkan build, cpu wanted", `{"tag":"b0001","backend":"vulkan"}`, "cpu", true},
+		{"an older tag's vulkan build, vulkan wanted", `{"tag":"b0001","backend":"vulkan"}`, "vulkan", true},
+		{"a record without a tag", `{"backend":"cpu"}`, "cpu", true},
+		{"a record that does not parse", `{"tag":`, "cpu", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.record != "" {
+				if err := os.WriteFile(filepath.Join(dir, libRecordFile), []byte(tc.record), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := needsReinstall(dir, tc.build); got != tc.want {
+				t.Errorf("needsReinstall = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEnsureLibsFor_ReplacesAnOlderTagsInstall: a managed directory an
+// older pinned build was installed into has the libraries and a record, and
+// is not ready: the pinned build is installed over it, for a CPU request
+// too, instead of loading libraries that then fail the version check for as
+// long as the process lives.
+func TestEnsureLibsFor_ReplacesAnOlderTagsInstall(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the pinned archives hold Linux .so files")
+	}
+	_, a := serve(t, tarGz(t, "llama-"+LibTag, releaseLibs()))
+	libAssets["test/arch/cpu"] = a
+	t.Cleanup(func() { delete(libAssets, "test/arch/cpu") })
+	libDir := filepath.Join(t.TempDir(), "llama-cpp", "current")
+	if err := os.MkdirAll(libDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		libFile():             "the old build",
+		"libggml-old-only.so": "gone in the new build",
+		libRecordFile:         `{"tag":"b0001","backend":"cpu"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(libDir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var logs bytes.Buffer
+	if err := ensureLibsFor(context.Background(), "test/arch", libDir, true, "cpu", slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(libDir, libFile())); string(got) != "llama" {
+		t.Errorf("%s holds %q, want the pinned build's", libFile(), got)
+	}
+	if _, err := os.Stat(filepath.Join(libDir, "libggml-old-only.so")); err == nil {
+		t.Error("a library of the old build survived")
+	}
+	var rec libRecord
+	data, _ := os.ReadFile(filepath.Join(libDir, libRecordFile))
+	if err := json.Unmarshal(data, &rec); err != nil || rec.Tag != LibTag || rec.Backend != "cpu" {
+		t.Errorf("record = %+v, %v; want the pinned tag", rec, err)
+	}
+	if !strings.Contains(logs.String(), "b0001") {
+		t.Errorf("the log does not say what was replaced:\n%s", logs.String())
 	}
 }
 

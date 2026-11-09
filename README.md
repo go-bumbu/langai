@@ -147,7 +147,9 @@ go get github.com/go-bumbu/langai
 - **A managed `LibDir`** (`ManagedLibDir: true`, in both providers) belongs to the
   provider, so give it a directory of its own. Only a missing or empty directory, or one
   an earlier install left its record in, is filled or replaced; anything else is an
-  error, never a deletion. Installs take a lock file next to it (`<LibDir>.lock`), so
+  error, never a deletion. The record names what was installed, and a directory whose
+  record names another build than the pinned one (the llama.cpp tag or the ONNX Runtime
+  version of an older release of this module) is replaced at the next open. Installs take a lock file next to it (`<LibDir>.lock`), so
   goroutines and processes that start together download once and none loads a
   half-installed library. An install works next to the directory, under
   `<LibDir>.langai-download`, `<LibDir>.langai-staging` and `<LibDir>.langai-retired`,

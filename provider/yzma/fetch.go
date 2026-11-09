@@ -128,7 +128,9 @@ var libAssets = map[string]asset{
 
 // libRecordFile is written into a managed LibDir with the tag and backend
 // installed there, so a later request for a GPU build replaces a CPU
-// install (the GPU builds are supersets, the other way round is a no-op).
+// install (the GPU builds are supersets, the other way round is a no-op),
+// and a later version of this package, pinned to another tag, replaces
+// either.
 const libRecordFile = "langai-libs.json"
 
 // libRecord is what libRecordFile holds.
@@ -191,8 +193,9 @@ type libsWant struct {
 
 // ensureLibs makes sure w.dir holds the llama.cpp libraries of w.build and
 // then runs w.use on them. A managed directory is filled from libAssets when
-// it is empty, or when it holds this package's CPU build and a GPU build is
-// wanted, under the directory's lock (see fetch.InstallDir), and the
+// it is empty, when it holds this package's CPU build and a GPU build is
+// wanted, or when its record names another llama.cpp tag than LibTag (see
+// needsReinstall), under the directory's lock (see fetch.InstallDir), and the
 // download and install are logged to logger. It is never filled over files
 // this package did not install, and never while this process runs the
 // libraries in it; a process that does run them, and wants nothing else,
@@ -257,28 +260,48 @@ func (w libsWant) ready(logger *slog.Logger) (bool, error) {
 		return false, fmt.Errorf("no pinned llama.cpp %s build for %s: use an unmanaged LibDir populated with `yzma install`", w.build, w.plat)
 	}
 	if present {
-		logger.Info("replacing llama.cpp "+LibTag+" with its "+w.build+" build", logComponent, slog.String("dir", w.dir))
+		rec, _ := readLibRecord(w.dir)
+		logger.Info("replacing the llama.cpp install with the "+w.build+" build of "+LibTag, logComponent,
+			slog.String("dir", w.dir), slog.String("installed_tag", rec.Tag), slog.String("installed_build", rec.Backend))
 	}
 	return false, nil
 }
 
-// needsReinstall reports whether a managed libDir must be replaced to serve
-// build b: it holds the CPU build (or predates the record and so is one)
-// and b is a GPU build. A GPU build also serves the CPU, so the reverse
-// request keeps what is there.
-func needsReinstall(libDir string, b build) bool {
-	if b == "cpu" {
-		return false
-	}
+// readLibRecord returns the record a managed install left in libDir; ok is
+// false when there is none that can be read.
+func readLibRecord(libDir string) (rec libRecord, ok bool) {
 	data, err := os.ReadFile(filepath.Join(libDir, libRecordFile)) //nolint:gosec // libDir is this package's own directory and libRecordFile a fixed name; the content is only parsed as JSON
 	if err != nil {
-		return true
+		return libRecord{}, false
 	}
-	var rec libRecord
 	if err := json.Unmarshal(data, &rec); err != nil {
+		return libRecord{}, false
+	}
+	return rec, true
+}
+
+// needsReinstall reports whether a managed libDir that holds libraries must
+// be replaced to serve build b. With a record it must when the record names
+// another tag than LibTag, whatever the backend (the install of an older
+// version of this package: its libraries fail the version check at load,
+// and would for as long as the process lives), and when b is a GPU build
+// the record does not name; a GPU build also serves the CPU, so that
+// request keeps what is there. Without a record that can be read, a
+// directory with no record file serves the CPU as it is (libraries someone
+// put there, checked by version after load) and is no GPU build, and one
+// whose record file is broken is replaced.
+func needsReinstall(libDir string, b build) bool {
+	rec, ok := readLibRecord(libDir)
+	if !ok {
+		if _, err := os.Lstat(filepath.Join(libDir, libRecordFile)); err == nil {
+			return true
+		}
+		return b != "cpu"
+	}
+	if rec.Tag != LibTag {
 		return true
 	}
-	return rec.Backend != b
+	return b != "cpu" && rec.Backend != b
 }
 
 // installRecord is the subset of `yzma install`'s record this package reads.
