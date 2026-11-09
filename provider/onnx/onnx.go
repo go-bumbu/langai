@@ -30,6 +30,7 @@ import (
 	"sync"
 
 	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/langai/internal/fetch"
 )
 
 // DefaultModel is the logical identity of the model New runs unless
@@ -167,7 +168,8 @@ type ModelSpec struct {
 	// File is the ONNX path. When it is missing and URL is set, it is
 	// downloaded there first.
 	File string
-	// URL is where File is downloaded from when absent. SHA256 is required
+	// URL is where File is downloaded from when it is absent or, with a Size
+	// set, not that long (a truncated file). SHA256 is required
 	// with it, and Size, when non-zero, is checked too: Open never downloads
 	// unverified bytes.
 	URL    string
@@ -309,8 +311,10 @@ func New(ctx context.Context, cfg Config) (*Embedder, error) {
 // Open prepares the runtime and the model described by spec (downloading
 // whatever is missing, see fetch.go), loads them with the spec's tensor
 // names and picture preparation, and runs the model once to check that its
-// vectors have the expected size. ctx bounds the downloads only; the
-// returned Embedder outlives it and is released with Close.
+// vectors have the expected size. ctx bounds the downloads only, and gets a
+// deadline of 30 minutes when it has none of its own; the returned Embedder
+// outlives it and is released with Close. A download that was cut short is
+// picked up where it stopped by the next Open.
 func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	logger := rt.Logger
 	if logger == nil {
@@ -337,7 +341,7 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	if rt.BatchSize <= 0 {
 		rt.BatchSize = defaultBatchSize
 	}
-	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	ctx, cancel := fetch.WithDefaultTimeout(ctx, downloadTimeout)
 	defer cancel()
 	if err := ensureLibs(ctx, libDir, rt.ManagedLibDir, variantFor(provider), logger); err != nil {
 		return nil, err

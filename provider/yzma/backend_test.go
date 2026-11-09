@@ -675,11 +675,16 @@ func TestLlamaBackend_CloseFreesContextThenModel(t *testing.T) {
 	}
 }
 
-// fakeRuntime serves the pinned libraries from an httptest server, routes
+// fakeRuntime serves the pinned libraries from an httptest server (the only
+// kind of server the test can then reach), makes the host look like a plain
+// CPU machine so that the cpu build is the one asked for, routes
 // llama.cpp calls to f, and returns a managed library directory under tmp;
 // the globals are restored when the test ends.
 func fakeRuntime(t *testing.T, f *fakeAPI, tmp string) Runtime {
 	t.Helper()
+	// nothing but the test servers, and the cpu build whatever the host has
+	offline(t)
+	cpuOnly(t)
 	_, libAsset := serve(t, tarGz(t, "llama-b11429", releaseLibs()))
 	plat := platform()
 	origLib, hadLib := libAssets[plat+"/cpu"]

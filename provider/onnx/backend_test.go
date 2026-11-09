@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"log/slog"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,12 +118,23 @@ func (s *fakeSession) run(pixels []float32, n, side int) ([]float32, []int64, er
 func (s *fakeSession) close() { s.closed++ }
 
 // useFake swaps the package's runtime surface and loader for the fake for
-// the duration of the test.
+// the duration of the test, and keeps the test from downloading a real
+// model or runtime: requests to anything but the loopback test servers fail.
 func useFake(t *testing.T, f *fakeAPI) {
 	t.Helper()
-	origAPI, origLibs := api, libs
-	api, libs = f, &runtimeLoader{}
-	t.Cleanup(func() { api, libs = origAPI, origLibs })
+	origAPI, origLibs, origClient := api, libs, httpClient
+	api, libs, httpClient = f, &runtimeLoader{}, &http.Client{Transport: loopbackOnly{}}
+	t.Cleanup(func() { api, libs, httpClient = origAPI, origLibs, origClient })
+}
+
+// loopbackOnly is a RoundTripper that only reaches httptest servers.
+type loopbackOnly struct{}
+
+func (loopbackOnly) RoundTrip(r *http.Request) (*http.Response, error) {
+	if h := r.URL.Hostname(); h != "127.0.0.1" && h != "::1" && h != "localhost" {
+		return nil, fmt.Errorf("test is offline, refusing %s", r.URL)
+	}
+	return http.DefaultTransport.RoundTrip(r)
 }
 
 // fakeInstall lays out an operator library directory with an empty library
@@ -490,8 +503,18 @@ func TestNew_SelectsAPinnedModel(t *testing.T) {
 	if _, err := New(context.Background(), Config{Model: "nobody/nothing", LibDir: libDir, ModelsDir: modelsDir}); err == nil {
 		t.Error("unknown model: want an error")
 	}
-	// the default model, pre-seeded so nothing is downloaded
-	if err := os.WriteFile(filepath.Join(modelsDir, defaultModelFile), []byte("x"), 0o600); err != nil {
+	// a pre-seeded file that is not the pinned size is what a crash left: it is
+	// fetched again (here: refused, the test is offline) rather than loaded
+	seeded := filepath.Join(modelsDir, defaultModelFile)
+	if err := os.WriteFile(seeded, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(context.Background(), Config{LibDir: libDir, ModelsDir: modelsDir}); err == nil || !strings.Contains(err.Error(), "offline") {
+		t.Errorf("truncated model: err = %v, want a download attempt", err)
+	}
+	// the default model, pre-seeded (a sparse file of the pinned size) so
+	// nothing is downloaded
+	if err := os.Truncate(seeded, pinned[DefaultModel].Size); err != nil {
 		t.Fatal(err)
 	}
 	emb, err := New(context.Background(), Config{LibDir: libDir, ModelsDir: modelsDir, Threads: 3, BatchSize: 16})

@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+
+	"github.com/go-bumbu/langai/internal/fetch"
 )
 
 // DefaultCompleterModel is the logical identity of the chat model NewCompleter
@@ -51,7 +53,8 @@ type CompleterSpec struct {
 	// File is the GGUF path. When it is missing and URL is set, it is
 	// downloaded there first.
 	File string
-	// URL is where File is downloaded from when absent. SHA256 is required
+	// URL is where File is downloaded from when it is absent or, with a Size
+	// set, not that long (a truncated file). SHA256 is required
 	// with it, and Size, when non-zero, is checked too: OpenCompleter never
 	// downloads unverified bytes.
 	URL    string
@@ -109,13 +112,15 @@ func NewCompleter(ctx context.Context, cfg Config) (*Completer, error) {
 // OpenCompleter prepares the libraries and the model described by spec
 // (downloading whatever is missing, see fetch.go) and loads them. The libraries
 // load once per process, so a Completer opens next to an Embedder. ctx bounds
-// the downloads only; the returned Completer outlives it and is released with
-// Close.
+// the downloads only, and gets a deadline of an hour when it has none of its
+// own; the returned Completer outlives it and is released with Close. A
+// download that was cut short is picked up where it stopped by the next
+// OpenCompleter.
 func OpenCompleter(ctx context.Context, spec CompleterSpec, rt Runtime) (*Completer, error) {
 	if err := spec.validate(); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, completerDownloadTimeout)
+	ctx, cancel := fetch.WithDefaultTimeout(ctx, completerDownloadTimeout)
 	defer cancel()
 	libDir, logger, err := rt.prepare(ctx)
 	if err != nil {

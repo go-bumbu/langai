@@ -16,6 +16,7 @@ import (
 	xdraw "golang.org/x/image/draw"
 
 	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/langai/internal/fetch"
 	"github.com/go-bumbu/langai/media"
 )
 
@@ -166,7 +167,8 @@ func DefaultVisionSpec(modelsDir string) VisionSpec {
 }
 
 // visionDownloadTimeout bounds the first-use downloads of a vision model
-// and its projector, 2.7 GB for the pinned one.
+// and its projector, 2.7 GB for the pinned one, when the caller's ctx
+// carries no deadline of its own.
 const visionDownloadTimeout = time.Hour
 
 // NewVision prepares the libraries, the model cfg.Model selects and its
@@ -185,8 +187,10 @@ func NewVision(ctx context.Context, cfg VisionConfig) (*Vision, error) {
 // by spec (downloading whatever is missing), loads them on the GPU
 // cfg.Accel resolves to or the CPU, and probes the model once. The
 // libraries load once per process, so a Vision opens next to an Embedder.
-// ctx bounds the downloads only; the returned Vision outlives it and is
-// released with Close.
+// ctx bounds the downloads only, and gets a deadline of an hour when it has
+// none of its own; the returned Vision outlives it and is released with
+// Close. A download that was cut short is picked up where it stopped by the
+// next OpenVision.
 func OpenVision(ctx context.Context, spec VisionSpec, cfg VisionConfig) (*Vision, error) {
 	if spec.Name == "" {
 		return nil, errors.New("yzma: VisionSpec.Name is required")
@@ -200,7 +204,7 @@ func OpenVision(ctx context.Context, spec VisionSpec, cfg VisionConfig) (*Vision
 	if cfg.FPS < 0 || cfg.SegmentLength < 0 || cfg.MaxSegments < 0 || cfg.ContextTokens < 0 {
 		return nil, fmt.Errorf("yzma: vision model %q: FPS, SegmentLength, MaxSegments and ContextTokens must not be negative", spec.Name)
 	}
-	ctx, cancel := context.WithTimeout(ctx, visionDownloadTimeout)
+	ctx, cancel := fetch.WithDefaultTimeout(ctx, visionDownloadTimeout)
 	defer cancel()
 	rt := cfg.runtime()
 	libDir, logger, err := rt.prepare(ctx)

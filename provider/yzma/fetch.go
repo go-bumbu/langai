@@ -46,10 +46,11 @@ const (
 	// is pinned to a larger exact size (a chat model) is capped at that size
 	// instead, see fetch.Downloader.
 	maxDownloadBytes = 1 << 30
-	// downloadTimeout bounds the first-use downloads as a whole.
+	// downloadTimeout bounds the first-use downloads as a whole when the
+	// caller's ctx carries no deadline of its own.
 	downloadTimeout = 15 * time.Minute
-	// completerDownloadTimeout bounds a chat model's first-use downloads as a
-	// whole: the pinned one is 2.5 GB, which takes longer than downloadTimeout
+	// completerDownloadTimeout does the same for a chat model's first-use
+	// downloads: the pinned one is 2.5 GB, which takes longer than downloadTimeout
 	// on a slow link.
 	completerDownloadTimeout = time.Hour
 	// userAgent names this package's downloads.

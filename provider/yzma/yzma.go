@@ -34,6 +34,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/langai/internal/fetch"
 	"github.com/go-bumbu/langai/internal/hw"
 )
 
@@ -132,7 +133,8 @@ type ModelSpec struct {
 	// File is the GGUF path. When it is missing and URL is set, it is
 	// downloaded there first.
 	File string
-	// URL is where File is downloaded from when absent. SHA256 is required
+	// URL is where File is downloaded from when it is absent or, with a Size
+	// set, not that long (a truncated file). SHA256 is required
 	// with it, and Size, when non-zero, is checked too: Open never downloads
 	// unverified bytes (the evaluation tooling downloads an unpinned file itself
 	// and logs its digest).
@@ -240,8 +242,10 @@ func (cfg Config) runtime() Runtime {
 // Open prepares the libraries and the model described by spec (downloading
 // whatever is missing, see fetch.go), loads them with the spec's pooling and
 // context cap, and probes the model once for its dimensionality. ctx bounds
-// the downloads only; the returned Embedder outlives it and is released
-// with Close.
+// the downloads only, and gets a deadline of 15 minutes when it has none of
+// its own (give it one to allow a slow link more); the returned Embedder
+// outlives it and is released with Close. A download that was cut short is
+// picked up where it stopped by the next Open.
 func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	if spec.Name == "" {
 		return nil, errors.New("yzma: ModelSpec.Name is required")
@@ -256,7 +260,7 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("yzma: model %q: %w", spec.Name, err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	ctx, cancel := fetch.WithDefaultTimeout(ctx, downloadTimeout)
 	defer cancel()
 	// This package logs to logger. rt.Logger itself goes to llama.cpp as
 	// given, so a nil one keeps llama.cpp's lines silenced on the C side
