@@ -38,35 +38,26 @@ and `todo list --json` cover the common actions — run `todo --help`.
   that matches neither well. Keep up to 3 sub-centroids per tag, chosen by an
   eval scenario that includes parent-tag merges.
 - [ ] use rejections as negative evidence
-  A caller can keep a rejected tag off one document, but the Tagger learns
-  nothing from it, so a wrong tag can return on similar documents. A document
-  that fits no tag gets one at most about 1 time in 4 (0.75 stay untagged on
-  the golden set, TestGoldenTagging, with only the document's own tags removed:
-  an upper bound, as some of the picks are related tags from its family).
+  A caller can keep a rejected tag off one document, but the Tagger learns nothing from it, so a wrong tag can return on similar documents. Re-measured 2026-11-09: with the whole tag family removed no golden document gets a wrong tag (0 of 84); with only its own tags removed 0.64 stay untagged and 0.81 get none but an ancestor. So on the golden set the wrong picks are related tags, and negative evidence would have to be judged on real rejections.
 - [ ] real multi-tag documents in the golden set
   TestGoldenTagging's two-topic check stitches pairs of single-tag documents
   into one page (60 of 102 got both tags), which only stands in for a real
   page about two topics. Add real documents that carry several tags and drop
   the stitching.
-- [ ] make the "fits no tag" scenario drop the whole tag family
-  TestGoldenTagging's untagged scenario removes only a document's own tags, so
-  the rest of its tag family (parent, siblings or children) stays in the scope
-  and some of the picks are related tags, not unrelated ones. Remove the whole
-  family, re-measure, and only then quote the result as a wrong-tag rate and
-  set a new floor; until then 0.75 untagged only bounds that rate from above
-  (at most about 1 document in 4 gets a wrong tag).
+- [x] make the "fits no tag" scenario drop the whole tag family
+  Done 2026-11-09: with the whole family removed 84 of 84 golden documents stay untagged (closest wrong tag 0.016 under its cutoff), floor 0.95. The old own-tags-only scenario is kept as 'own tags gone, none but ancestors' at 0.81, floor 0.75.
 - [x] cachetest: check that Get refreshes the last-used time
   The conformance suite never checks that Get rewrites an entry's last-used time once it is older than CacheRefreshAfter, so a backend that skips it still passes, and Prune then drops vectors still in use and they get embedded again. Needs an injectable clock or a time-shifted Prune cutoff in the suite.
 - [x] per-chunk scoring for the Tagger's side topics
   Done 2026-11-07 (docs/superpowers/specs/2026-11-07-tagger-long-items-results.md): with ChunkBytes an item of 3+ pieces scores by the mean of its two best pieces, one of 2 by the best of its halves and their centroid, and a long member enters its tag's blend as its piece closest to the name. Long set: side 0.68 vs 0.58 (mean), precision 0.78 both, mention 0.02; pure max found 0.74 but 3.5 off-label tags a doc vs 2.0, and lost stitched two-topic pages (0.77 vs 0.80). Title-per-chunk added nothing. Cutoffs 0.42/0.58 hold; floors in TestTaggerLongTags.
 - [ ] try Generator windows of 8-12 KB
-  6 KB windows beat 2 KB ones (F1 0.84 vs 0.74) with fewer calls; larger windows need a bigger chat context and were not measured.
-- [ ] eval.MatchTopics: containment sends side tags to the main topic
-  A tag that contains a main alias ("housing cooperatives" holds "cooperatives") scores 1 against the main topic and ties go to the first topic, so a side topic picked by its exact label counts as missed: de-genossenschaften and es-cafe score side 0.00 with every side label picked. By exact label the Tagger's side recall is 0.89, not 0.68. Prefer the topic whose own label or alias is the longer containment match; re-measure the Generator and Tagger floors after.
+  6 KB windows beat 2 KB ones (F1 0.84 vs 0.74 under the scoring before 2026-11-09) with fewer calls; larger windows need a bigger chat context and were not measured.
+- [x] eval.MatchTopics: containment sends side tags to the main topic
+  Done 2026-11-09: a tag goes to the topic it names, then to the closer whole-word match. Tagger long set: main 1.000, side 0.90 (was 0.68), precision 0.80. Generator: side 0.76 (was 0.71), precision 0.89. Floors reset.
 - [ ] re-measure NameMinScore at 0.43
-  Short essences (names only 0.81 vs 0.79, mixed 0.868 vs 0.860) and long items (F1 +0.02) both score a little better at 0.43; stitched two-topic pages lose 0.04 (0.83 vs 0.87 with ChunkBytes) and long-member pages 0.03. Weigh it on real data before moving the default.
+  Short essences (names only 0.81 vs 0.79, mixed 0.868 vs 0.860) and long items (mean F1 0.87 vs 0.84 under the 2026-11-09 scoring) both score a little better at 0.43; stitched two-topic pages lose 0.04 (0.83 vs 0.87 with ChunkBytes) and long-member pages 0.03. Weigh it on real data before moving the default.
 - [ ] turn ChunkBytes on by default
-  Every golden essence is one piece at 2000 bytes, so the short numbers do not move, two-topic pages gain (0.80 to 0.87) and long items find side topics (0.45 to 0.68). Costs a re-embed of long items for current users, and a default that depends on the embedder's window.
+  Every golden essence is one piece at 2000 bytes, so the short numbers do not move, two-topic pages gain (0.80 to 0.87) and long items find side topics (0.65 to 0.90 under the 2026-11-09 scoring). Costs a re-embed of long items for current users, and a default that depends on the embedder's window.
 
 ## upstream
 
@@ -303,14 +294,16 @@ and `todo list --json` cover the common actions — run `todo --help`.
   embedBatch checks only lengths; one NaN member makes the tag never match until the cache is wiped.
 - [x] callers at two revisions re-read the catalog on every call
   Flights are keyed by state, so two revisions rebuild concurrently and the later Apply leaves an unrecorded state. Key the flight by space.
-- [ ] eval.aliasSim matches inside words
+- [x] eval.aliasSim matches inside words
   Tag ai scores 1 against container shipping; only the alias has a length floor. Match on word boundaries. Needs a re-measure of the long-set floors.
-- [ ] long-set headline numbers hide conventions
+- [x] long-set headline numbers hide conventions
   A zero-tag document counts as precision 0 and the F1 is that of the mean precision and recall, not the mean per-document F1.
 - [x] sqlcache: Postgres and SQLite differ behind the shared code
   Postgres rejects NUL or invalid UTF-8 in index or model; concurrent CREATE TABLE IF NOT EXISTS at startup can fail.
-- [ ] examples: handle ErrPartial and call Tagger.Close / Prune
-  zarf/examples/autotag/notebook.go discards tags on any Generate error, including ErrPartial, and the examples never call Tagger.Close or Tagger.Prune.
+- [ ] examples: call Tagger.Prune
+  ErrPartial is now shown with its tags and the Tagger is closed on shutdown (2026-11-09). The examples still never call Tagger.Prune.
+- [ ] stale numbers in tagging comments
+  tagging/chunk.go, generator.go and generator_long.go still quote long-set numbers from the scoring before 2026-11-09. The golden top1 floor comment says 0.8929 where the measured value is 0.8810 on main too; cause not found.
 
 ## providers and fetch
 
@@ -403,3 +396,9 @@ and `todo list --json` cover the common actions — run `todo --help`.
   make test-models, make test-images (also with DINOv2) and make test-vision all pass with numbers identical to the baseline before the changes. The unit tests no longer reach the network (the fake runtime now pins the CPU build; yzma tests went from 9 s to 0.4 s).
 - [x] provider/phash: perceptual hash ImageEmbedder (new)
   Commits 571f5a7 62cc0ee 05b0abe. A model-free langai.ImageEmbedder for exact and near-exact duplicates: pHash (default) or dHash at 64 or 256 bits, as unit vectors so cosine = 1 - 2*hamming/bits and MediaIndex plus any Store work unchanged; Model() is phash-64, dhash-64, phash-256 or dhash-256. Integer arithmetic only (goldens also pass under GOARCH=386), area-average resize read in strips, alpha on white. Embedder.Hash returns the raw Hash with Distance and String. Measured on synthetic pictures (Hamming bits, phash-64): JPEG q60 2, half size 2, double 2, brighter 2, small mark 10; unrelated pairs average 31.5, closest 14. About 1.8 ms per 1920x1080 RGBA picture. Thresholds are not yet measured on real photos; the phash-64 limit for a marked copy has no margin (10 of 10).
+- [x] eval: honest long-set scoring and finite metrics (breaking)
+  Commits 234444b db3a999. Long-set tags match on whole words (NFC, case-folded, at least 4 runes for a contained string), a tag goes to the topic it names, and MeanLongScores returns LongMean with the mean per-document F1, rates averaged only over documents they exist for, and an Untagged count; the F1-of-means figure is gone. ndcg at k<=0, negative k, repeated ids, NaN scores and an empty cut list no longer give NaN, recall over 1 or a panic. Dataset.Validate refuses repeated tags or ids; LoadLong refuses an empty directory and topics sharing a label.
+- [x] quality floors re-measured on the real models
+  Commits 5399783 d607b1b 4a438c9. Tagger long set: main recall 1.000 (floor 0.95), side 0.897 (0.84), precision 0.801 (0.75), mean F1 0.838. Generator long set: main 1.000 (0.95), side 0.759 (0.70), precision 0.887 (0.86 kept), mean F1 0.822. Golden: fits no tag, gets none 84 of 84 (floor 0.95). The gains come from the scoring fix, not from the models: the Generator's tags under the old rule reproduce the old numbers exactly, so the parser change moved nothing. make test-models, the Tagger long test and make test-gentags all pass against the new floors. Two comments were found stale and predate this branch: golden top1 is 0.8810 (comment said 0.8929, floor 0.84 passes) and 5 to 10 generated tags reach the cutoff (comment said 6 to 10).
+- [x] examples: partial tag results shown, Tagger closed on shutdown
+  Commit 709762e. The autotag notebook keeps the tags that come with tagging.ErrPartial and shows a notice (Recommendation.Error); Notebook.Close closes the Tagger in the example's shutdown path.
