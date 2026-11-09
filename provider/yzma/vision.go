@@ -779,8 +779,32 @@ func (v *Vision) embedSegments(ctx context.Context, path string, duration time.D
 	return out, nil
 }
 
-// embedVideoFile embeds one video file as one input.
+// absolute names the file at path from the root. libmtmd passes a video's
+// path to an ffmpeg of its own as it is, and a relative one could begin
+// with a dash, which ffmpeg reads as an option, or with a word and a colon,
+// which it reads as a protocol; a path that begins with a separator is
+// neither, whatever follows (ffmpeg takes a name for a protocol only when
+// letters, digits, "+", "-" or "." lead up to its first colon). The working
+// directory is put in front and nothing is tidied, so the path still
+// resolves, link by link, to the file the caller named.
+func absolute(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return wd + string(filepath.Separator) + path, nil
+}
+
+// embedVideoFile embeds one video file as one input. The file reaches
+// libmtmd under an absolute path (see absolute).
 func (v *Vision) embedVideoFile(ctx context.Context, path string) ([]float32, error) {
+	path, err := absolute(path)
+	if err != nil {
+		return nil, fmt.Errorf("yzma: the video's path: %w", err)
+	}
 	return v.embedBitmap(ctx, func() (uintptr, func(), error) {
 		b, video, err := v.api.bitmapVideo(v.proj, path, v.fps)
 		if err != nil {

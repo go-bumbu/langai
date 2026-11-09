@@ -499,6 +499,11 @@ pictures and clips, and an image finds the stretch of a video it appears in.
   is removed once it is embedded. A video takes the room of one segment there; one
   without a length also that of its copy, up to `MaxSegments` segments long, so point
   `TempDir` at a disk when the system's is kept in memory.
+- **Paths.** libmtmd reads a video through an ffmpeg of its own and gives it the path
+  bare, so every video reaches it under an absolute path, a segment file as well as a
+  video short enough to go uncut: a relative `-x.mp4` or `clip:final.mkv` is then no
+  option and no protocol. That ffmpeg has no protocol whitelist; the `Cutter` probes
+  every video under its own first, and refuses one that names remote inputs.
 - **Segment containers.** ffmpeg picks a segment's container by its file extension, so
   a segment keeps the video's extension only where that names a container known to take
   such a file's codecs by stream copy: `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, `.ts`,

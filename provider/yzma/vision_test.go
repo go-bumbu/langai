@@ -56,6 +56,7 @@ type fakeVision struct {
 	lastPrompt     string       // their texts joined, "<__media__>" for a bitmap
 	lastBitmaps    int
 	lastTokens     int
+	videoPaths     []string // every path bitmapVideo was given, as given
 }
 
 var _ visionAPI = (*fakeVision)(nil)
@@ -155,6 +156,7 @@ func (f *fakeVision) bitmapRGB(w, h int, rgb []byte) (uintptr, error) {
 }
 func (f *fakeVision) bitmapVideo(proj uintptr, path string, fps float64) (uintptr, uintptr, error) {
 	f.record("bitmapVideo", proj, filepath.Base(path), fps)
+	f.videoPaths = append(f.videoPaths, path)
 	if f.videoErr != nil {
 		return 0, 0, f.videoErr
 	}
@@ -813,6 +815,55 @@ func TestVision_EmbedVideoStopsAtTheEndAndAtTheCap(t *testing.T) {
 			}
 			if tc.segments > 0 && segs[len(segs)-1].End != tc.lastEnd {
 				t.Errorf("the last segment ends at %v, want %v", segs[len(segs)-1].End, tc.lastEnd)
+			}
+		})
+	}
+}
+
+// TestVision_VideoPathsReachLibmtmdAbsolute: libmtmd hands the path of a
+// video to an ffmpeg of its own, bare. A video no longer than a segment
+// goes there uncut, under the caller's name for it, and a relative name
+// that begins with a dash would be read as an option and one with a colon
+// as a protocol. So every path libmtmd gets is absolute: it begins with a
+// separator, which is neither. The name is not tidied on the way: "a/../b"
+// stays the file the system finds under it, also when a is a link.
+func TestVision_VideoPathsReachLibmtmdAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	wd, err := os.Getwd() // the temp directory as the process names it
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		duration time.Duration
+		want     string // "" for a video that is cut: any absolute path
+	}{
+		{"clip:final.mkv", 5 * time.Second, wd + "/clip:final.mkv"},
+		{"-x.mp4", 5 * time.Second, wd + "/-x.mp4"},
+		{"-i", 5 * time.Second, wd + "/-i"},
+		{"http://example.com/a.mp4", 5 * time.Second, wd + "/http://example.com/a.mp4"},
+		{"sub/../plain.mp4", 5 * time.Second, wd + "/sub/../plain.mp4"},
+		{"/media/already absolute.mp4", 5 * time.Second, "/media/already absolute.mp4"},
+		{"-long.mp4", 30 * time.Second, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeVision()
+			cutter := &fakeCutter{durations: map[string]time.Duration{filepath.Base(tc.name): tc.duration}}
+			v := openVisionFake(t, f, VisionOptions{Cutter: cutter})
+			if _, err := v.EmbedVideo(context.Background(), tc.name); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.videoPaths) == 0 {
+				t.Fatal("no video went to the model")
+			}
+			for _, p := range f.videoPaths {
+				if !filepath.IsAbs(p) {
+					t.Errorf("libmtmd was given %q, want an absolute path", p)
+				}
+			}
+			if tc.want != "" && f.videoPaths[0] != tc.want {
+				t.Errorf("libmtmd was given %q, want %q", f.videoPaths[0], tc.want)
 			}
 		})
 	}
