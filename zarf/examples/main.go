@@ -19,8 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
-
 	"github.com/go-bumbu/langai/media/ffmpeg"
 	"github.com/go-bumbu/langai/provider/onnx"
 	"github.com/go-bumbu/langai/provider/yzma"
@@ -56,6 +54,9 @@ type options struct {
 	// maxImageBytes is the most the media index reads of an image; 0 keeps
 	// the library's default.
 	maxImageBytes int64
+	// postgres is the DSN of a Postgres database with pgvector to keep the
+	// vectors and the tagging cache in; empty keeps them in SQLite files.
+	postgres string
 	// longSamples is the directory of the long sample documents, and
 	// writeDocs, when set, makes the command write the sample documents
 	// there and exit.
@@ -83,6 +84,7 @@ func parseFlags() options {
 	flag.Float64Var(&o.textMinScore, "text-min-score", 0, "drop text search hits scoring below this; 0 shows everything")
 	flag.Int64Var(&o.maxImageBytes, "max-image-bytes", 0, "the most the media index reads of an image; a longer one is listed as too large (0: the library's 64 MiB)")
 	flag.Float64Var(&o.tagScore, "tag-min-score", tagging.DefaultGeneratorMinScore, "the cutoff of the recommended tags; the page shows the ones under it greyed")
+	flag.StringVar(&o.postgres, "postgres", os.Getenv("POSTGRES"), "keep the vectors and the tagging cache in this Postgres database (with pgvector) instead of SQLite files, e.g. postgres://user:pass@localhost:5432/langai (default: $POSTGRES)")
 	flag.Parse()
 	return o
 }

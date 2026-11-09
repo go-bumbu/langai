@@ -26,6 +26,10 @@ TAG_MIN_SCORE ?= 0.45
 TEXT_MIN_SCORE ?= 0
 # the most the media index reads of an image; 0 is the library's 64 MiB
 MAX_IMAGE_BYTES ?= 0
+# a Postgres database with pgvector for the vectors and the tagging cache,
+# e.g. postgres://user:pass@localhost:5432/langai; empty keeps them in
+# SQLite files under DATA_DIR
+POSTGRES ?=
 
 default: help
 
@@ -35,7 +39,8 @@ prepare: ## download sample photos and render sample clips into data/media, writ
 run: ## index data/media and data/docs and serve the pages on http://127.0.0.1:8085 (first run downloads the models)
 	@go run . -addr "$(ADDR)" -media "$(MEDIA_DIR)" -docs "$(DOCS_DIR)" -data "$(DATA_DIR)" -models "$(MODELS_DIR)" \
 		-llama "$(LLAMA_DIR)" -model "$(MODEL)" -provider "$(PROVIDER)" -accel "$(ACCEL)" -segment "$(SEGMENT)" -min-score "$(MIN_SCORE)" -limit "$(LIMIT)" \
-		-tag-min-score "$(TAG_MIN_SCORE)" -text-min-score "$(TEXT_MIN_SCORE)" -max-image-bytes "$(MAX_IMAGE_BYTES)"
+		-tag-min-score "$(TAG_MIN_SCORE)" -text-min-score "$(TEXT_MIN_SCORE)" -max-image-bytes "$(MAX_IMAGE_BYTES)" \
+		-postgres "$(POSTGRES)"
 
 clean: ## remove the index and tag databases, the catalogs and the thumbnail cache; the media, the documents, the notebook and the models stay
 	@rm -rf "$(DATA_DIR)"/index-* "$(DATA_DIR)"/autotag-* "$(DATA_DIR)"/thumbs
