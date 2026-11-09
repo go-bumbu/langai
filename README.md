@@ -180,6 +180,13 @@ chunk of the document and scores each other document by its best chunk against a
 them; the document itself is never among the hits, and an id with nothing stored is
 `search.ErrNotIndexed`.
 
+`MarkdownChunker`, the default (`WithChunker` replaces it), cuts a document at its
+headings and packs its paragraphs into chunks of at most `MaxChars` bytes (1200), each
+prefixed with its heading path ("Title › Section"), which counts towards that size and is
+cut to a quarter of it. CRLF text and blank lines holding spaces chunk like plain ones,
+and a paragraph too long for one chunk is split between lines, so code and lists keep
+their shape, and only a line too long for one chunk between words.
+
 Every `Store` backend keeps one physical table set per index, so one index's vectors are
 never queryable from another's. Within an index a search sees exactly one collection,
 the one at its partition and collection: an empty partition or collection is a value
