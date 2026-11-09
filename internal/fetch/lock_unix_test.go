@@ -11,6 +11,27 @@ import (
 	"time"
 )
 
+// TestPartialPath_IsSharedBetweenProcesses: with file locks the partial file
+// has one name for everybody, which is what lets the next process pick up
+// where a killed one stopped, and a failed download keeps it for that.
+func TestPartialPath_IsSharedBetweenProcesses(t *testing.T) {
+	dest := filepath.Join("models", "m.gguf")
+	if got := partialPath(dest); got != dest+partialSuffix {
+		t.Errorf("partialPath = %q, want %q", got, dest+partialSuffix)
+	}
+	part, err := os.CreateTemp(t.TempDir(), "part")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = part.Close() }()
+	if _, err := part.WriteString("half"); err != nil {
+		t.Fatal(err)
+	}
+	if !resumable(part, Asset{SHA256: "00"}, errors.New("connection reset")) {
+		t.Error("a pinned download's partial file was not kept after a broken connection")
+	}
+}
+
 // TestInstallDir_AProcessThatLoadedDoesNotWait: while another process holds
 // the directory's lock, downloading a build into it, a process that already
 // runs the libraries from that directory must not queue behind the download

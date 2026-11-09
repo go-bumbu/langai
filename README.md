@@ -290,7 +290,9 @@ digest. `ctx` bounds the downloads: with no deadline of its own it gets a defaul
 (15 minutes here, an hour for the chat and vision models, 30 minutes in `provider/onnx`),
 and a deadline you set stands, shorter or longer. A download that is cut short keeps what
 it got in `<file>.partial` and the next call asks the server for the rest; the whole is
-verified against the digest either way. A model file that is not the pinned size (a
+verified against the digest either way. (That needs file locks, which keep processes
+after one file apart: on a system without them, none of which has a pinned build, each
+process writes a `<file>.partial-<pid>` of its own and a failed download starts over.) A model file that is not the pinned size (a
 crash, a full disk) is fetched again instead of being loaded. To keep all that off your
 startup path, wrap the loader in a `LazyEmbedder`, which reports its model and
 dimensions from the model's spec without loading anything:

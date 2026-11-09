@@ -77,6 +77,9 @@ func payload(n int) []byte {
 // TestFile_ResumesAnInterruptedDownload: a download that broke off keeps
 // what it got, and the next attempt asks only for the rest.
 func TestFile_ResumesAnInterruptedDownload(t *testing.T) {
+	if !crossProcessLocks {
+		t.Skip("without file locks a failed download keeps nothing (see partialPath)")
+	}
 	s := &rangeServer{body: payload(64 << 10), cutAfter: 20 << 10}
 	a := serveRanges(t, s)
 	dest := filepath.Join(t.TempDir(), "model.bin")
@@ -86,7 +89,7 @@ func TestFile_ResumesAnInterruptedDownload(t *testing.T) {
 	if _, err := os.Stat(dest); err == nil {
 		t.Fatal("an interrupted download appeared under its final name")
 	}
-	info, err := os.Stat(dest + partialSuffix)
+	info, err := os.Stat(partialPath(dest))
 	if err != nil || info.Size() == 0 || info.Size() >= int64(len(s.body)) {
 		t.Fatalf("partial file after the interruption: %v, %v", info, err)
 	}
@@ -128,7 +131,7 @@ func TestFile_FallsBackToAFullDownload(t *testing.T) {
 			s := &rangeServer{body: body, noRanges: c.noRanges}
 			a := serveRanges(t, s)
 			dest := filepath.Join(t.TempDir(), "model.bin")
-			if err := os.WriteFile(dest+partialSuffix, c.partial, 0o600); err != nil {
+			if err := os.WriteFile(partialPath(dest), c.partial, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if err := dl(cap).File(context.Background(), "test", a, dest); err != nil {
@@ -157,7 +160,7 @@ func TestFile_UnknownSizeResumes(t *testing.T) {
 		a := serveRanges(t, s)
 		a.Size = 0
 		dest := filepath.Join(t.TempDir(), "model.bin")
-		if err := os.WriteFile(dest+partialSuffix, partial, 0o600); err != nil {
+		if err := os.WriteFile(partialPath(dest), partial, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := dl(cap).File(context.Background(), "test", a, dest); err != nil {
@@ -178,7 +181,7 @@ func TestUnpinned_NeverResumes(t *testing.T) {
 	s := &rangeServer{body: payload(4 << 10)}
 	a := serveRanges(t, s)
 	dest := filepath.Join(t.TempDir(), "model.bin")
-	if err := os.WriteFile(dest+partialSuffix, []byte("left over"), 0o600); err != nil {
+	if err := os.WriteFile(partialPath(dest), []byte("left over"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sum, n, err := dl(cap).Unpinned(context.Background(), a.URL, dest)

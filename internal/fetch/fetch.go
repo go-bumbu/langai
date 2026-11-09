@@ -12,7 +12,10 @@
 // lock (lock.go), so goroutines and processes after the same file take
 // turns, and it survives an interrupted run: the next one asks the server
 // for the rest with a Range request and verifies the whole against the
-// pinned digest.
+// pinned digest. That is so where the system has file locks (unix). Where
+// it has none, processes are not kept apart: each writes a partial file of
+// its own ("<dest>.partial-<pid>", see lock_other.go), so none writes
+// through another, and nothing is resumed.
 //
 // The directories all this happens in are the caller's, and may hold
 // anything. The package writes only under names derived from the
@@ -40,7 +43,7 @@ import (
 )
 
 // partialSuffix is appended to a destination to name the file its download
-// is written to.
+// is written to (see partialPath).
 const partialSuffix = ".partial"
 
 // Asset is one downloadable file with its expected digest.
@@ -176,7 +179,7 @@ func (d Downloader) download(ctx context.Context, what string, a Asset, dest str
 		return "", 0, false, err
 	}
 	defer release()
-	partial := dest + partialSuffix
+	partial := partialPath(dest)
 	part, err := openLocked(ctx, partial)
 	if err != nil {
 		return "", 0, false, err
@@ -202,10 +205,10 @@ func (d Downloader) download(ctx context.Context, what string, a Asset, dest str
 
 // resumable reports whether the partial file left by a failed download is
 // worth keeping: it holds bytes, of a pinned asset, that the failure did
-// not prove wrong.
+// not prove wrong, and a later process can find it (see partialPath).
 func resumable(part *os.File, a Asset, err error) bool {
 	var bad *contentError
-	if a.SHA256 == "" || errors.As(err, &bad) {
+	if !crossProcessLocks || a.SHA256 == "" || errors.As(err, &bad) {
 		return false
 	}
 	info, statErr := part.Stat()
