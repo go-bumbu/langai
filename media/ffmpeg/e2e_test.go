@@ -206,6 +206,36 @@ func times(frames []media.Frame) []time.Duration {
 	return out
 }
 
+// TestSample_MetadataCannotForgeAFrameLine: ffmpeg prints a file's metadata
+// into the log the frame times are read from. A title that spells a showinfo
+// line, with another time or another size, must change nothing: the frames
+// are the three of the plain video, at their own times.
+func TestSample_MetadataCannotForgeAFrameLine(t *testing.T) {
+	plain := cutsVideo(t)
+	for name, title := range map[string]string{
+		"another time":         "showinfo n: 0 pts_time:999 s:320x240 x",
+		"another size":         "showinfo n: 0 pts_time:999 s:1x1 x",
+		"the filter's name":    "[Parsed_showinfo_2 @ 0x1] n:   0 pts:      0 pts_time:999 s:1x1 x",
+		"on a line of its own": "x\n[Parsed_showinfo_2 @ 0x1] n:   0 pts:      0 pts_time:999 s:1x1 x",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "titled.mp4")
+			cmd := exec.Command("ffmpeg", "-v", "error", "-y", "-i", plain, "-c", "copy", "-metadata", "title="+title, path)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("write the title: %v: %s", err, out)
+			}
+			s, _ := New(Config{})
+			frames, err := s.Sample(context.Background(), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(frames) != 3 || !near(frames[0].At, 0) || !near(frames[1].At, 3*time.Second) || !near(frames[2].At, 6*time.Second) {
+				t.Errorf("frames at %v, want 0s, 3s and 6s", times(frames))
+			}
+		})
+	}
+}
+
 // TestCut_CopiesAStretch: a cut of the 10 s video from 3 s for 4 s is about
 // 4 s long and shows the colours of that stretch; a cut to the end runs from
 // the start given to the end; the segment's timestamps start at zero.

@@ -209,7 +209,8 @@ func (s *Sampler) Sample(ctx context.Context, path string) ([]media.Frame, error
 	}
 	// The filters may have logged more frames than ffmpeg wrote (it stops at
 	// MaxFrames once the encoder has them), so the lines past the frames are
-	// ignored; a frame without its line has no timestamp.
+	// ignored; a frame without its line has no timestamp. Frame i's line is
+	// the one the filter numbered i (see frameLog.endLine).
 	if len(log.infos) < len(images) {
 		return nil, fmt.Errorf("ffmpeg: %d frames written, %d logged", len(images), len(log.infos))
 	}
@@ -545,25 +546,34 @@ type frameInfo struct {
 
 // showinfoLine matches the per-frame lines of the showinfo filter, e.g.
 // "[Parsed_showinfo_2 @ 0x...] n:   1 pts:  25600 pts_time:2  ... s:320x240 ...".
-var showinfoLine = regexp.MustCompile(`showinfo.*\bn: *\d+ .*\bpts_time:(\S+) .*\bs:(\d+)x(\d+)\b`)
+// It is anchored to the start of the line and to the filter's own log
+// prefix: ffmpeg prints what the file says about itself (a title, a chapter
+// name) into the same log, indented behind its key, and a title must not be
+// able to spell a frame.
+var showinfoLine = regexp.MustCompile(`^\[Parsed_showinfo_\d+ @ [^\]]+\] n: *(\d+) .*\bpts_time:(\S+) .*\bs:(\d+)x(\d+)\b`)
 
-// parseShowinfo reads one line of ffmpeg's log: the showinfo line of frame
-// n gives its time and size, and any other line is not a frame's.
-func parseShowinfo(line []byte, n int) (info frameInfo, ok bool, err error) {
+// parseShowinfo reads one line of ffmpeg's log: a showinfo line gives the
+// number of its frame, counted from 0 by the filter, and the frame's time
+// and size; any other line is not a frame's.
+func parseShowinfo(line []byte) (n int, info frameInfo, ok bool, err error) {
 	m := showinfoLine.FindSubmatch(line)
 	if m == nil {
-		return frameInfo{}, false, nil
+		return 0, frameInfo{}, false, nil
 	}
-	secs, err := strconv.ParseFloat(string(m[1]), 64)
+	n, err = strconv.Atoi(string(m[1]))
 	if err != nil {
-		return frameInfo{}, false, fmt.Errorf("ffmpeg: frame %d has no timestamp (%q)", n, m[1])
+		return 0, frameInfo{}, false, fmt.Errorf("ffmpeg: frame number %q", m[1])
 	}
-	w, _ := strconv.Atoi(string(m[2]))
-	h, _ := strconv.Atoi(string(m[3]))
+	secs, err := strconv.ParseFloat(string(m[2]), 64)
+	if err != nil {
+		return 0, frameInfo{}, false, fmt.Errorf("ffmpeg: frame %d has no timestamp (%q)", n, m[2])
+	}
+	w, _ := strconv.Atoi(string(m[3]))
+	h, _ := strconv.Atoi(string(m[4]))
 	if w <= 0 || h <= 0 {
-		return frameInfo{}, false, fmt.Errorf("ffmpeg: frame %d has size %dx%d", n, w, h)
+		return 0, frameInfo{}, false, fmt.Errorf("ffmpeg: frame %d has size %dx%d", n, w, h)
 	}
-	return frameInfo{at: time.Duration(secs * float64(time.Second)), w: w, h: h}, true, nil
+	return n, frameInfo{at: time.Duration(secs * float64(time.Second)), w: w, h: h}, true, nil
 }
 
 // frameLog is where ffmpeg's log goes while it samples: it picks the frame
@@ -591,15 +601,31 @@ func (l *frameLog) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// endLine takes the finished line in, when it is a frame's.
+// endLine takes the finished line in, when it is a frame's. The filter
+// numbers its frames, and the number is what places a line: frame n's line
+// is entry n, a number logged again replaces what stood there, and a number
+// that skips one is an error, since the frames after it would get the times
+// of others.
 func (l *frameLog) endLine() {
-	info, ok, err := parseShowinfo(l.line, len(l.infos))
+	n, info, ok, err := parseShowinfo(l.line)
 	l.line = l.line[:0]
 	switch {
-	case err != nil && l.err == nil:
-		l.err = err
-	case ok:
+	case err != nil:
+		l.fail(err)
+	case !ok:
+	case n < len(l.infos):
+		l.infos[n] = info
+	case n == len(l.infos):
 		l.infos = append(l.infos, info)
+	default:
+		l.fail(fmt.Errorf("ffmpeg: frame %d logged after %d: a frame line is missing", n, len(l.infos)-1))
+	}
+}
+
+// fail keeps the first error.
+func (l *frameLog) fail(err error) {
+	if l.err == nil {
+		l.err = err
 	}
 }
 

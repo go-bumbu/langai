@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -175,6 +176,63 @@ func TestFrameLog_PicksTheFrameLines(t *testing.T) {
 	_, _ = log.Write([]byte(strings.Replace(recordedLog, "pts_time:2.04 ", "pts_time:NOPTS", 1)))
 	if log.err == nil || !strings.Contains(log.err.Error(), "frame 1 has no timestamp") {
 		t.Errorf("a frame without a timestamp: err = %v", log.err)
+	}
+}
+
+// TestFrameLog_TakesOnlyTheFiltersOwnLines: ffmpeg prints what a file says
+// about itself (its title, its chapters) into the same log, so a frame line
+// is one that starts with the showinfo filter's own prefix, and a frame the
+// filter logs stands over whatever claimed its number before.
+func TestFrameLog_TakesOnlyTheFiltersOwnLines(t *testing.T) {
+	frame := func(n int, at string, size string) string {
+		return "[Parsed_showinfo_2 @ 0x1] n:   " + strconv.Itoa(n) + " pts:  0 pts_time:" + at + " duration: 1 fmt:rgba s:" + size + " i:P\n"
+	}
+	two := []frameInfo{{at: 0, w: 320, h: 240}, {at: 5 * time.Second, w: 320, h: 240}}
+	for _, tc := range []struct {
+		name    string
+		log     string
+		want    []frameInfo
+		wantErr string
+	}{
+		{
+			name: "a title that spells a frame line",
+			log:  "    title           : showinfo n: 0 pts_time:999 s:320x240 x\n" + frame(0, "0", "320x240") + frame(1, "5", "320x240"),
+			want: two,
+		},
+		{
+			name: "a title that spells the filter's prefix too",
+			log:  "    title           : [Parsed_showinfo_2 @ 0x1] n: 0 pts:0 pts_time:999 s:1x1 x\n" + frame(0, "0", "320x240") + frame(1, "5", "320x240"),
+			want: two,
+		},
+		{
+			name: "the prefix in the middle of another filter's line",
+			log:  "[Parsed_scale_1 @ 0x2] w:320 [Parsed_showinfo_2 @ 0x1] n: 0 pts_time:999 s:1x1 x\n" + frame(0, "0", "320x240") + frame(1, "5", "320x240"),
+			want: two,
+		},
+		{
+			name: "a frame logged twice: the later line stands",
+			log:  frame(0, "999", "1x1") + frame(0, "0", "320x240") + frame(1, "5", "320x240"),
+			want: two,
+		},
+		{
+			name:    "a frame number out of turn",
+			log:     frame(0, "0", "320x240") + frame(2, "5", "320x240"),
+			wantErr: "frame 2 logged after 0",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &frameLog{}
+			_, _ = log.Write([]byte(tc.log))
+			if tc.wantErr != "" {
+				if log.err == nil || !strings.Contains(log.err.Error(), tc.wantErr) {
+					t.Errorf("err = %v, want one saying %q", log.err, tc.wantErr)
+				}
+				return
+			}
+			if log.err != nil || !slices.Equal(log.infos, tc.want) {
+				t.Errorf("infos = %+v, %v; want %+v", log.infos, log.err, tc.want)
+			}
+		})
 	}
 }
 

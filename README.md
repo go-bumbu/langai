@@ -386,7 +386,9 @@ stored, so the next run tries it again rather than keep an item that is never fo
   a leading dash or a `%d` in a name is never read as a protocol, an option or an image
   sequence, and ffmpeg and ffprobe open their input with only the `file` protocol on
   their whitelist, so a crafted playlist or concat list that names an `http://` (or
-  `rtp://`) input fails at once instead of reaching the network. Frames are read
+  `rtp://`) input fails at once instead of reaching the network. A frame's time comes
+  from the line ffmpeg's own filter logs for it, by the frame's number, so a title or a
+  chapter name that spells such a line moves nothing. Frames are read
   from ffmpeg one at a time, each with pixels of its own, so memory holds the frames
   taken (at most 64 × 512 × 512 × 4 bytes, 67 MB, with the defaults) and a frame you
   keep does not keep the others alive. A video no frame comes out of is an error, and
