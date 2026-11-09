@@ -21,8 +21,9 @@ var (
 	// dimensions than its tables were built with.
 	ErrDimensions = errors.New("vector: wrong number of dimensions")
 	// ErrInvalidVector reports a vector that cannot be compared by cosine:
-	// one holding a NaN or an infinity, or the zero vector, which has no
-	// direction.
+	// one holding a NaN or an infinity, the zero vector, which has no
+	// direction, or one whose float32 norm underflows or overflows (see
+	// Validate).
 	ErrInvalidVector = errors.New("vector: invalid vector")
 	// ErrModelMismatch reports a write or a search naming another model than
 	// the one a collection's vectors were made with.
@@ -133,21 +134,30 @@ type Store interface {
 
 // Validate reports whether vec can be stored or searched with in a store of
 // dims dimensions: it must have exactly dims entries (ErrDimensions), all of
-// them finite and not all zero (ErrInvalidVector).
+// them finite, and a sum of squares that is neither 0 nor infinite when
+// computed in float32, as the SQL backends compute the norm
+// (ErrInvalidVector). The zero vector fails so, and so does one too small or
+// too large for a float32 norm, such as {1e-25, 1e-25} or {1e20, 1e20},
+// which a backend would score as infinite, NaN or 0 whatever its direction.
 func Validate(vec []float32, dims int) error {
 	if len(vec) != dims {
 		return fmt.Errorf("%w: %d, want %d", ErrDimensions, len(vec), dims)
 	}
-	var sum float64
+	var sum float32
 	for i, v := range vec {
 		f := float64(v)
 		if math.IsNaN(f) || math.IsInf(f, 0) {
 			return fmt.Errorf("%w: entry %d is %v", ErrInvalidVector, i, v)
 		}
-		sum += f * f
+		// the conversion rounds the square on its own, so it is never fused
+		// into a multiply-add of higher precision than the backends'
+		sum += float32(v * v)
 	}
-	if sum == 0 {
-		return fmt.Errorf("%w: zero vector", ErrInvalidVector)
+	switch {
+	case sum == 0:
+		return fmt.Errorf("%w: zero vector, or its float32 norm underflows to 0", ErrInvalidVector)
+	case math.IsInf(float64(sum), 0):
+		return fmt.Errorf("%w: its float32 norm overflows", ErrInvalidVector)
 	}
 	return nil
 }

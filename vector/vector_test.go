@@ -25,7 +25,14 @@ func TestValidate(t *testing.T) {
 	}{
 		{"unit", []float32{0, 1, 0}, 3, nil},
 		{"not unit", []float32{3, 4, 0}, 3, nil},
-		{"tiny", []float32{1e-30, 0, 0}, 3, nil},
+		{"small", []float32{1e-15, 0, 0}, 3, nil},
+		{"large", []float32{1e19, 1e19, 0}, 3, nil},
+		// float32 squares, as the backends compute them, underflow to 0 or
+		// overflow to infinity, though float64 ones would not
+		{"tiny", []float32{1e-30, 0, 0}, 3, vector.ErrInvalidVector},
+		{"tiny pair", []float32{1e-25, 1e-25, 0}, 3, vector.ErrInvalidVector},
+		{"huge", []float32{1e20, 1e20, 0}, 3, vector.ErrInvalidVector},
+		{"max", []float32{3.4028235e38, 0, 0}, 3, vector.ErrInvalidVector},
 		{"short", []float32{1, 0}, 3, vector.ErrDimensions},
 		{"long", []float32{1, 0, 0, 0}, 3, vector.ErrDimensions},
 		{"empty", nil, 3, vector.ErrDimensions},

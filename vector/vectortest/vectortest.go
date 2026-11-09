@@ -269,7 +269,7 @@ func chunksRoundTrip(t *testing.T, s vector.Store) {
 	ctx := context.Background()
 	want := []vector.Chunk{
 		{Seq: 0, Text: "a", Vector: []float32{1, 0, 0, 0}},
-		{Seq: 4000, Text: "b", Vector: []float32{0, 0.5, -1.25, 3.4028235e38}},
+		{Seq: 4000, Text: "b", Vector: []float32{0, 0.5, -1.25, 1.5e19}},
 	}
 	upsert(t, s, coord, "", vector.Doc{ID: "doc", Hash: "h", Chunks: []vector.Chunk{want[1], want[0]}})
 	upsert(t, s, coord, "", doc("other", axis(1)))
@@ -473,6 +473,10 @@ func invalidVectors(t *testing.T, s vector.Store) {
 		"zero": make([]float32, Dims),
 		"NaN":  {nan, 0, 0, 1},
 		"Inf":  {inf, 0, 0, 1},
+		// the backends compute the norm in float32: its square underflows to
+		// 0 (SQLite would score it +Inf) or overflows to infinity
+		"tiny": {1e-25, 1e-25, 0, 0},
+		"huge": {1e20, 1e20, 0, 0},
 	} {
 		if err := s.Upsert(ctx, coord, "", doc("bad", v)); !errors.Is(err, vector.ErrInvalidVector) {
 			t.Errorf("Upsert of a %s vector: %v, want ErrInvalidVector", name, err)

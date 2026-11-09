@@ -275,7 +275,8 @@ rest, in score order, then by document id, then by chunk. `DeleteIndex` removes 
 index with everything in it, e.g. when a tenant leaves.
 
 Vectors of different models never mix. A store refuses a vector of the wrong length
-(`vector.ErrDimensions`) and a zero, NaN or infinite one (`vector.ErrInvalidVector`); a
+(`vector.ErrDimensions`) and a zero, NaN or infinite one, or one whose norm underflows or
+overflows in float32, the precision the backends compute in (`vector.ErrInvalidVector`); a
 SQL store opened with other dimensions than an index's tables hold refuses that index.
 When the embedder names its model (`langai.Identified`), `search.New` and
 `search.NewMediaIndex` pass that name on: the first write to a collection records it,
