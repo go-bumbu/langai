@@ -6,6 +6,8 @@ import (
 	"image"
 
 	"golang.org/x/image/draw"
+
+	"github.com/go-bumbu/langai/internal/imageutil"
 )
 
 // preprocessor turns pictures into the model's input tensor the way the
@@ -54,27 +56,34 @@ func (p preprocessor) fill(dst []float32, img image.Image) {
 	}
 }
 
-// scaler is the x/image kernel for the spec's interpolation. Both widen
+// kernel is the x/image kernel for the spec's interpolation. Both widen
 // their support when downscaling, so a photo shrunk to 224 pixels is
 // averaged the way PIL averages it, not sampled.
-func (p preprocessor) scaler() draw.Scaler {
+func (p preprocessor) kernel() *draw.Kernel {
 	if p.interpolation == InterpolationBicubic {
 		return draw.CatmullRom
 	}
 	return draw.BiLinear
 }
 
-// scaled returns img as the side×side RGBA square the model takes.
+// scaled returns img as the side×side RGBA square the model takes, composed
+// on white where it is transparent (see imageutil.ScaleOnWhite, which the
+// other providers prepare pictures with too). Only the square is computed:
+// a picture of an extreme shape costs no more than any other.
 func (p preprocessor) scaled(img image.Image) *image.RGBA {
 	dst := image.NewRGBA(image.Rect(0, 0, p.side, p.side))
-	src := img.Bounds()
+	imageutil.ScaleOnWhite(dst, p.placement(img.Bounds()), img, p.kernel())
+	return dst
+}
+
+// placement is where the whole picture, scaled, lands in the square's
+// coordinates. Squashing puts it on the square itself. Cropping scales it
+// so that its shortest edge is shortestEdge long and centres it on the
+// square, which then shows the central side×side and clips the rest.
+func (p preprocessor) placement(src image.Rectangle) image.Rectangle {
 	if p.resize != ResizeCrop {
-		p.scaler().Scale(dst, dst.Bounds(), img, src, draw.Src, nil)
-		return dst
+		return image.Rect(0, 0, p.side, p.side)
 	}
-	// scale so the shortest edge is shortestEdge long, then keep the centre:
-	// the scaled picture is drawn into a rectangle positioned so that its
-	// central side×side lands on dst, which clips the rest
 	w, h := src.Dx(), src.Dy()
 	sw, sh := p.shortestEdge, p.shortestEdge
 	if w < h {
@@ -83,6 +92,5 @@ func (p preprocessor) scaled(img image.Image) *image.RGBA {
 		sw = (w*p.shortestEdge + h/2) / h
 	}
 	x0, y0 := (sw-p.side)/2, (sh-p.side)/2
-	p.scaler().Scale(dst, image.Rect(-x0, -y0, sw-x0, sh-y0), img, src, draw.Src, nil)
-	return dst
+	return image.Rect(-x0, -y0, sw-x0, sh-y0)
 }

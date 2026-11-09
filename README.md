@@ -62,8 +62,10 @@ langai/                 the shared ports: Embedder, ImageEmbedder, Completer, Ro
 │   └── ffmpeg/         video → frames via the ffmpeg binary
 │
 ├── langaitest/         fakes of the ports, for tests
-├── internal/           tablename: SQL table names; fetch: verified downloads and release
-│                       archives for the providers; planned: rank, score roll-up
+├── internal/           tablename: SQL table names; fetch: verified, resumable downloads and
+│                       locked library installs for the providers; hw: which accelerators
+│                       the machine can run; imageutil: the picture scaling the providers
+│                       share; planned: rank, score roll-up
 │
 └── zarf/               tooling around the library, not part of it
     ├── eval/           golden-set evaluation of embedding models
@@ -363,9 +365,13 @@ stored, so the next run tries it again rather than keep an item that is never fo
   at once.
 - **Limits.** A JPEG is turned upright by its EXIF orientation (all eight, read by a
   small parser of its own that takes a broken block for none) before it is embedded;
-  other formats are embedded as decoded. The SigLIP 2 text tower is not wired, so text queries
-  need the vision model below. The CUDA and CoreML paths are wired but were not run on a
-  GPU in this release; the CPU path is what the real-model tests cover.
+  other formats are embedded as decoded. Transparent parts are composed on white, here
+  and in the vision model below, so a logo on a transparent background is the same
+  picture to every model. A picture of an extreme shape (one pixel wide, twenty thousand
+  tall) costs no more memory to prepare than any other. The SigLIP 2 text tower is not
+  wired, so text queries need the vision model below. The CUDA and CoreML paths are wired
+  but were not run on a GPU in this release; the CPU path is what the real-model tests
+  cover.
 
 ### Text, images and videos in one space
 

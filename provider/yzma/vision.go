@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"image/draw"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/go-bumbu/langai"
 	"github.com/go-bumbu/langai/internal/fetch"
+	"github.com/go-bumbu/langai/internal/imageutil"
 	"github.com/go-bumbu/langai/media"
 )
 
@@ -784,7 +784,8 @@ func (v *Vision) eval(ctx context.Context, chunks uintptr) error {
 
 // rgbBytes returns img as packed RGB, scaled down so that its longer side
 // is at most maxImageSide (the projector shrinks it to its token budget
-// anyway) and composed on white where it is transparent.
+// anyway) and composed on white where it is transparent (see
+// imageutil.ScaleOnWhite, which provider/onnx prepares pictures with too).
 func rgbBytes(img image.Image) (w, h int, rgb []byte) {
 	b := img.Bounds()
 	w, h = b.Dx(), b.Dy()
@@ -792,12 +793,7 @@ func rgbBytes(img image.Image) (w, h int, rgb []byte) {
 		w, h = max(1, w*maxImageSide/long), max(1, h*maxImageSide/long)
 	}
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.Draw(rgba, rgba.Bounds(), image.White, image.Point{}, draw.Src)
-	if w == b.Dx() && h == b.Dy() {
-		draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Over)
-	} else {
-		xdraw.CatmullRom.Scale(rgba, rgba.Bounds(), img, b, draw.Over, nil)
-	}
+	imageutil.ScaleOnWhite(rgba, rgba.Bounds(), img, xdraw.CatmullRom)
 	rgb = make([]byte, 0, w*h*3)
 	for i := 0; i < len(rgba.Pix); i += 4 {
 		rgb = append(rgb, rgba.Pix[i], rgba.Pix[i+1], rgba.Pix[i+2])
