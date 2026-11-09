@@ -386,6 +386,30 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Prune takes Space, Scope takes two strings, vector uses Coord.
 - [ ] lazy loaders: recovery from a kept load failure is undocumented
   The docs never say to build a new lazy value to retry.
+- [ ] video segment files pile up in the temp dir
+  embedSegments removes cuts only at the end, so a 100-segment video has 100 files on disk at once, plus the full remux for a duration-less file.
+- [ ] segments are cut into the source's extension
+  Only an empty extension falls back to .mkv; .divx, .rmvb, .mp4.part and others fail at cut segment 0.
+- [ ] container duration is trusted
+  A duration near MaxInt64 panics in make, a 1000 h claim plans 180,000 segments, and audio longer than video yields phantom tail segments with duplicate vectors.
+- [ ] ffmpeg Cut deletes files it did not write
+  Cut(ctx, p, 0, 1s, p) removes the source after ffmpeg refuses; a missing binary removes a pre-existing out.
+- [ ] InstallDir deletes siblings it does not own
+  Every Open removes <LibDir>.old and <LibDir>.staging unconditionally and sweeps .partial-* and .download-* files in the parent directory, which can be the home directory.
+- [ ] metadata can forge a showinfo line
+  A video title spelling a showinfo line moves frame timestamps or fails Sample. Anchor the pattern to the filter's log prefix.
+- [ ] Vision's identity misses settings that change stored output
+  Vision has no Fingerprint, so raising MaxSegments never re-indexes truncated videos; ContextTokens now changes long-text vectors but not the model id.
+- [ ] a symlinked managed LibDir is replaced by a real directory
+  swap renames the symlink itself.
+- [ ] short videos reach libmtmd under the caller's raw path
+  The file: hardening covers only the Cutter. Pass an absolute path.
+- [ ] install lock is taken before the already-usable check
+  A process that already loaded the library waits on the lock while another process downloads.
+- [ ] yzma never compares the install record's tag
+  A managed dir left by an older pinned build counts as ready and then fails the version check for the life of the process.
+- [ ] no cross-process download lock off unix
+  Two Windows processes can interleave writes to one .partial file. No Windows build is pinned today.
 
 # change log
 
