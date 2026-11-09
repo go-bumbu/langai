@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-bumbu/langai"
 	"github.com/go-bumbu/langai/langaitest"
@@ -379,6 +380,8 @@ type fakeCatalog struct {
 	// inTags is how many Tags calls are running, maxInTags the most that
 	// ever ran together
 	inTags, maxInTags int
+	// delay is how long every Tags call takes, unless its ctx ends first
+	delay time.Duration
 }
 
 // setPanic has every later Tags call panic with v; nil clears it.
@@ -400,7 +403,7 @@ func (c *fakeCatalog) Tags(ctx context.Context, _, _ string) ([]CatalogTag, erro
 	c.tagsCalls++
 	c.inTags++
 	c.maxInTags = max(c.maxInTags, c.inTags)
-	release, entered, panicWith := c.release, c.entered, c.panicWith
+	release, entered, panicWith, delay := c.release, c.entered, c.panicWith, c.delay
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
@@ -409,6 +412,13 @@ func (c *fakeCatalog) Tags(ctx context.Context, _, _ string) ([]CatalogTag, erro
 	}()
 	if panicWith != nil {
 		panic(panicWith)
+	}
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	if entered != nil {
 		select {

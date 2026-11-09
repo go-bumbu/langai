@@ -21,6 +21,9 @@ const (
 	DefaultSmoothingK     = 3
 )
 
+// DefaultRebuildGrace is TaggerConfig.RebuildGrace when it is zero.
+const DefaultRebuildGrace = 30 * time.Second
+
 // scoringRule names how tag vectors are computed, for the params
 // fingerprint: tags a Tagger built with another rule are stale and rebuilt
 // (from the embeddings the cache keeps; nothing is embedded again). "mean"
@@ -71,6 +74,18 @@ const longRule = "best"
 //
 // Taggers that share a cache may use different models: the model is part of every key.
 //
+// RebuildGrace is how long a rebuild goes on once the last caller waiting for
+// it has gone, its context ended, before the rebuild is cancelled. A caller
+// that asks about the space within it joins the rebuild instead of starting it
+// over, so a space whose rebuild takes longer than any request waits is still
+// built: by the requests that gave up on it, for the ones that come after.
+// Zero means DefaultRebuildGrace, 30 seconds; a negative value cancels a
+// rebuild as soon as its last caller has gone, which is right only when every
+// caller waits longer than a rebuild takes. A rebuild that hangs is joined for
+// as long as callers keep coming within the period, each waiting until its own
+// context ends, so give an embedder that can hang a timeout of its own.
+// Tagger.Close never waits for the period. It is no scoring setting.
+//
 // Logger receives, at Warn, what the Tagger worked around instead of failing
 // a call: a member text it left out of its tag because the embedder failed on
 // it or answered with a vector that is no use (with the index, the partition,
@@ -86,6 +101,7 @@ type TaggerConfig struct {
 	SmoothingK     float64
 	ChunkBytes     int
 	AllPathLevels  bool
+	RebuildGrace   time.Duration
 	Logger         *slog.Logger
 }
 
@@ -97,10 +113,11 @@ type TaggerConfig struct {
 // index are.
 //
 // A rebuild runs on a goroutine of the Tagger's, shared by the callers that
-// wait for it. It is cancelled when the last of them has gone, a panic of the
-// Catalog or the Embedder in it becomes the error of those callers (wrapping
-// ErrNotRebuilt and holding the value panicked with) instead of ending the
-// process, and Close stops it.
+// wait for it. When the last of them has gone it goes on for
+// TaggerConfig.RebuildGrace, for a caller that comes back to join, and is
+// cancelled after that. A panic of the Catalog or the Embedder in it becomes
+// the error of those callers (wrapping ErrNotRebuilt and holding the value
+// panicked with) instead of ending the process, and Close stops it at once.
 type Tagger struct {
 	e *engine
 }
@@ -179,6 +196,9 @@ func checkConfig(cfg TaggerConfig) (TaggerConfig, string, error) {
 	}
 	if cfg.SmoothingK <= 0 {
 		cfg.SmoothingK = DefaultSmoothingK
+	}
+	if cfg.RebuildGrace == 0 {
+		cfg.RebuildGrace = DefaultRebuildGrace
 	}
 	for _, s := range []struct {
 		name  string

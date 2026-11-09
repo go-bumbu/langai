@@ -80,9 +80,10 @@ func TestFlight_SharesTheErrorAndRunsAgainAfter(t *testing.T) {
 
 // TestFlight_TheRunEndsWhenItsLastCallerLeaves: a caller that gives up leaves
 // the run to the others, and it carries on with its context alive. When the
-// last one has gone nobody waits for the run, and its context is cancelled: a
-// run used to go on under context.WithoutCancel whoever was left, so a hung
-// embedder held its goroutine for ever.
+// last one has gone nobody waits for the run, and its context is cancelled,
+// at once in a flight with no grace period as this one: a run used to go on
+// under context.WithoutCancel whoever was left, so a hung embedder held its
+// goroutine for ever.
 func TestFlight_TheRunEndsWhenItsLastCallerLeaves(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var f flight
@@ -254,7 +255,8 @@ func TestFlight_CloseCancelsTheRunsAndWaitsForThem(t *testing.T) {
 // TestEngine_ARebuildNobodyWaitsForIsCancelled: the embedder hangs on the tag
 // names, and the one caller gives up at its deadline. The rebuild used to stay
 // blocked in the embedder for ever, on a context nothing could cancel; now it
-// is cancelled as the caller leaves, and the next call starts afresh.
+// is cancelled once the grace period has passed with nobody coming back for
+// it, and the next call starts afresh.
 func TestEngine_ARebuildNobodyWaitsForIsCancelled(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newRig(t, engineCfg, &fakeCatalog{tags: breadAndJapan("1")}, nil, nil)
@@ -264,6 +266,7 @@ func TestEngine_ARebuildNobodyWaitsForIsCancelled(t *testing.T) {
 		if _, err := r.e.scores(ctx, "1", "10", "1", diaryText); !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("err = %v, want the caller's deadline", err)
 		}
+		time.Sleep(DefaultRebuildGrace)
 		synctest.Wait()
 		if n := r.emb.gaveUp(); n != 1 {
 			t.Errorf("%d hanging Embed calls were cancelled, want 1: the rebuild's", n)

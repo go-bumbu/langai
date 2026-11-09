@@ -79,6 +79,7 @@ func newEngine(emb langai.Embedder, cat Catalog, cache EmbeddingCache, ix TagInd
 	}
 	e := &engine{emb: emb, cat: cat, cache: cache, ix: ix, cfg: cfg, params: params, log: logger, now: time.Now}
 	e.closing, e.stop = context.WithCancel(context.Background())
+	e.flight.grace = cfg.RebuildGrace
 	e.flight.onPanic = func(value any, stack []byte) {
 		e.log.Error("tagging: panic in a rebuild", logComponent, slog.Any("panic", value), slog.String("stack", string(stack)))
 	}

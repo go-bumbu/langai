@@ -684,8 +684,16 @@ How a tag is judged:
   after a call of the other, so let them converge.
 - **A rebuild belongs to its callers.** It runs on a goroutine of the Tagger's that the
   waiting callers share. A caller whose context ends returns at once and the rebuild goes
-  on for the others; when the last one has gone, the rebuild's context is cancelled, so a
-  hung embedder is not left running. A panic of your `Catalog` or `Embedder` in a rebuild
+  on for the others. When the last one has gone it goes on for
+  `TaggerConfig.RebuildGrace` (30 seconds by default): a caller that asks about the space
+  within that time joins the same rebuild, so a rebuild that takes longer than your
+  request deadline still completes, for the requests after the ones that gave up on it,
+  instead of being started over by every request and never finishing. With nobody back
+  when the time is up, the rebuild's context is cancelled, so a hung embedder is not left
+  running; a negative `RebuildGrace` cancels it as soon as its last caller has gone. A
+  rebuild that hangs is joined by the callers that come within the grace period, each
+  waiting until its own deadline, so give an embedder that can hang a timeout of its
+  own. A panic of your `Catalog` or `Embedder` in a rebuild
   does not end the process: the callers get an error wrapping `ErrNotRebuilt` with the
   panic's value, and the stack goes to the `Logger`. `tagger.Close()` cancels the calls
   and rebuilds in flight, waits for them, and makes every later call return an error
