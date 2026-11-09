@@ -151,6 +151,11 @@ go get github.com/go-bumbu/langai
   asking by name for another build in the same process (`AccelCPU` first and
   `AccelVulkan` later, `ProviderCPU` and then `ProviderCUDA`) is an error, so open the
   most capable one first; `Accel` left empty keeps what is loaded.
+- **llama.cpp's log** goes to `Runtime.Logger`: its warnings and errors, and nothing of
+  its progress. A call whose context ends mid-evaluation stops llama.cpp, which then
+  logs errors such as `failed to decode, ret = 2`; those come at Debug with
+  `cancelled=true`, since the caller already has its context's error, while a decode
+  that fails for any other reason stays an error.
 - **The vision model** (`yzma.NewVision`) is a 2.7 GB download on first use (the Q8_0
   GGUF and its f16 projector) and needs `ffmpeg` and `ffprobe` on PATH for videos; a
   loaded process holds about 3 GB.

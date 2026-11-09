@@ -9,6 +9,85 @@ import (
 	"github.com/hybridgroup/yzma/pkg/llama"
 )
 
+// TestCancelLine: the error lines an aborted evaluation makes llama.cpp and
+// libmtmd log are told from genuine decode failures. A status that says
+// aborted is the cancellation's whatever else runs; libmtmd's lines, which
+// carry no status, only while an abort is in flight; everything else stays
+// an error.
+func TestCancelLine(t *testing.T) {
+	for _, tc := range []struct {
+		msg        string
+		cancelling bool
+		want       bool
+	}{
+		{"llama_decode: failed to decode, ret = 2", false, true},
+		{"llama_decode: failed to decode, ret = 2", true, true},
+		{"process_ubatch: failed to compute graph, compute status: 1", false, true},
+		{"graph_compute: ggml_backend_sched_graph_compute_async failed with error 1", false, true},
+		{"failed to decode text", true, true},
+		{"failed to decode image", true, true},
+		{"failed to eval chunk 3", true, true},
+		// genuine failures
+		{"llama_decode: failed to decode, ret = -1", true, false},
+		{"llama_decode: failed to decode, ret = 1", true, false},
+		{"llama_decode: failed to decode, ret = 22", true, false},
+		{"process_ubatch: failed to compute graph, compute status: -2", true, false},
+		{"graph_compute: ggml_backend_sched_graph_compute_async failed with error -1", true, false},
+		{"failed to decode text", false, false},
+		{"failed to eval chunk 3", false, false},
+		{"failed to load model", true, false},
+		{"decode: no KV slot for the batch", true, false},
+	} {
+		if got := cancelLine(tc.msg, tc.cancelling); got != tc.want {
+			t.Errorf("cancelLine(%q, cancelling %v) = %v, want %v", tc.msg, tc.cancelling, got, tc.want)
+		}
+	}
+}
+
+// TestForwardLog_DemotesWhatACancellationCauses: the lines classified as a
+// cancellation's go out at Debug, marked so, and are gone at Info; a
+// genuine failure stays at Error. trackAbort counts an evaluation as
+// cancelling from the first time its stop says so until untrackAbort.
+func TestForwardLog_DemotesWhatACancellationCauses(t *testing.T) {
+	orig := llamaLog.Load()
+	t.Cleanup(func() { llamaLog.Store(orig) })
+	var debug, info bytes.Buffer
+	fail := int32(llama.LogLevelError)
+
+	stopNow := false
+	stop := trackAbort(42, func() bool { return stopNow })
+	if stop() || cancelling.Load() != 0 {
+		t.Fatal("an abort callback that said go on counts as cancelling")
+	}
+	stopNow = true
+	first, again := stop(), stop()
+	if !first || !again || cancelling.Load() != 1 {
+		t.Fatalf("after stop: cancelling = %d, want 1 however often it is asked", cancelling.Load())
+	}
+	for _, out := range []*bytes.Buffer{&debug, &info} {
+		level := slog.LevelInfo
+		if out == &debug {
+			level = slog.LevelDebug
+		}
+		llamaLog.Store(slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: level})))
+		forwardLog(fail, "llama_decode: failed to decode, ret = 2\n")
+		forwardLog(fail, "failed to decode text\n")
+		forwardLog(fail, "llama_decode: failed to decode, ret = -1\n")
+	}
+	untrackAbort(42)
+	if cancelling.Load() != 0 {
+		t.Errorf("after untrackAbort: cancelling = %d", cancelling.Load())
+	}
+	forwardLog(fail, "failed to decode text\n") // to the Info logger: nothing is cancelled now
+
+	if got := debug.String(); strings.Count(got, "level=DEBUG") != 2 || strings.Count(got, "cancelled=true") != 2 || !strings.Contains(got, `level=ERROR msg="llama_decode: failed to decode, ret = -1"`) {
+		t.Errorf("at Debug:\n%s", got)
+	}
+	if got := info.String(); strings.Count(got, "\n") != 2 || !strings.Contains(got, `level=ERROR msg="llama_decode: failed to decode, ret = -1"`) || !strings.Contains(got, `level=ERROR msg="failed to decode text"`) {
+		t.Errorf("at Info:\n%s", got)
+	}
+}
+
 // TestForwardLog_FollowsTheLatestLogger: llama.cpp has one log callback per
 // process. The first open must not fix where its lines go: an open without
 // a logger drops them, and a later one with a logger gets them, as does a

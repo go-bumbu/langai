@@ -210,7 +210,9 @@ type Runtime struct {
 	// discards this package's lines. llama.cpp has one log sink for the whole
 	// process, so its lines go to the Logger of the latest open that set one,
 	// whichever model they are about: a nil Logger leaves them where an
-	// earlier open pointed them.
+	// earlier open pointed them. The errors llama.cpp logs because a call's
+	// context ended mid-evaluation ("failed to decode, ret = 2") come at
+	// Debug, marked cancelled=true: the caller has the context's error.
 	Logger *slog.Logger
 }
 
