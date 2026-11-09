@@ -170,6 +170,7 @@ store, err := sqlitevec.New(ctx, db, emb.Dimensions())
 // locate the documents within it
 ix, err := search.New(emb, store, "tenant-1", "space-7", "notes", search.WithMinScore(0.3))
 err = ix.Index(ctx, "note-42", markdownText) // a no-op while the text is unchanged
+res, err := ix.IndexBatch(ctx, docs)         // many at once: res.Indexed, res.Unchanged, res.Failed
 hits, err := ix.Search(ctx, "how long to boil spaghetti", 10) // []search.Match: DocID, Score, Seq and Text of the best chunk
 more, err := ix.SearchIndexed(ctx, "note-42", 10)            // "more like this" with the stored chunks: no model runs
 ```
@@ -179,6 +180,15 @@ position and text (a snippet), and its score. `SearchIndexed` searches with ever
 chunk of the document and scores each other document by its best chunk against any of
 them; the document itself is never among the hits, and an id with nothing stored is
 `search.ErrNotIndexed`.
+
+`IndexBatch` indexes many documents (`[]search.Doc{ID, Text}`) the way `Index` does
+one, in bounded batches: one hash read for all of them, at most 32 chunk texts per
+embedder call, one store write per such batch. Unchanged documents cost only their share
+of the hash read, so it suits a full re-index at startup. The `BatchResult` lists what
+was `Indexed`, what was `Unchanged` and what `Failed` for a reason of its own (a chunk
+that embeds to the zero vector), by id; such a failure does not stop the others. An
+embedder or store error does: it is returned, `Indexed` is exactly what was stored before
+it, and the same call again picks up where it stopped.
 
 `MarkdownChunker`, the default (`WithChunker` replaces it), cuts a document at its
 headings and packs its paragraphs into chunks of at most `MaxChars` bytes (1200), each

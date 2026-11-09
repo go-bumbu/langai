@@ -88,43 +88,16 @@ func New(embedder langai.Embedder, store vector.Store, index, partition, collect
 	return ix, nil
 }
 
-// Index chunks, embeds and stores a document, replacing whatever was indexed
-// under docID before. It is a cheap no-op when the text is unchanged since
-// the last call, so it is safe to call eagerly (e.g. a full re-index at
-// startup).
+// Index chunks, embeds and stores one document, replacing whatever was
+// indexed under docID before. It is a cheap no-op when the text is unchanged
+// since the last call; to index many documents, e.g. a full re-index at
+// startup, IndexBatch does the same in bounded batches.
 func (ix *Index) Index(ctx context.Context, docID, text string) error {
-	if docID == "" {
-		return ErrEmptyID
-	}
-	hash := ContentHash(text)
-	stored, err := ix.store.Hashes(ctx, ix.coord, docID)
+	res, err := ix.IndexBatch(ctx, []Doc{{ID: docID, Text: text}})
 	if err != nil {
-		return fmt.Errorf("search: read content hash: %w", err)
+		return err
 	}
-	if h, ok := stored[docID]; ok && h == hash {
-		return nil
-	}
-	parts := ix.chunker.Chunk(text)
-	chunks := make([]vector.Chunk, 0, len(parts))
-	if len(parts) > 0 {
-		vectors, err := ix.embedder.Embed(ctx, langai.RoleDocument, parts)
-		if err != nil {
-			return fmt.Errorf("search: embed document: %w", err)
-		}
-		if len(vectors) != len(parts) {
-			return fmt.Errorf("search: embedder returned %d vectors for %d texts", len(vectors), len(parts))
-		}
-		for i, part := range parts {
-			if err := vector.Validate(vectors[i], ix.embedder.Dimensions()); err != nil {
-				return fmt.Errorf("search: embed document %q chunk %d: %w", docID, i, err)
-			}
-			chunks = append(chunks, vector.Chunk{Seq: i, Text: part, Vector: vectors[i]})
-		}
-	}
-	if err := ix.store.Upsert(ctx, ix.coord, ix.model, vector.Doc{ID: docID, Hash: hash, Chunks: chunks}); err != nil {
-		return fmt.Errorf("search: store document: %w", err)
-	}
-	return nil
+	return res.Failed[docID]
 }
 
 // Delete removes a document from the index. Unknown ids are a no-op.
