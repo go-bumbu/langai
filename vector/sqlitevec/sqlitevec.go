@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
@@ -92,10 +93,28 @@ var dialect = sqlstore.Dialect{
 	Legacy:      "vec",
 	TableExists: `SELECT count(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?`,
 	ListTables:  `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ss\_%' ESCAPE '\'`,
-	Distance:    `vec_distance_cosine(embedding, ?)`,
-	IDs:         `SELECT value FROM json_each(?)`,
-	Encode:      func(v []float32) any { return encode(v) },
-	Decode:      decode,
+	Distance: func(embedding, query string) string {
+		return `vec_distance_cosine(` + embedding + `, ` + query + `)`
+	},
+	// the query vectors come as one BLOB of packed float32s, cut into one
+	// row per vector by a recursive CTE, which SQLite computes once
+	Queries: func(dims int) string {
+		n := strconv.Itoa(4 * dims)
+		return `WITH RECURSIVE qb(b) AS (SELECT ?), q(i, v) AS (
+			SELECT 0, substr(b, 1, ` + n + `) FROM qb
+			UNION ALL
+			SELECT q.i + 1, substr(qb.b, (q.i + 1) * ` + n + ` + 1, ` + n + `) FROM q, qb WHERE (q.i + 1) * ` + n + ` < length(qb.b))`
+	},
+	EncodeQueries: func(vs [][]float32) any {
+		var b []byte
+		for _, v := range vs {
+			b = append(b, encode(v)...)
+		}
+		return b
+	},
+	IDs:    `SELECT value FROM json_each(?)`,
+	Encode: func(v []float32) any { return encode(v) },
+	Decode: decode,
 	// SQLite reports a missing table with the generic SQLITE_ERROR code and
 	// only its message tells it apart, in every driver: the message is the
 	// only signal there is

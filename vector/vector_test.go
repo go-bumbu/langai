@@ -23,6 +23,13 @@ func TestMemStore_Conformance(t *testing.T) {
 	})
 }
 
+// BenchmarkMemStoreSearchVectors: a search with 1, 16 and 64 query vectors,
+// the shape of a "more like this" search, over 20,000 chunks of 256
+// dimensions.
+func BenchmarkMemStoreSearchVectors(b *testing.B) {
+	vectortest.BenchSearch(b, func(*testing.B) vector.Store { return vector.NewMemStore() })
+}
+
 func TestValidate(t *testing.T) {
 	nan, inf := float32(math.NaN()), float32(math.Inf(-1))
 	for _, tc := range []struct {

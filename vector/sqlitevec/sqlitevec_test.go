@@ -203,6 +203,23 @@ func TestConcurrentUpserts_BusyTimeoutIsEnough(t *testing.T) {
 	}
 }
 
+// BenchmarkSearchVectors: a search with 1, 16 and 64 query vectors, the
+// shape of a "more like this" search, over 20,000 chunks of 256 dimensions.
+func BenchmarkSearchVectors(b *testing.B) {
+	vectortest.BenchSearch(b, func(b *testing.B) vector.Store {
+		db, err := sql.Open("sqlite3", filepath.Join(b.TempDir(), "search.db")+recommendedDSN)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Cleanup(func() { _ = db.Close() })
+		s, err := New(b.Context(), db, vectortest.BenchDims)
+		if err != nil {
+			b.Fatal(err)
+		}
+		return s
+	})
+}
+
 // TestDriverErrorsAreWrapped: an error of the driver or of database/sql
 // comes back prefixed with "vector: sqlite" and the operation, and still
 // matches what it wraps.
@@ -232,7 +249,7 @@ func TestDriverErrorsAreWrapped(t *testing.T) {
 		{"docs", func() error { _, err := s.Docs(cancelled, c, "", 0); return err }},
 		{"chunks", func() error { _, err := s.Chunks(cancelled, c, "a"); return err }},
 		{"search", func() error {
-			_, err := s.Search(cancelled, c, vector.Query{Vector: []float32{1, 0, 0}, Limit: 1})
+			_, err := s.Search(cancelled, c, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0}}, Limit: 1})
 			return err
 		}},
 	} {
@@ -253,7 +270,7 @@ func TestReadsCreateNoTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := vector.Coord{Index: "never", Partition: "p", Collection: "c"}
-	if _, err := s.Search(ctx, c, vector.Query{Vector: []float32{1, 0, 0}, Limit: 10, AllCollections: true}); err != nil {
+	if _, err := s.Search(ctx, c, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0}}, Limit: 10, AllCollections: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Hashes(ctx, c, "a"); err != nil {
@@ -299,7 +316,7 @@ func TestNew_OtherDimensions(t *testing.T) {
 	}
 	q := make([]float32, 16)
 	q[0] = 1
-	_, err = sixteen.Search(ctx, c, vector.Query{Vector: q, Limit: 10})
+	_, err = sixteen.Search(ctx, c, vector.Query{Vectors: [][]float32{q}, Limit: 10})
 	if !errors.Is(err, vector.ErrDimensions) || !strings.Contains(err.Error(), "WithGeneration") {
 		t.Fatalf("Search with a 16-d store over 8-d tables: %v, want ErrDimensions naming WithGeneration", err)
 	}
@@ -327,7 +344,7 @@ func TestLegacySchemaIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := vector.Coord{Index: "idx", Partition: "p", Collection: "c"}
-	_, err = s.Search(ctx, c, vector.Query{Vector: []float32{1, 0, 0}, Limit: 10})
+	_, err = s.Search(ctx, c, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0}}, Limit: 10})
 	if err == nil || !strings.Contains(err.Error(), "schema before") {
 		t.Fatalf("Search over legacy tables: %v, want the schema error", err)
 	}
@@ -361,7 +378,7 @@ func TestGenerationsAreIsolated(t *testing.T) {
 	if err := next.Upsert(ctx, c, "m2", vector.Doc{ID: "doc", Hash: "hash-next", Chunks: []vector.Chunk{{Text: "next", Vector: []float32{1, 0, 0, 0}}}}); err != nil {
 		t.Fatalf("Upsert next: %v", err)
 	}
-	got, err := next.Search(ctx, c, vector.Query{Vector: []float32{1, 0, 0, 0}, Limit: 10})
+	got, err := next.Search(ctx, c, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0, 0}}, Limit: 10})
 	if err != nil || len(got) != 1 || got[0].Text != "next" {
 		t.Fatalf("next generation found %+v, %v; want only its own chunk", got, err)
 	}
@@ -443,7 +460,7 @@ func TestDropGeneration(t *testing.T) {
 			t.Errorf("%s survived DropGeneration", name)
 		}
 	}
-	got, err := next.Search(ctx, vector.Coord{Index: "a"}, vector.Query{Vector: []float32{1, 0, 0}, Limit: 10})
+	got, err := next.Search(ctx, vector.Coord{Index: "a"}, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0}}, Limit: 10})
 	if err != nil || len(got) != 1 {
 		t.Fatalf("the new generation lost its vectors: %v, %v", got, err)
 	}
@@ -478,7 +495,7 @@ func TestBackendsAgree(t *testing.T) {
 		}
 	}
 	c := vector.Coord{Index: "A", Partition: "10", Collection: "tags"}
-	q := vector.Query{Vector: embedded[3], Limit: 10}
+	q := vector.Query{Vectors: [][]float32{embedded[3]}, Limit: 10}
 	memHits, err := mem.Search(ctx, c, q)
 	if err != nil {
 		t.Fatal(err)

@@ -68,9 +68,17 @@ type Dialect struct {
 	// ListTables is a query that answers the names of the tables whose name
 	// starts with "ss_".
 	ListTables string
-	// Distance is the expression of the cosine distance between the embedding
-	// column and the query vector bound to its one placeholder.
-	Distance string
+	// Distance returns the expression of the cosine distance between two
+	// vector expressions: a stored embedding and a query vector.
+	Distance func(embedding, query string) string
+	// Queries returns the WITH clause that defines the table q(i, v), which
+	// turns the one argument EncodeQueries makes of the query vectors into
+	// one row per vector: its index i, from 0, and the vector v. The clause
+	// binds it to its one placeholder, so a search of any number of vectors
+	// takes one parameter, and q must be computed once per statement, not
+	// once per chunk. dims is the store's.
+	Queries       func(dims int) string
+	EncodeQueries func([][]float32) any
 	// IDs is the subquery of the ids in the JSON array bound to its one
 	// placeholder.
 	IDs string
@@ -817,11 +825,13 @@ func (s *Store) chunks(ctx context.Context, c vector.Coord, id string) ([]vector
 	return out, nil
 }
 
-// Search implements vector.Store with one exact query: every chunk in scope
-// is ranked by its distance to the query vector, the best of each document
-// (the lowest Seq on a tie) is kept, and the q.Limit best of those are
-// returned. The cosine distance (0 = identical, 2 = opposite) is reported as
-// 1-distance, so that higher is better.
+// Search implements vector.Store with one exact query, whatever the number
+// of query vectors: every chunk in scope is scored by its smallest distance
+// to any of them, in one scan of the chunks, the best chunk of each
+// document (the lowest Seq on a tie) is kept, and the q.Limit best of those
+// are returned, each with the first query vector at that distance. The
+// cosine distance (0 = identical, 2 = opposite) is reported as 1-distance,
+// so that higher is better.
 func (s *Store) Search(ctx context.Context, c vector.Coord, q vector.Query) ([]vector.Match, error) {
 	if err := vector.CheckSearch(c, s.dims, q); err != nil {
 		return nil, err
@@ -838,7 +848,18 @@ func (s *Store) search(ctx context.Context, c vector.Coord, q vector.Query) ([]v
 	if err != nil {
 		return nil, err
 	}
-	args = append([]any{s.d.Encode(q.Vector)}, args...)
+	// one vector is bound as it is; several come as one argument, turned
+	// into the table q by the Dialect, and a chunk's distance is its
+	// smallest to any row of q
+	with, dist, qi := "", s.d.Distance("ch.embedding", "?"), "0"
+	arg := s.d.Encode(q.Vectors[0])
+	if len(q.Vectors) > 1 {
+		with = s.d.Queries(s.dims)
+		dist = `(SELECT min(` + s.d.Distance("ch.embedding", "q.v") + `) FROM q)`
+		qi = `COALESCE((SELECT min(q.i) FROM q WHERE ` + s.d.Distance("c.embedding", "q.v") + ` = b.d), 0)`
+		arg = s.d.EncodeQueries(q.Vectors)
+	}
+	args = append([]any{arg}, args...)
 	args = append(args, q.Limit)
 	var out []vector.Match
 	_, err = s.withTables(ctx, c.Index, false, func(t tables) error {
@@ -846,11 +867,16 @@ func (s *Store) search(ctx context.Context, c vector.Coord, q vector.Query) ([]v
 		if err := s.checkModel(ctx, t, c.Collection, q); err != nil {
 			return err
 		}
-		query := `SELECT c.partition, c.collection, c.doc_id, c.seq, c.text, b.d FROM (
+		// scored: each chunk's distance to its closest query vector; ranked:
+		// the best chunk of each document; b: the q.Limit best documents,
+		// joined back for their text and the index of the closest vector
+		query := with + `
+			SELECT c.partition, c.collection, c.doc_id, c.seq, c.text, b.d, ` + qi + ` FROM (
 				SELECT id, partition, collection, doc_id, seq, d FROM (
 					SELECT id, partition, collection, doc_id, seq, d,
 						row_number() OVER (PARTITION BY partition, collection, doc_id ORDER BY d, seq) AS rn
-					FROM (SELECT id, partition, collection, doc_id, seq, ` + s.d.Distance + ` AS d FROM ` + t.chunks + where + `) scored
+					FROM (SELECT id, partition, collection, doc_id, seq, ` + dist + ` AS d
+						FROM ` + t.chunks + ` ch` + where + `) scored
 				) ranked WHERE rn = 1 ORDER BY d, doc_id, seq, partition, collection LIMIT ?
 			) b JOIN ` + t.chunks + ` c ON c.id = b.id
 			ORDER BY b.d, b.doc_id, b.seq, b.partition, b.collection`
@@ -862,7 +888,7 @@ func (s *Store) search(ctx context.Context, c vector.Coord, q vector.Query) ([]v
 		for rows.Next() {
 			m := vector.Match{Coord: vector.Coord{Index: c.Index}}
 			var dist float64
-			if err := rows.Scan(&m.Coord.Partition, &m.Coord.Collection, &m.DocID, &m.Seq, &m.Text, &dist); err != nil {
+			if err := rows.Scan(&m.Coord.Partition, &m.Coord.Collection, &m.DocID, &m.Seq, &m.Text, &dist, &m.Query); err != nil {
 				return err
 			}
 			m.Score = 1 - dist

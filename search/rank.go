@@ -1,10 +1,8 @@
 package search
 
 import (
-	"cmp"
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/go-bumbu/langai/vector"
 )
@@ -13,29 +11,49 @@ import (
 // for none (limit <= 0).
 const defaultLimit = 10
 
-// hit is one document's best match over several query vectors, and the
-// index of the query vector that found it.
-type hit struct {
-	match vector.Match
-	query int
+// DefaultMaxQueryVectors is the most query vectors one search hands the
+// store: a "more like this" search (SearchIndexed) of a document of more
+// chunks, or of a video of more frames or segments, and a search by a video
+// of more frames (SearchVideo, SearchFrames), search with that many of
+// them, evenly spaced from the first, so that the cost of a search stays
+// bounded whatever the length of what it starts from. The store scores
+// every chunk in scope against every query vector, so a search costs about
+// that many times one of a single vector. WithMaxQueryVectors and
+// WithMediaMaxQueryVectors change it.
+const DefaultMaxQueryVectors = 64
+
+// spread returns at most n of items, evenly spaced from the first, in
+// order; all of them when n <= 0 or n is not below their number.
+func spread[T any](items []T, n int) []T {
+	if n <= 0 || len(items) <= n {
+		return items
+	}
+	out := make([]T, n)
+	for i := range out {
+		out[i] = items[i*len(items)/n]
+	}
+	return out
 }
 
-// rank searches the store with each of vectors, every search shaped like
-// base, and keeps each document's best match: best first, then by document
-// id, at most base.Limit of them (defaultLimit when <= 0), those under
-// minScore left out. Each search asks for base.Limit documents and the store
-// answers one match per document, so the many chunks of one document never
-// crowd the others out. On a tie the earlier query vector wins.
+// rank searches the store once with all of vectors, the query shaped like
+// base, and returns the best match of each of the best documents: best
+// first, then by document id, at most base.Limit of them (defaultLimit
+// when <= 0), those under minScore left out. A document scores its best
+// chunk against any of the vectors, and Match.Query is the index in vectors
+// of the one that scored it (the first on a tie); the store answers one
+// match per document, so the many chunks of one document never crowd the
+// others out.
 //
-// A zero vector, which has no direction to rank by, is skipped, so a query
+// A zero vector, which has no direction to rank by, is left out, so a query
 // that embeds to nothing but zeros finds nothing, as an empty one does; any
 // other vector the store would refuse (of other than dims entries, NaN or
 // infinite) is an error.
-func rank(ctx context.Context, store vector.Store, c vector.Coord, base vector.Query, vectors [][]float32, dims int, minScore float64) ([]hit, error) {
+func rank(ctx context.Context, store vector.Store, c vector.Coord, base vector.Query, vectors [][]float32, dims int, minScore float64) ([]vector.Match, error) {
 	if base.Limit <= 0 {
 		base.Limit = defaultLimit
 	}
-	best := make(map[string]hit)
+	kept := make([][]float32, 0, len(vectors))
+	index := make([]int, 0, len(vectors)) // kept[i] is vectors[index[i]]
 	for i, v := range vectors {
 		if isZero(v) {
 			continue
@@ -43,28 +61,23 @@ func rank(ctx context.Context, store vector.Store, c vector.Coord, base vector.Q
 		if err := vector.Validate(v, dims); err != nil {
 			return nil, fmt.Errorf("search: query vector %d: %w", i, err)
 		}
-		q := base
-		q.Vector = v
-		raw, err := store.Search(ctx, c, q)
-		if err != nil {
-			return nil, fmt.Errorf("search: search: %w", err)
-		}
-		for _, m := range aboveFloor(raw, minScore) {
-			if cur, ok := best[m.DocID]; ok && cur.match.Score >= m.Score {
-				continue
-			}
-			best[m.DocID] = hit{match: m, query: i}
-		}
+		kept = append(kept, v)
+		index = append(index, i)
 	}
-	out := make([]hit, 0, len(best))
-	for _, h := range best {
-		out = append(out, h)
+	if len(kept) == 0 {
+		return nil, nil
 	}
-	slices.SortFunc(out, func(a, b hit) int {
-		return cmp.Or(cmp.Compare(b.match.Score, a.match.Score), cmp.Compare(a.match.DocID, b.match.DocID))
-	})
-	if len(out) > base.Limit {
-		out = out[:base.Limit]
+	base.Vectors = kept
+	raw, err := store.Search(ctx, c, base)
+	if err != nil {
+		return nil, fmt.Errorf("search: search: %w", err)
+	}
+	out := aboveFloor(raw, minScore)
+	for i, m := range out {
+		if m.Query < 0 || m.Query >= len(index) {
+			return nil, fmt.Errorf("search: the store named query vector %d of %d", m.Query, len(index))
+		}
+		out[i].Query = index[m.Query]
 	}
 	return out, nil
 }

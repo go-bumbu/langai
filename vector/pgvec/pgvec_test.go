@@ -78,6 +78,28 @@ func TestConformance(t *testing.T) {
 	})
 }
 
+// BenchmarkSearchVectors: a search with 1, 16 and 64 query vectors, the
+// shape of a "more like this" search, over 20,000 chunks of 256 dimensions
+// (TESTDBS_ALL=1).
+func BenchmarkSearchVectors(b *testing.B) {
+	dbs := testdbs.DBs()
+	if len(dbs) == 0 {
+		b.Skip("set TESTDBS_ALL=1 (needs Docker) to run the Postgres benchmarks")
+	}
+	vectortest.BenchSearch(b, func(b *testing.B) vector.Store {
+		db, err := dbs[0].ConnDbName(fmt.Sprintf("n%d_bench", dbSeq.Add(1))).DB()
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Cleanup(func() { _ = db.Close() })
+		s, err := New(b.Context(), db, vectortest.BenchDims)
+		if err != nil {
+			b.Fatal(err)
+		}
+		return s
+	})
+}
+
 // TestConformanceShared runs the shared cases with n Stores, each with a
 // cache of its own, on one database, as separate processes would be.
 func TestConformanceShared(t *testing.T) {
@@ -162,7 +184,7 @@ func seedNearAndFar(t *testing.T, s *Store, db *sql.DB, index string, n int) {
 func TestSearchFillsLimitBehindCloserPartitions(t *testing.T) {
 	s, db := newStore(t, 8)
 	seedNearAndFar(t, s, db, "idx", 500)
-	got, err := s.Search(t.Context(), vector.Coord{Index: "idx", Partition: "far", Collection: "c"}, vector.Query{Vector: axisQuery, Limit: 10})
+	got, err := s.Search(t.Context(), vector.Coord{Index: "idx", Partition: "far", Collection: "c"}, vector.Query{Vectors: [][]float32{axisQuery}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -208,7 +230,7 @@ func TestReadOnlyRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New as a reader: %v", err)
 	}
-	got, err := reader.Search(ctx, c, vector.Query{Vector: []float32{1, 0, 0}, Limit: 10, Model: "m"})
+	got, err := reader.Search(ctx, c, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0}}, Limit: 10, Model: "m"})
 	if err != nil || len(got) != 1 {
 		t.Fatalf("Search as a reader = %v, %v", got, err)
 	}
@@ -216,7 +238,7 @@ func TestReadOnlyRole(t *testing.T) {
 		t.Fatal("the reader wrote: the role is not read-only")
 	}
 	unknown := vector.Coord{Index: "never", Partition: "p", Collection: "c"}
-	if got, err := reader.Search(ctx, unknown, vector.Query{Vector: []float32{1, 0, 0}, Limit: 10}); err != nil || len(got) != 0 {
+	if got, err := reader.Search(ctx, unknown, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0}}, Limit: 10}); err != nil || len(got) != 0 {
 		t.Fatalf("Search of an unknown index as a reader = %v, %v", got, err)
 	}
 	if h, err := reader.Hashes(ctx, unknown, "a"); err != nil || len(h) != 0 {
@@ -288,7 +310,7 @@ func TestReadsCreateNoTables(t *testing.T) {
 	ctx := t.Context()
 	s, db := newStore(t, 3)
 	c := vector.Coord{Index: "never", Partition: "p", Collection: "c"}
-	if _, err := s.Search(ctx, c, vector.Query{Vector: []float32{1, 0, 0}, Limit: 10, AllCollections: true}); err != nil {
+	if _, err := s.Search(ctx, c, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0}}, Limit: 10, AllCollections: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Docs(ctx, c, "", 0); err != nil {
@@ -326,7 +348,7 @@ func TestNew_OtherDimensions(t *testing.T) {
 	}
 	q := make([]float32, 16)
 	q[0] = 1
-	_, err = sixteen.Search(ctx, c, vector.Query{Vector: q, Limit: 10})
+	_, err = sixteen.Search(ctx, c, vector.Query{Vectors: [][]float32{q}, Limit: 10})
 	if !errors.Is(err, vector.ErrDimensions) || !strings.Contains(err.Error(), "WithGeneration") {
 		t.Fatalf("Search with a 16-d store over 8-d tables: %v, want ErrDimensions naming WithGeneration", err)
 	}
@@ -378,7 +400,7 @@ func TestGenerationsAreIsolated(t *testing.T) {
 	if err := next.Upsert(ctx, c, "m2", vector.Doc{ID: "doc", Hash: "hash-next", Chunks: []vector.Chunk{{Text: "next", Vector: []float32{1, 0, 0, 0}}}}); err != nil {
 		t.Fatalf("Upsert next: %v", err)
 	}
-	got, err := next.Search(ctx, c, vector.Query{Vector: []float32{1, 0, 0, 0}, Limit: 10})
+	got, err := next.Search(ctx, c, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0, 0}}, Limit: 10})
 	if err != nil || len(got) != 1 || got[0].Text != "next" {
 		t.Fatalf("next generation found %+v, %v; want only its own chunk", got, err)
 	}
@@ -452,7 +474,7 @@ func TestDropGeneration(t *testing.T) {
 			t.Errorf("%s survived DropGeneration", name)
 		}
 	}
-	got, err := next.Search(ctx, vector.Coord{Index: "a"}, vector.Query{Vector: []float32{1, 0, 0}, Limit: 10})
+	got, err := next.Search(ctx, vector.Coord{Index: "a"}, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0}}, Limit: 10})
 	if err != nil || len(got) != 1 {
 		t.Fatalf("the new generation lost its vectors: %v, %v", got, err)
 	}

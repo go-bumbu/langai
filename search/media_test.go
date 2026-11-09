@@ -226,7 +226,7 @@ func checkClipChunks(t *testing.T, store vector.Store, emb langai.ImageEmbedder)
 	if len(chunks) != 3 || chunks[0].Seq != 0 || chunks[1].Seq != 4000 || chunks[2].Seq != 8000 || chunks[1].Text != "" {
 		t.Errorf("stored chunks = %+v, want 3 at Seq 0, 4000 and 8000", chunks)
 	}
-	raw, err := store.Search(ctx, coord, vector.Query{Vector: mustEmbed(t, emb, pic(64, 48, green, red)), Limit: 10})
+	raw, err := store.Search(ctx, coord, vector.Query{Vectors: [][]float32{mustEmbed(t, emb, pic(64, 48, green, red))}, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

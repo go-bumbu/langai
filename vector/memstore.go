@@ -242,7 +242,8 @@ func (s *MemStore) Chunks(_ context.Context, c Coord, id string) ([]Chunk, error
 	return out, nil
 }
 
-// Search implements Store, scoring every chunk in scope.
+// Search implements Store, scoring every chunk in scope against every query
+// vector.
 func (s *MemStore) Search(_ context.Context, c Coord, q Query) ([]Match, error) {
 	if err := CheckCoord(c); err != nil {
 		return nil, err
@@ -250,7 +251,10 @@ func (s *MemStore) Search(_ context.Context, c Coord, q Query) ([]Match, error) 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	ix := s.indexes[c.Index]
-	dims := len(q.Vector)
+	dims := 0
+	if len(q.Vectors) > 0 {
+		dims = len(q.Vectors[0])
+	}
 	if ix != nil && ix.dims > 0 {
 		dims = ix.dims
 	}
@@ -264,6 +268,10 @@ func (s *MemStore) Search(_ context.Context, c Coord, q Query) ([]Match, error) 
 		return nil, err
 	}
 	keep := idFilter(q)
+	queries := make([]normed, len(q.Vectors))
+	for i, v := range q.Vectors {
+		queries[i] = norm(v)
+	}
 	var out []Match
 	for key, coll := range ix.colls {
 		if (!q.AllPartitions && key.partition != c.Partition) || (!q.AllCollections && key.collection != c.Collection) {
@@ -274,7 +282,7 @@ func (s *MemStore) Search(_ context.Context, c Coord, q Query) ([]Match, error) 
 			if !keep(id) {
 				continue
 			}
-			if m, ok := bestChunk(q.Vector, doc.chunks); ok {
+			if m, ok := bestChunk(queries, doc.chunks); ok {
 				m.Coord, m.DocID = at, id
 				out = append(out, m)
 			}
@@ -287,14 +295,18 @@ func (s *MemStore) Search(_ context.Context, c Coord, q Query) ([]Match, error) 
 	return out, nil
 }
 
-// bestChunk returns the chunk of chunks (ordered by Seq) closest to query,
-// the first one on a tie; false when there are none.
-func bestChunk(query []float32, chunks []Chunk) (Match, bool) {
+// bestChunk returns the chunk of chunks (ordered by Seq) closest to any of
+// queries, the first chunk on a tie, with the first of queries that scores
+// it so; false when there are none.
+func bestChunk(queries []normed, chunks []Chunk) (Match, bool) {
 	var best Match
 	for i, ch := range chunks {
-		score := cosine(query, ch.Vector)
-		if i == 0 || score > best.Score {
-			best = Match{Seq: ch.Seq, Text: ch.Text, Score: score}
+		c := norm(ch.Vector)
+		for j, q := range queries {
+			score := cosine(q, c)
+			if (i == 0 && j == 0) || score > best.Score {
+				best = Match{Seq: ch.Seq, Text: ch.Text, Score: score, Query: j}
+			}
 		}
 	}
 	return best, len(chunks) > 0
@@ -330,14 +342,28 @@ func compareMatches(a, b Match) int {
 	)
 }
 
+// normed is a vector and its Euclidean norm, which a search computes once
+// per vector rather than once per pair.
+type normed struct {
+	v    []float32
+	norm float64
+}
+
+// norm returns v with its norm.
+func norm(v []float32) normed {
+	var sum float64
+	for _, x := range v {
+		sum += float64(x) * float64(x)
+	}
+	return normed{v: v, norm: math.Sqrt(sum)}
+}
+
 // cosine returns the cosine similarity of two vectors of one length, neither
 // of them zero (Validate holds for both).
-func cosine(a, b []float32) float64 {
-	var dot, na, nb float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		na += float64(a[i]) * float64(a[i])
-		nb += float64(b[i]) * float64(b[i])
+func cosine(a, b normed) float64 {
+	var dot float64
+	for i := range a.v {
+		dot += float64(a.v[i]) * float64(b.v[i])
 	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+	return dot / (a.norm * b.norm)
 }

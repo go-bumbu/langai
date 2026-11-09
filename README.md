@@ -220,10 +220,15 @@ err = ix.Reset(ctx)                                          // empty the collec
 ```
 
 `Search` and `SearchIndexed` return a `search.Match` per document: its best chunk, by
-position and text (a snippet), and its score. `SearchIndexed` searches with every stored
-chunk of the document and scores each other document by its best chunk against any of
-them; the document itself is never among the hits, and an id with nothing stored is
-`search.ErrNotIndexed`. Every error the package returns starts with `search:`, and an
+position and text (a snippet), and its score. `SearchIndexed` searches with the stored
+chunks of the document, in one store search, and scores each other document by its best
+chunk against any of them; the document itself is never among the hits, and an id with
+nothing stored is `search.ErrNotIndexed`. A document of more than 64 chunks
+(`search.DefaultMaxQueryVectors`; `WithMaxQueryVectors` changes it) searches with 64 of
+them, evenly spaced from the first, so the cost stays bounded: the store scores every
+chunk in scope against every query vector in one pass. Over 20,000 chunks of 256
+dimensions (`BenchmarkSearchVectors`) a search of 64 vectors takes about 0.6 s on
+SQLite and 0.12 s on Postgres, against 0.03 s and 0.013 s for one vector. Every error the package returns starts with `search:`, and an
 empty document id anywhere is `search.ErrEmptyID`, refused before a model or the store
 is asked anything. An id that is not valid UTF-8 or holds a NUL byte (a Latin-1 file
 path, say) is refused the same way with `vector.ErrInvalidID`, which `ErrEmptyID`
@@ -278,7 +283,12 @@ like any other, not a wildcard. A `vector.Query` opens a coordinate only when as
 (`AllPartitions`, `AllCollections`), and can keep or leave out given document ids.
 `Store.Search` ranks documents, not chunks: it returns the best chunk of each of the
 best documents, so one long document or one many-framed video never crowds out the
-rest, in score order, then by document id, then by chunk. `DeleteIndex` removes an
+rest, in score order, then by document id, then by chunk. A query carries one or more
+vectors (`Query.Vectors`): a chunk scores its best cosine against any of them, in one
+pass over the chunks, which ranks exactly what one search per vector merged by best
+match would, and `Match.Query` says which vector a hit matched. The SQL stores hand all
+the vectors over as one parameter (a BLOB of packed float32s on SQLite, a `vector[]` on
+Postgres), whatever their number. `DeleteIndex` removes an
 index with everything in it, e.g. when a tenant leaves, in one transaction (as an
 index's tables are also created in one), so no Store ever sees half an index; another Store on the same
 database (another process, a maintenance CLI) notices: its reads of that index find
@@ -404,10 +414,12 @@ err = ix.Delete(ctx, "photo-42", "clip-7")               // Docs lists what is i
 
 An image is one frame at time zero and a video the frames its `Sampler` picked, each
 embedded as an image into one vector space, so an image query finds videos and a video
-query finds images. A search embeds every query frame, asks the store for the best
-frame of each of the closest items and scores an item by its best frame, so a video is
-found by the one shot that resembles the query most, and its other frames take no
-places from other items; `At` says where in the video that is, and for a video
+query finds images. A search embeds the query frames, asks the store in one search for
+the best frame of each of the closest items and scores an item by its best frame
+against any query frame, so a video is found by the one shot that resembles the query
+most, and its other frames take no places from other items. A query of more than 64
+frames or segments (`WithMediaMaxQueryVectors` changes it) searches with 64 of them,
+evenly spaced, and `SearchFrames` picks them before embedding; `At` says where in the video that is, and for a video
 query `QueryAt` which of its frames matched. `SearchIndexed` leaves the item it starts
 from out of its hits; a search by a file that is also indexed finds that item first, with
 a score near 1. `IndexFrames` and `SearchFrames` take

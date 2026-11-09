@@ -81,15 +81,18 @@ type DocInfo struct {
 	Hash string
 }
 
-// Query is what Search ranks. By default it ranks the documents of exactly
-// the collection Search is given; AllPartitions and AllCollections open that
-// coordinate, so the search spans every partition or collection of the
-// index. A non-empty Only keeps the documents with those ids, and Exclude
-// leaves its ids out (e.g. the document a "more like this" search starts
-// from). A non-empty Model must be the model the collections in scope were
-// written with (see Store).
+// Query is what Search ranks. Vectors are the query vectors, at least one:
+// a document scores its best chunk against any of them, so a search with
+// the chunks of one document, or the frames of one video, ranks in one pass
+// what one search per vector would (see Store). By default it ranks the
+// documents of exactly the collection Search is given; AllPartitions and
+// AllCollections open that coordinate, so the search spans every partition
+// or collection of the index. A non-empty Only keeps the documents with
+// those ids, and Exclude leaves its ids out (e.g. the document a "more like
+// this" search starts from). A non-empty Model must be the model the
+// collections in scope were written with (see Store).
 type Query struct {
-	Vector         []float32
+	Vectors        [][]float32
 	Limit          int
 	AllPartitions  bool
 	AllCollections bool
@@ -98,8 +101,9 @@ type Query struct {
 	Model          string
 }
 
-// Match is one search hit: the best-scoring chunk of a document and its
-// cosine score. Coord says which collection the document is in, which tells
+// Match is one search hit: the best-scoring chunk of a document, its cosine
+// score, and Query, the index in Query.Vectors of the vector it scored that
+// against. Coord says which collection the document is in, which tells
 // apart two documents of one id in a search that spans several.
 type Match struct {
 	Coord Coord
@@ -107,6 +111,7 @@ type Match struct {
 	Seq   int
 	Text  string
 	Score float64
+	Query int
 }
 
 // Store persists the chunk vectors of documents in collections and ranks
@@ -137,11 +142,16 @@ type Match struct {
 // caller can search with what is already indexed instead of embedding it
 // again; an unknown document has none.
 //
-// Search returns the best chunk of each of the q.Limit best-scoring
-// documents, in descending score, then by document id, then by Seq. Vectors
-// must pass Validate for the store's dimensions, or the call fails with
-// ErrDimensions or ErrInvalidVector. Reads of an index never written return
-// nothing and create nothing.
+// Search scores every chunk in scope by its best cosine against any of
+// q.Vectors and returns the best chunk of each of the q.Limit best-scoring
+// documents, in descending score, then by document id, then by Seq; a
+// document's best chunk is the lowest Seq among its best-scoring ones, and
+// Match.Query the lowest index among the vectors that score it so. That is
+// what merging one search per query vector gives, keeping each document's
+// best match, in one pass over the chunks. Vectors must pass Validate for
+// the store's dimensions, or the call fails with ErrDimensions or
+// ErrInvalidVector. Reads of an index never written return nothing and
+// create nothing.
 //
 // Every method checks its arguments before it reads or writes anything, the
 // same way in every implementation (CheckCoord, CheckID, CheckRead,
@@ -297,7 +307,8 @@ func CheckWrite(c Coord, model string, dims int, docs []Doc) error {
 
 // CheckSearch checks what every Store's Search is handed, the same way in
 // each: a Coord that passes CheckCoord, a model and Only and Exclude ids
-// as CheckWrite and CheckID take them, and a query vector that passes
+// as CheckWrite and CheckID take them, and at least one query vector, each
+// of which passes
 // Validate for dims. It is for implementations of Store.
 func CheckSearch(c Coord, dims int, q Query) error {
 	if err := CheckRead(c, q.Only...); err != nil {
@@ -309,8 +320,13 @@ func CheckSearch(c Coord, dims int, q Query) error {
 	if err := checkModel(q.Model); err != nil {
 		return err
 	}
-	if err := Validate(q.Vector, dims); err != nil {
-		return fmt.Errorf("query: %w", err)
+	if len(q.Vectors) == 0 {
+		return fmt.Errorf("%w: a query needs at least one vector", ErrInvalidVector)
+	}
+	for i, v := range q.Vectors {
+		if err := Validate(v, dims); err != nil {
+			return fmt.Errorf("query vector %d: %w", i, err)
+		}
 	}
 	return nil
 }

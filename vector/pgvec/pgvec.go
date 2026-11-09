@@ -15,6 +15,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/pgvector/pgvector-go"
 
@@ -75,9 +77,19 @@ var dialect = sqlstore.Dialect{
 	Legacy:      "docs",
 	TableExists: `SELECT to_regclass(?) IS NOT NULL`,
 	ListTables:  `SELECT tablename FROM pg_tables WHERE schemaname = current_schema() AND tablename LIKE 'ss\_%' ESCAPE '\'`,
-	Distance:    `(embedding <=> ?)::float8`,
-	IDs:         `SELECT json_array_elements_text(CAST(? AS json))`,
-	Encode:      func(v []float32) any { return pgvector.NewVector(v) },
+	Distance: func(embedding, query string) string {
+		return `(` + embedding + ` <=> ` + query + `)::float8`
+	},
+	// the query vectors come as one vector[] literal, unnested into one row
+	// per vector, MATERIALIZED so that it is parsed once and not once per
+	// chunk the subquery scores
+	Queries: func(int) string {
+		return `WITH q(i, v) AS MATERIALIZED (
+			SELECT (u.ord - 1)::int, u.v FROM unnest(CAST(CAST(? AS text) AS vector[])) WITH ORDINALITY AS u(v, ord))`
+	},
+	EncodeQueries: func(vs [][]float32) any { return vectorArray(vs) },
+	IDs:           `SELECT json_array_elements_text(CAST(? AS json))`,
+	Encode:        func(v []float32) any { return pgvector.NewVector(v) },
 	Decode: func(src any) ([]float32, error) {
 		var v pgvector.Vector
 		if err := v.Scan(src); err != nil {
@@ -102,6 +114,29 @@ const (
 	deadlockDetected     = "40P01"
 	serializationFailure = "40001"
 )
+
+// vectorArray is the text of a vector[] holding vs: {"[1,0.5]","[0,1]"},
+// each element in pgvector's own text form, whose floats parse back to the
+// same float32s.
+func vectorArray(vs [][]float32) string {
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, v := range vs {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`"[`)
+		for j, f := range v {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(strconv.FormatFloat(float64(f), 'g', -1, 32))
+		}
+		b.WriteString(`]"`)
+	}
+	b.WriteByte('}')
+	return b.String()
+}
 
 // sqlState returns the SQLSTATE code of a Postgres error, "" for any other.
 // Both pgx (pgconn.PgError) and lib/pq (pq.Error) report it through a

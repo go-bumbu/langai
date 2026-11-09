@@ -38,6 +38,7 @@ type Index struct {
 	store    vector.Store
 	chunker  Chunker
 	minScore float64
+	maxQuery int // the most query vectors per search
 	coord    vector.Coord
 	model    string // the embedder's, when it names it
 	settings string // what shapes the vectors besides the text, for hash
@@ -66,6 +67,13 @@ func WithMinScore(min float64) Option {
 	return func(ix *Index) { ix.minScore = min }
 }
 
+// WithMaxQueryVectors sets the most stored chunks SearchIndexed searches
+// with, DefaultMaxQueryVectors by default (and when n <= 0): a document of
+// more chunks searches with n of them, evenly spaced from the first.
+func WithMaxQueryVectors(n int) Option {
+	return func(ix *Index) { ix.maxQuery = n }
+}
+
 // New returns an Index using the given embedder and store, over the
 // collection at index, partition and collection; an empty partition or
 // collection is a value like any other, never a wildcard. An empty index is
@@ -88,7 +96,7 @@ func New(embedder langai.Embedder, store vector.Store, index, partition, collect
 	// no floor by default: math.Inf(-1) rather than 0, because 0 is a
 	// meaningful cutoff on cosine backends and would silently become policy
 	ix := &Index{
-		embedder: embedder, store: store, chunker: &MarkdownChunker{}, minScore: math.Inf(-1),
+		embedder: embedder, store: store, chunker: &MarkdownChunker{}, minScore: math.Inf(-1), maxQuery: DefaultMaxQueryVectors,
 		coord: coord, model: modelOf(embedder),
 	}
 	for _, opt := range opts {
@@ -96,6 +104,9 @@ func New(embedder langai.Embedder, store vector.Store, index, partition, collect
 	}
 	if ix.chunker == nil {
 		return nil, errors.New("search: nil chunker")
+	}
+	if ix.maxQuery <= 0 {
+		ix.maxQuery = DefaultMaxQueryVectors
 	}
 	ix.settings = settings("text", fingerprintOf(ix.chunker), ix.model, embedder.Dimensions())
 	return ix, nil
@@ -158,16 +169,19 @@ func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Match, 
 
 // SearchIndexed returns the documents most like the already indexed docID,
 // best first, at most limit (10 when <= 0), searching with its stored chunk
-// vectors instead of embedding its text again: no model runs. Every stored
-// chunk is one store search, and a document is scored by its best chunk
-// against any of docID's, so a long document costs as many searches as it
-// has chunks. docID itself is never among the hits. An id with no stored
-// chunks (unknown, deleted, or empty when indexed) is ErrNotIndexed.
+// vectors instead of embedding its text again: no model runs. It is one
+// store search, and a document is scored by its best chunk against any of
+// docID's; a document of more chunks than the cap (DefaultMaxQueryVectors,
+// see WithMaxQueryVectors) searches with that many of them, evenly spaced,
+// so its cost stays bounded. docID itself is never among the hits. An id
+// with no stored chunks (unknown, deleted, or empty when indexed) is
+// ErrNotIndexed.
 func (ix *Index) SearchIndexed(ctx context.Context, docID string, limit int) ([]Match, error) {
 	chunks, err := storedVectors(ctx, ix.store, ix.coord, docID)
 	if err != nil {
 		return nil, err
 	}
+	chunks = spread(chunks, ix.maxQuery)
 	vectors := make([][]float32, len(chunks))
 	for i, c := range chunks {
 		vectors[i] = c.Vector
@@ -183,7 +197,7 @@ func (ix *Index) rank(ctx context.Context, q vector.Query, vectors [][]float32) 
 	}
 	out := make([]Match, len(hits))
 	for i, h := range hits {
-		out[i] = Match{DocID: h.match.DocID, Score: h.match.Score, Seq: h.match.Seq, Text: h.match.Text}
+		out[i] = Match{DocID: h.DocID, Score: h.Score, Seq: h.Seq, Text: h.Text}
 	}
 	return out, nil
 }
