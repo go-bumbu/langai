@@ -70,7 +70,8 @@ texts:
 }
 
 // vectors returns the vector of each of texts embedded as role, by text: the
-// cache's, in one Get, where it holds one, and the embedder's for the rest,
+// cache's, in one Get, where it holds one as long as the embedder's Dimensions
+// (any, when it does not say them), and the embedder's for the rest,
 // embedBatchSize texts at a time, each batch cached as soon as it is embedded.
 // A text listed twice is looked up and embedded once.
 //
@@ -103,9 +104,13 @@ func (e *engine) vectors(ctx context.Context, index string, role langai.Role, te
 		e.log.Warn("tagging: last-used times of cached embeddings not refreshed", logComponent,
 			slog.String("index", index), slog.Any("err", err))
 	}
+	// a cached vector that is not as long as the embedder's is another
+	// model's, kept under this Model name: a miss, embedded again and
+	// overwritten, never scored against this model's vectors
+	dims := e.emb.Dimensions()
 	var misses []string
 	for _, t := range uniq {
-		if v, ok := got[keys[t]]; ok {
+		if v, ok := got[keys[t]]; ok && (dims <= 0 || len(v) == dims) {
 			vecs[t] = v
 		} else {
 			misses = append(misses, t)

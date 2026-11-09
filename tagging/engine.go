@@ -91,11 +91,15 @@ func (e *engine) scores(ctx context.Context, index, partition, revision, text st
 		return nil, fmt.Errorf("tagging: the text could not be embedded: %w", err)
 	}
 	pieces := vecs[text]
-	cands, err := e.candidates(ctx, index, partition, revision, queryVector(pieces))
+	query, err := queryVector(pieces)
+	if err != nil {
+		return nil, fmt.Errorf("tagging: the pieces of the text cannot be scored: %w", err)
+	}
+	cands, err := e.candidates(ctx, index, partition, revision, query)
 	if err != nil {
 		return nil, err
 	}
-	return scoreVectors(pieces, cands, !e.cfg.AllPathLevels), nil
+	return scoreVectors(pieces, cands, !e.cfg.AllPathLevels)
 }
 
 // candidates brings the space up to revision (see refresh) and returns the

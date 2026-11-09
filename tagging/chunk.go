@@ -1,6 +1,7 @@
 package tagging
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"unicode"
@@ -86,12 +87,24 @@ func itemPieces(text string, chunkBytes int) []string {
 // two best", so their mean would only dilute; a page of two, a header and two
 // halves, is best read whole as well as by halves, and their centroid scores
 // both of its topics where neither half holds one whole.
-func itemScore(pieces [][]float32, tag []float32) float64 {
+//
+// A piece that is not as long as the tag's vector is an error: cosine would
+// answer 0 for it, which reads as "unrelated" when it means "not comparable".
+func itemScore(pieces [][]float32, tag []float32) (float64, error) {
+	for _, p := range pieces {
+		if len(p) != len(tag) {
+			return 0, fmt.Errorf("the text has a vector of %d dimensions and the tag one of %d", len(p), len(tag))
+		}
+	}
 	switch len(pieces) {
 	case 1:
-		return cosine(pieces[0], tag)
+		return cosine(pieces[0], tag), nil
 	case 2:
-		return max(cosine(pieces[0], tag), cosine(pieces[1], tag), cosine(centroid(pieces, len(tag)), tag))
+		whole, err := centroid(pieces)
+		if err != nil {
+			return 0, err
+		}
+		return max(cosine(pieces[0], tag), cosine(pieces[1], tag), cosine(whole, tag)), nil
 	}
 	first, second := math.Inf(-1), math.Inf(-1)
 	for _, p := range pieces {
@@ -102,16 +115,17 @@ func itemScore(pieces [][]float32, tag []float32) float64 {
 			second = c
 		}
 	}
-	return (first + second) / 2
+	return (first + second) / 2, nil
 }
 
 // queryVector is the vector an item is looked up by in a TagIndex (see
-// TagIndex.Candidates): its one piece's, or the centroid of its pieces.
-func queryVector(pieces [][]float32) []float32 {
+// TagIndex.Candidates): its one piece's, or the centroid of its pieces, which
+// must all be of one length.
+func queryVector(pieces [][]float32) ([]float32, error) {
 	if len(pieces) == 1 {
-		return pieces[0]
+		return pieces[0], nil
 	}
-	return centroid(pieces, len(pieces[0]))
+	return centroid(pieces)
 }
 
 // memberVector is the vector a member enters its tag's blend with, from the

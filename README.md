@@ -507,7 +507,13 @@ How a tag is judged:
 - **Switching models** needs no migration: after you change `TaggerConfig.Model` the new
   model misses the cache and embeds what it needs, lazily, never mixing two models'
   vectors. `Scope.Warm` with the corpus's texts does it ahead of time, and `Tagger.Prune`
-  later drops the old model's rows.
+  later drops the old model's rows. Give every model its own `Model` name. If another
+  model does end up under an old name, a cached vector that is not as long as the
+  embedder's `Dimensions()` counts as a miss and is embedded again and overwritten. Where
+  the lengths cannot be told apart beforehand (an embedder whose `Dimensions()` is 0, or a
+  shared `TagIndex` built by the other model), `Suggest` and `Scores` return an error
+  naming the tag rather than a score of 0. Two models of the same dimensions under one
+  name cannot be told apart at all.
 - **Rejected alternatives:** kNN voting on its own (it never abstains); a kNN agreement
   check (it blocks second tags on two-topic pages); one global cutoff (it fits only one
   stage, names or examples); the cosine to the members' centroid (it drifts with their
