@@ -433,6 +433,19 @@ var _ langai.ImageEmbedder = (*Embedder)(nil)
 //	2: transparency composed on white (imageutil.ScaleOnWhite)
 const preparation = 2
 
+// ModelID is the identity of the vectors an Embedder opened with spec
+// produces, the string its Model returns, computed without loading
+// anything: what to hand NewLazyImageEmbedder, or a store, before the model
+// loads. See Embedder.Model for its form; the spec's defaults are filled in
+// first, so a spec that leaves them out and one that spells them have one
+// identity. Model calls it too, so the two cannot drift.
+func (spec ModelSpec) ModelID() string {
+	if n, err := spec.normalized(); err == nil {
+		spec = n
+	} // else Open refuses the spec, so the identity is never compared
+	return modelID(spec)
+}
+
 // modelID builds the identity Model documents from a normalized spec.
 func modelID(spec ModelSpec) string {
 	triple := func(v [3]float32) string {
@@ -455,7 +468,7 @@ func newEmbedder(s session, spec ModelSpec, dims, batch int) (*Embedder, error) 
 	if dims == 0 {
 		dims = spec.Dims
 	}
-	e := &Embedder{s: s, dims: dims, batch: batch, pooling: spec.Pooling, model: modelID(spec), pre: preprocessor{
+	e := &Embedder{s: s, dims: dims, batch: batch, pooling: spec.Pooling, model: spec.ModelID(), pre: preprocessor{
 		side: spec.Side, shortestEdge: spec.ShortestEdge, resize: spec.Resize, interpolation: spec.Interpolation,
 		mean: spec.Mean, std: spec.Std,
 	}}
@@ -489,6 +502,7 @@ func (e *Embedder) Dimensions() int { return e.dims }
 // "google/siglip2-base-patch16-224;output=pooler_output;pooling=none;side=224;resize=squash;edge=224;filter=bilinear;mean=0.5,0.5,0.5;std=0.5,0.5,0.5;prep=2".
 // The provider, threads and batch size are not part of it, and neither is
 // the ONNX file, so two exports of one model need two names.
+// ModelSpec.ModelID gives the same string before the model loads.
 func (e *Embedder) Model() string { return e.model }
 
 // EmbedImages implements langai.ImageEmbedder: the pictures go through the

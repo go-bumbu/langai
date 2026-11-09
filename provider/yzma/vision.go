@@ -117,6 +117,41 @@ func (spec VisionSpec) validate() error {
 	return nil
 }
 
+// withDefaults returns o with the defaults its zero values mean filled in:
+// the settings a Vision runs with.
+func (o VisionOptions) withDefaults() VisionOptions {
+	if o.Instruction == "" {
+		o.Instruction = DefaultInstruction
+	}
+	if o.SegmentLength == 0 {
+		o.SegmentLength = DefaultSegmentLength
+	}
+	if o.FPS == 0 {
+		o.FPS = DefaultFPS
+	}
+	return o
+}
+
+// ModelID is the identity of the vectors a Vision opened with spec and
+// opts produces, the string its Model returns, computed without loading
+// anything: what to hand NewLazyImageEmbedder, or a store, before the model
+// loads. See Vision.Model for its form. The identity names the vector
+// length, so it needs spec.Dims, which the pinned specs have: with Dims 0 it
+// is "", unknown, until the model loads.
+func (spec VisionSpec) ModelID(opts VisionOptions) string {
+	if spec.Dims <= 0 {
+		return ""
+	}
+	return visionID(spec.Name, spec.Dims, opts.withDefaults())
+}
+
+// visionID builds the identity Vision.Model documents from options with
+// their defaults filled in.
+func visionID(name string, dims int, opts VisionOptions) string {
+	return fmt.Sprintf("%s;instruction=%s;dims=%d;image_tokens=%d-%d;fps=%s;segment=%s", name, shortDigest(opts.Instruction),
+		dims, opts.ImageMinTokens, opts.ImageMaxTokens, strconv.FormatFloat(opts.FPS, 'g', -1, 64), opts.SegmentLength)
+}
+
 // validate reports options no Vision runs with.
 func (o VisionOptions) validate() error {
 	switch {
@@ -393,6 +428,7 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 	if err != nil {
 		return nil, fmt.Errorf("load model %s: %w", spec.File, err)
 	}
+	opts = opts.withDefaults()
 	v := &Vision{
 		api:         api,
 		model:       model,
@@ -406,15 +442,6 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 	}
 	if v.template == "" {
 		v.template = "chatml"
-	}
-	if v.instruction == "" {
-		v.instruction = DefaultInstruction
-	}
-	if v.segment == 0 {
-		v.segment = DefaultSegmentLength
-	}
-	if v.fps == 0 {
-		v.fps = DefaultFPS
 	}
 	// the template is laid out once, around stand-ins: no instruction and no
 	// input ever goes through it (see promptLayout)
@@ -459,8 +486,7 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 		v.release()
 		return nil, fmt.Errorf("yzma: vision model %q produces %d-dimensional vectors, its spec says %d", spec.Name, v.dims, spec.Dims)
 	}
-	v.id = fmt.Sprintf("%s;instruction=%s;dims=%d;image_tokens=%d-%d;fps=%s;segment=%s", spec.Name, shortDigest(v.instruction),
-		v.dims, opts.ImageMinTokens, opts.ImageMaxTokens, strconv.FormatFloat(v.fps, 'g', -1, 64), v.segment)
+	v.id = visionID(spec.Name, v.dims, opts)
 	return v, nil
 }
 
@@ -507,6 +533,7 @@ func (v *Vision) SegmentLength() time.Duration { return v.segment }
 // "Qwen/Qwen3-VL-Embedding-2B;instruction=<id>;dims=2048;image_tokens=0-0;fps=1;segment=20s".
 // The context size, MaxSegments, the threads and the accelerator are not
 // part of it: they do not move the vector of anything that is embedded.
+// VisionSpec.ModelID gives the same string before the model loads.
 func (v *Vision) Model() string { return v.id }
 
 // Close frees the projector, the model and its context; a later call

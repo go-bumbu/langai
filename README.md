@@ -273,7 +273,7 @@ dimensions from the model's spec without loading anything:
 
 ```go
 spec, err := yzma.LookupSpec(cfg.Model, cfg.ModelsDir) // the spec yzma.New(ctx, cfg) loads
-emb := langai.NewLazyEmbedder(spec.Name, spec.Dims, func(ctx context.Context) (langai.Embedder, error) {
+emb := langai.NewLazyEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (langai.Embedder, error) {
     return yzma.New(ctx, cfg) // ctx is the LazyEmbedder's own: only Close cancels it
 })
 defer emb.Close()
@@ -293,10 +293,13 @@ All three behave alike:
   loads again, so a model that cannot be loaded costs one attempt, not one per request.
   A loader that panics (`*langai.LoadPanicError`, with the stack) or returns nil fails
   the same way.
-- **The model is checked.** The name and dimensions given at construction are what the
-  stores record before anything loads (an empty name is unknown and unchecked). A
-  loaded model with other dimensions, or one that names another model, fails the load
-  and is closed instead of mixing two vector spaces.
+- **The model is checked.** The identity and dimensions given at construction are what
+  the stores record before anything loads (an empty identity is unknown and unchecked).
+  A loaded model with other dimensions, or whose `Model()` is another string, fails the
+  load and is closed instead of mixing two vector spaces. So pass the identity the
+  loaded model will report, which each provider computes from its spec without loading
+  (`yzma.ModelSpec.ModelID()`, `yzma.VisionSpec.ModelID(opts)`,
+  `onnx.ModelSpec.ModelID()`), not the spec's bare `Name`.
 - **`Close` releases the model.** It cancels a load in progress and waits for it, closes
   the loaded model when it has a `Close`, and makes every waiting and later call fail.
 
@@ -305,7 +308,8 @@ vectors they produce, the string to store next to them: the model's name followe
 what else decides a vector (the pooling and the prefixes for a text model; the
 instruction, the image token bounds and the video sampling for `Vision`; the tensor and
 the picture preparation for an ONNX model). It is the same on every run and changes
-whenever a vector would, so vectors stored under another identity are stale. A call on
+whenever a vector would, so vectors stored under another identity are stale; the
+specs' `ModelID` gives the same string before the model loads. A call on
 a closed provider, lazy loader or `Tagger` returns an error that wraps `langai.ErrClosed`.
 
 ### Image and video search

@@ -162,6 +162,19 @@ func (spec ModelSpec) validate() error {
 	return nil
 }
 
+// ModelID is the identity of the vectors an Embedder opened with spec
+// produces, the string its Model returns, computed without loading
+// anything: what to hand NewLazyEmbedder, or a store, before the model
+// loads. See Embedder.Model for its form. Model calls it too, so the two
+// cannot drift.
+func (spec ModelSpec) ModelID() string {
+	pooling, err := spec.Pooling.normalized()
+	if err != nil {
+		pooling = spec.Pooling // Open refuses the spec, so this is never compared
+	}
+	return embedderModel(spec.Name, pooling, spec.QueryPrefix, spec.DocumentPrefix)
+}
+
 // Runtime is what Open, OpenCompleter and OpenVision need besides the
 // model: the llama.cpp libraries and how to run them. The libraries load
 // once per process, so every model opened in it shares them.
@@ -355,7 +368,7 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 		return nil, err
 	}
 	e.accel = b.accel
-	e.model = embedderModel(spec.Name, pooling, spec.QueryPrefix, spec.DocumentPrefix)
+	e.model = spec.ModelID()
 	if spec.Dims != 0 && e.Dimensions() != spec.Dims {
 		_ = e.Close()
 		return nil, fmt.Errorf("yzma: model %q produces %d-dimensional vectors, its spec says %d", spec.Name, e.Dimensions(), spec.Dims)
@@ -433,7 +446,8 @@ func (e *Embedder) Accel() string { return e.accel }
 // "google/embeddinggemma-300m;pooling=mean;prefixes=<id>". What does not
 // move a vector (threads, the accelerator, the library directory) is not
 // part of it; neither is the GGUF file, so two quantizations of one model
-// need two names.
+// need two names. ModelSpec.ModelID gives the same string before the model
+// loads.
 func (e *Embedder) Model() string { return e.model }
 
 // embedderModel builds the identity Model documents.

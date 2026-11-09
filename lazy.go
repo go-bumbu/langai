@@ -286,11 +286,12 @@ var (
 )
 
 // NewLazyEmbedder returns a LazyEmbedder that calls load on first use and
-// keeps what it returns until Close. model is what Model reports, the name
-// the loaded embedder gives itself ("" leaves the model unknown and
-// unchecked), and dims what Dimensions reports (yzma.Spec has both before a
-// model loads). A loaded embedder with another dimensionality, or one that
-// names another model, fails the load and is closed.
+// keeps what it returns until Close. model is what Model reports, exactly the
+// string the loaded embedder's Model will return ("" leaves the model unknown
+// and unchecked), and dims what Dimensions reports. A provider's spec gives
+// both before a model loads: yzma's ModelSpec.ModelID and Dims, for one. A
+// loaded embedder with another dimensionality, or one that names another
+// model, fails the load and is closed.
 //
 // load gets a context that Close cancels and should stop for it. A load that
 // panics or returns a nil Embedder fails like one that returns an error.
