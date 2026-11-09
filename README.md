@@ -245,7 +245,7 @@ that document, by name.
 everything that shapes its vectors: the text, the chunker's settings and the embedding
 model (its name, when it implements `langai.Identified`, and its dimensions). A chunker
 describes its settings through the optional `search.Fingerprinter`; `MarkdownChunker`
-does (`markdown/1 max=1200`), and one without it is described by its Go type name, so
+does (`markdown/2 max=1200`), and one without it is described by its Go type name, so
 swapping chunkers re-indexes and changing a custom one's settings does not. The
 `MediaIndex` hashes cover the model in the same way, and a video's also the `Sampler`'s or
 the `VideoEmbedder`'s `Fingerprint`, when it has one. `yzma.Vision` has: its segment
@@ -256,9 +256,13 @@ indexed again under another.
 `MarkdownChunker`, the default (`WithChunker` replaces it), cuts a document at its
 headings and packs its paragraphs into chunks of at most `MaxChars` bytes (1200), each
 prefixed with its heading path ("Title › Section"), which counts towards that size and is
-cut to a quarter of it. CRLF text and blank lines holding spaces chunk like plain ones,
-and a paragraph too long for one chunk is split between lines, so code and lists keep
-their shape, and only a line too long for one chunk between words.
+cut to a quarter of it. A heading with no text under it and no subheading (a list of
+`## Milk`, `## Eggs` headings) is a chunk of its heading path alone, so its words stay
+searchable without being folded into a section they do not describe. A heading is an
+ATX `#` line indented by at most three spaces and outside fenced code, so a `# comment`
+in a code block is never one. CRLF text and blank lines holding spaces chunk like plain
+ones, and a paragraph too long for one chunk is split between lines, so code and lists
+keep their shape, and only a line too long for one chunk between words.
 
 Every `Store` backend keeps one physical table set per index, so one index's vectors are
 never queryable from another's. Within an index a search sees exactly one collection,

@@ -100,6 +100,61 @@ func TestMarkdownChunkerIgnoresHeadingsInCodeFences(t *testing.T) {
 	}
 }
 
+// TestMarkdownChunker_BodilessHeadings: a heading with no text of its own
+// under it and no subheading is still searchable, as a chunk of its heading
+// path; a heading followed by a subheading is already in that subheading's
+// path and makes no chunk of its own.
+func TestMarkdownChunker_BodilessHeadings(t *testing.T) {
+	c := &MarkdownChunker{}
+	for _, tc := range []struct {
+		name, text string
+		want       []string
+	}{
+		{"list of headings", "# Shopping\n## Milk\n## Eggs\n## Bread\nbuy on Friday",
+			[]string{"Shopping › Milk", "Shopping › Eggs", "Shopping › Bread\n\nbuy on Friday"}},
+		{"siblings at the top", "# A\n# B\n# C", []string{"A", "B", "C"}},
+		{"nested only", "# A\n## B", []string{"A › B"}},
+		{"bodiless then a shallower heading", "# A\n## B\n# C\ntext", []string{"A › B", "C\n\ntext"}},
+		{"bodiless last", "# A\ntext\n## B", []string{"A\n\ntext", "A › B"}},
+		{"blank body", "# A\n\n   \n# B\nb", []string{"A", "B\n\nb"}},
+	} {
+		if got := c.Chunk(tc.text); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: %q\nwant %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestMarkdownChunker_HeadingsNeedATXIndent: an ATX heading has at most three
+// spaces before its #; a line indented further is indented code, and any
+// line inside a fenced block is code, however it is indented.
+func TestMarkdownChunker_HeadingsNeedATXIndent(t *testing.T) {
+	c := &MarkdownChunker{}
+	for _, tc := range []struct {
+		name, text string
+		want       []string
+	}{
+		{"three spaces", "# A\n   ## B\ntext", []string{"A › B\n\ntext"}},
+		{"indented code", "# A\n\n    # comment\n    x = 1", []string{"A\n\n# comment\n    x = 1"}},
+		{"tab indent", "# A\n\n\t# comment", []string{"A\n\n# comment"}},
+		{"fenced, indented", "# A\n\n```sh\n  # comment\n    # more\n```", []string{"A\n\n```sh\n  # comment\n    # more\n```"}},
+		{"tilde fence holds backticks", "# A\n\n~~~\n```\n# comment\n~~~\n# B\nb", []string{"A\n\n~~~\n```\n# comment\n~~~", "B\n\nb"}},
+		{"longer closing fence", "# A\n\n````\n```\n# comment\n`````\n# B\nb", []string{"A\n\n````\n```\n# comment\n`````", "B\n\nb"}},
+	} {
+		if got := c.Chunk(tc.text); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: %q\nwant %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestMarkdownChunker_FingerprintVersion: the chunks changed with version 2
+// (bodiless headings, indented and fenced pseudo-headings), so the
+// fingerprint says so and stored collections are indexed again.
+func TestMarkdownChunker_FingerprintVersion(t *testing.T) {
+	if got := (&MarkdownChunker{}).Fingerprint(); got != "markdown/2 max=1200" {
+		t.Fatalf("Fingerprint = %q", got)
+	}
+}
+
 // TestMarkdownChunker_LineEndingsAndBlankLines: CRLF line endings and blank
 // lines holding spaces or tabs separate paragraphs exactly as plain blank
 // lines do, so such a document is chunked like its LF twin.

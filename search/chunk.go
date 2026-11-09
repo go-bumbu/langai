@@ -18,7 +18,10 @@ type Chunker interface {
 // packs their paragraphs into chunks of at most MaxChars. Each chunk is
 // prefixed with its heading path ("Title › Section") so the embedding keeps
 // the surrounding context even when the paragraph alone is ambiguous; the
-// prefix counts towards MaxChars and is cut to a quarter of it.
+// prefix counts towards MaxChars and is cut to a quarter of it. A heading
+// with no text under it and no subheading is a chunk of its heading path
+// alone, so its words stay searchable. Headings are ATX lines ("# Title")
+// indented by at most three spaces and outside fenced code blocks.
 //
 // Paragraphs are separated by blank lines, which may hold spaces or tabs;
 // CRLF and CR line endings are read as LF. A paragraph longer than a chunk
@@ -43,14 +46,25 @@ func (c *MarkdownChunker) Chunk(text string) []string {
 	var out []string
 	var headings []string // heading text per level, index 0 = h1
 	var section []string  // content lines of the current section
-	inFence := false
+	var open fence        // the fenced code block the line is in, if any
+	bodiless := false     // the last heading has no text under it yet
 
+	// emitPath makes a chunk of the heading path alone, for a heading with
+	// no text of its own: its words stay searchable, in a short chunk that
+	// embeds as just that topic, instead of being lost or folded into the
+	// text of a sibling section they do not describe
+	emitPath := func() {
+		if path := strings.TrimSpace(truncate(headingPath(headings), maxChars)); path != "" {
+			out = append(out, path)
+		}
+	}
 	flush := func() {
 		body := strings.TrimSpace(strings.Join(section, "\n"))
 		section = section[:0]
 		if body == "" {
 			return
 		}
+		bodiless = false
 		// the prefix is part of every chunk: cut it to a quarter of the
 		// chunk and pack the text into what is left
 		prefix := strings.TrimSpace(truncate(headingPath(headings), maxChars/4))
@@ -67,34 +81,47 @@ func (c *MarkdownChunker) Chunk(text string) []string {
 	}
 
 	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			inFence = !inFence
+		if open.char != 0 {
+			if open.closedBy(line) {
+				open = fence{}
+			}
 			section = append(section, line)
 			continue
 		}
-		if level := headingLevel(trimmed); level > 0 && !inFence {
-			flush()
-			headings = setHeading(headings, level, strings.TrimSpace(trimmed[level:]))
+		if f, ok := openingFence(line); ok {
+			open = f
+			section = append(section, line)
 			continue
 		}
-		section = append(section, line)
+		level, title := heading(line)
+		if level == 0 {
+			section = append(section, line)
+			continue
+		}
+		flush()
+		// a bodiless heading is in the path of a deeper one that follows,
+		// so only one followed by a sibling or a shallower heading needs a
+		// chunk of its own
+		if bodiless && level <= len(headings) {
+			emitPath()
+		}
+		headings = setHeading(headings, level, title)
+		bodiless = true
 	}
 	flush()
-
-	// a document of nothing but headings still deserves one searchable chunk
-	if len(out) == 0 {
-		if path := strings.TrimSpace(truncate(headingPath(headings), maxChars)); path != "" {
-			out = append(out, path)
-		}
+	if bodiless {
+		emitPath()
 	}
 	return out
 }
 
 // Fingerprint implements Fingerprinter: the algorithm's version and the
 // effective MaxChars, so the zero value and the default spelled out agree.
+// Version 2 gives a heading without text a chunk of its own and reads an
+// ATX heading only with at most three spaces of indent and outside fenced
+// code.
 func (c *MarkdownChunker) Fingerprint() string {
-	return fmt.Sprintf("markdown/1 max=%d", c.maxChars())
+	return fmt.Sprintf("markdown/2 max=%d", c.maxChars())
 }
 
 // maxChars is MaxChars or its default.
@@ -105,20 +132,71 @@ func (c *MarkdownChunker) maxChars() int {
 	return c.MaxChars
 }
 
-// headingLevel returns the ATX heading level of a line, or 0 if it is not a
-// heading.
-func headingLevel(line string) int {
+// maxIndent is the most spaces an ATX heading or a code fence may be
+// indented by; a line indented further (or by a tab) is indented code.
+const maxIndent = 3
+
+// unindent returns line without its leading spaces, false when there are
+// more than maxIndent of them or a tab among them.
+func unindent(line string) (string, bool) {
+	rest := strings.TrimLeft(line, " ")
+	if len(line)-len(rest) > maxIndent || strings.HasPrefix(rest, "\t") {
+		return "", false
+	}
+	return rest, true
+}
+
+// heading returns the ATX heading level of a line and its text, or 0 if it
+// is not a heading.
+func heading(line string) (int, string) {
+	line, ok := unindent(line)
+	if !ok {
+		return 0, ""
+	}
 	level := 0
 	for level < len(line) && line[level] == '#' {
 		level++
 	}
 	if level == 0 || level > 6 {
-		return 0
+		return 0, ""
 	}
 	if level == len(line) || line[level] == ' ' || line[level] == '\t' {
-		return level
+		return level, strings.TrimSpace(line[level:])
 	}
-	return 0
+	return 0, ""
+}
+
+// fence is an open fenced code block: the character of its fence (` or ~)
+// and the fence's length; the zero value is no block.
+type fence struct {
+	char byte
+	n    int
+}
+
+// openingFence returns the fence a line opens: at least three backticks or
+// tildes after at most maxIndent spaces.
+func openingFence(line string) (fence, bool) {
+	line, ok := unindent(line)
+	if !ok || len(line) < 3 || (line[0] != '`' && line[0] != '~') {
+		return fence{}, false
+	}
+	n := len(line) - len(strings.TrimLeft(line, line[:1]))
+	if n < 3 {
+		return fence{}, false
+	}
+	return fence{char: line[0], n: n}, true
+}
+
+// closedBy reports whether line closes the block: a fence of the same
+// character, at least as long, after at most maxIndent spaces and with
+// nothing but blanks after it.
+func (f fence) closedBy(line string) bool {
+	line, ok := unindent(line)
+	if !ok {
+		return false
+	}
+	rest := strings.TrimLeft(line, string(f.char))
+	return len(line)-len(rest) >= f.n && strings.TrimSpace(rest) == ""
 }
 
 // setHeading truncates the heading stack to level and records text there,
