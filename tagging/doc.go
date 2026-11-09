@@ -16,9 +16,10 @@
 // "dev") and of the tags on one path only the one the item clears the cutoff
 // of by most is picked (see TaggerConfig.AllPathLevels).
 //
-// A space is an (index, partition) pair: index is the hard tenant boundary,
-// and no data of one index is ever read on behalf of another; partition is
-// the space within it. The application implements a Catalog with two
+// A space is a Space, an index and a partition: index is the hard tenant
+// boundary, and no data of one index is ever read on behalf of another;
+// partition is the space within it. Tagger.Scope returns the handle on one
+// (a Scope), which Suggest, Scores and Warm are called on. The application implements a Catalog with two
 // read-only lookups, the tags of a space (each one's id, name and revision)
 // and the member texts of some of its tags, in one batched call, and passes
 // the space's revision on every Suggest: an opaque string, compared for

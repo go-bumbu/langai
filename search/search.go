@@ -4,9 +4,16 @@
 // knows nothing about what the documents are: callers hand it opaque document
 // ids and plain text.
 //
+// MediaIndex is the same for pictures: it embeds images and videos (as
+// sampled frames through a langai.ImageEmbedder, or as whole segments
+// through a langai.VideoEmbedder) and answers an image, a video or, with a
+// model that has a text side, a text with the items that look most like it.
+//
 // The Stores live in the vector package and its subpackages, and the
-// production Embedder in provider/yzma, a GGUF model run locally through
-// llama.cpp.
+// production embedders in provider/yzma (GGUF models run locally through
+// llama.cpp, for text and for text, images and videos in one space),
+// provider/onnx (image models through ONNX Runtime) and provider/phash
+// (perceptual hashes, for duplicates without a model).
 package search
 
 import (

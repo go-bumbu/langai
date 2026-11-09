@@ -1021,7 +1021,7 @@ measured on long documents and not on essences.
   roughly doubles the model's KV cache (a few hundred MB).
 - **Upgrading.** The defaults changed: `MaxBytes` went from 2 KB to 64 KB, so a long text
   that took one call now takes up to 11, and yzma's default chat context went from 2048
-  to 4096 tokens. `GeneratorConfig{MaxBytes: 2048}` restores today's behaviour: one call
+  to 4096 tokens. `GeneratorConfig{MaxBytes: 2048}` restores the earlier behaviour: one call
   on the first 2 KB. With a chat context under 4096 tokens keep `MaxBytes` at or under
   `ChunkBytes`: a 6 KB window, in German about 2,500 tokens, may not fit, and then that
   window fails (twice, see above). If you never tag long texts, set

@@ -4,7 +4,10 @@
 // to a size an image embedder is happy with. Nothing is linked in: the two
 // programs are found on PATH (or named in Config) and run per video, so the
 // package builds without CGO and works with whatever ffmpeg the host has,
-// 5.1 or newer.
+// 5.1 or newer. The Sampler is a media.Cutter too: Duration reads a video's
+// length and Cut copies a stretch of it into a file of its own without
+// re-encoding, which is what a langai.VideoEmbedder that embeds a video in
+// segments (provider/yzma's Vision) needs.
 //
 // A long video is bounded in two ways: no two frames closer than
 // duration/MaxFrames, so the count stays near MaxFrames however many cuts

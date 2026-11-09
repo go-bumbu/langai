@@ -1,12 +1,15 @@
 // Package yzma runs GGUF models locally through llama.cpp: a sentence-embedding
-// model as a langai.Embedder, and an instruction-tuned chat model as a
-// langai.Completer, which a tagging.Generator has write tags. The llama.cpp
-// shared libraries are loaded at runtime by github.com/hybridgroup/yzma
-// (purego + libffi, no CGO), so nothing leaves the process: the first New or
-// NewCompleter downloads the pinned model and, unless the operator supplies a
-// library directory, the pinned llama.cpp build (see fetch.go); later loads
-// are offline. The libraries load once per process, so an Embedder and a
-// Completer run side by side.
+// model as a langai.Embedder, an instruction-tuned chat model as a
+// langai.Completer, which a tagging.Generator has write tags, and a vision
+// embedding model as a Vision, which is a langai.Embedder, a
+// langai.ImageEmbedder and a langai.VideoEmbedder over one vector space. The
+// llama.cpp shared libraries are loaded at runtime by
+// github.com/hybridgroup/yzma (purego + libffi, no CGO), so nothing leaves
+// the process: the first New, NewCompleter or NewVision downloads the pinned
+// model and, unless the operator supplies a library directory, the pinned
+// llama.cpp build (see fetch.go); later loads are offline. The libraries
+// load once per process, so an Embedder, a Completer and a Vision run side
+// by side.
 //
 // Each kind of model opens two ways, in one shape. New, NewCompleter and
 // NewVision take a Config, which names one of the pinned models (Models,

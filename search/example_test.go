@@ -17,7 +17,8 @@ import (
 )
 
 // This example is the README's semantic search with fakes in place of the
-// model and the store: index, search, "more like this", list and delete.
+// model and the store: index, search, "more like this", list, delete and
+// reset.
 func ExampleNew() {
 	ctx := context.Background()
 	emb := langaitest.FakeEmbedder{} // an app passes yzma.New's Embedder
@@ -58,12 +59,23 @@ func ExampleNew() {
 		}
 		fmt.Println("indexed:", d.ID)
 	}
+
+	// Reset empties the collection, e.g. to rebuild it with a new model
+	if err := ix.Reset(ctx); err != nil {
+		log.Fatal(err)
+	}
+	left := 0
+	for range ix.Docs(ctx) {
+		left++
+	}
+	fmt.Println("after Reset:", left)
 	// Output:
 	// indexed [bread noodles] unchanged [pasta]
 	// best match: pasta
 	// more like pasta: noodles
 	// indexed: noodles
 	// indexed: pasta
+	// after Reset: 0
 }
 
 // picture is a picture of one colour.

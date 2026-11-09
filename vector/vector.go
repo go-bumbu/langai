@@ -115,7 +115,7 @@ type Match struct {
 }
 
 // Store persists the chunk vectors of documents in collections and ranks
-// them against a query vector by cosine. Implementations must never let one
+// them against one or more query vectors by cosine. Implementations must never let one
 // index's data appear in another's, and must be safe for concurrent use.
 //
 // Upsert stores docs in c in one atomic step, each replacing what was stored
