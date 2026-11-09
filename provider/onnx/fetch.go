@@ -167,6 +167,13 @@ func downloader(logger *slog.Logger) fetch.Downloader {
 	return fetch.Downloader{Client: httpClient, UserAgent: userAgent, Limit: maxDownloadBytes, Logger: logger.With(logComponent)}
 }
 
+// downloadContext bounds the first-use downloads: by downloadTimeout when
+// the caller's ctx has no deadline, and by the caller's own otherwise, which
+// a default must not cut short (see fetch.WithDefaultTimeout).
+func downloadContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return fetch.WithDefaultTimeout(ctx, downloadTimeout)
+}
+
 // ensureModelFile makes sure spec.File exists, downloading spec.URL into it
 // (verified against spec.SHA256 and, when set, spec.Size) when it is absent;
 // a download is logged to logger.

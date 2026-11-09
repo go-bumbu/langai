@@ -30,7 +30,6 @@ import (
 	"sync"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/internal/fetch"
 )
 
 // DefaultModel is the logical identity of the model New runs unless
@@ -349,7 +348,7 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	if rt.BatchSize <= 0 {
 		rt.BatchSize = defaultBatchSize
 	}
-	ctx, cancel := fetch.WithDefaultTimeout(ctx, downloadTimeout)
+	ctx, cancel := downloadContext(ctx)
 	defer cancel()
 	if from := libs.loadedDir(); rt.ManagedLibDir && from != "" && from != libDir {
 		// before anything is installed into a directory that cannot be loaded
