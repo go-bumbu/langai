@@ -72,7 +72,9 @@ func Parse(r io.Reader) (*Dataset, error) {
 // Validate checks the structural rules every dataset must meet: unique,
 // non-empty ids across documents and queries; non-empty language, title and
 // text; text within what an essence keeps; expected tags and relevant ids
-// that exist. Errors name the offending entry and field.
+// that exist and are listed once, as the same one twice would count twice
+// for a caller that walks the list. Errors name the offending entry and
+// field.
 func (d *Dataset) Validate() error {
 	tags := make(map[string]bool, len(d.Tags))
 	for i, t := range d.Tags {
@@ -119,10 +121,15 @@ func (doc Document) validate(i int, ids, tags map[string]bool) error {
 	case len(doc.Tags) == 0:
 		return fmt.Errorf("%s: no expected tags", where)
 	}
+	own := make(map[string]bool, len(doc.Tags))
 	for _, t := range doc.Tags {
 		if !tags[t] {
 			return fmt.Errorf("%s: tag %q not in tags", where, t)
 		}
+		if own[t] {
+			return fmt.Errorf("%s: tag %q listed twice", where, t)
+		}
+		own[t] = true
 	}
 	return nil
 }
@@ -141,10 +148,15 @@ func (q Query) validate(i int, ids, docIDs map[string]bool) error {
 	case len(q.Relevant) == 0:
 		return fmt.Errorf("%s: no relevant documents", where)
 	}
+	own := make(map[string]bool, len(q.Relevant))
 	for _, id := range q.Relevant {
 		if !docIDs[id] {
 			return fmt.Errorf("%s: relevant %q is not a document id", where, id)
 		}
+		if own[id] {
+			return fmt.Errorf("%s: relevant %q listed twice", where, id)
+		}
+		own[id] = true
 	}
 	return nil
 }

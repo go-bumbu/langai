@@ -66,6 +66,14 @@ func TestLoadLong_RejectsUnknownKeysAndSortsByID(t *testing.T) {
 	}
 }
 
+func TestLoadLong_NoDocumentsIsAnError(t *testing.T) {
+	for _, dir := range []string{t.TempDir(), filepath.Join(t.TempDir(), "missing")} {
+		if docs, err := LoadLong(dir); err == nil || !strings.Contains(err.Error(), dir) {
+			t.Errorf("LoadLong(%s) = %d documents, %v; want an error naming the directory", dir, len(docs), err)
+		}
+	}
+}
+
 func TestLoadLong_DuplicateIDAcrossFiles(t *testing.T) {
 	raw, err := os.ReadFile("testdata/longfixture/one.yaml")
 	if err != nil {
@@ -184,6 +192,12 @@ func TestLongDocument_Validate(t *testing.T) {
 		{"side section missing", func(d *LongDocument) { d.Topics[1].Section = "Nowhere" }, nil, "", "Nowhere"},
 		{"mention section missing", func(d *LongDocument) { d.Topics[5].Section = "Nowhere" }, nil, "", "Nowhere"},
 		{"main with section", func(d *LongDocument) { d.Topics[0].Section = "Early" }, nil, "", "main"},
+		{"two topics of one label", func(d *LongDocument) { d.Topics[2].Label = "e" }, nil, "", `share the name "e"`},
+		{"an alias of two topics", func(d *LongDocument) {
+			d.Topics[5].Aliases = []string{"x", "The-Main"}
+			d.Topics[0].Aliases = []string{"the main"}
+		}, nil, "", `share the name "The-Main"`},
+		{"an alias that is another topic's label", func(d *LongDocument) { d.Topics[3].Aliases = []string{"main"} }, nil, "", `share the name "main"`},
 		{"no late side", func(d *LongDocument) {
 			for _, i := range []int{2, 3, 4} {
 				d.Topics[i].Section = "Early"

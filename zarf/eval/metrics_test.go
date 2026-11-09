@@ -42,22 +42,59 @@ func TestRetrievalMetrics_EdgeCases(t *testing.T) {
 	}
 }
 
+// TestRetrievalMetrics_StayInRange: no cutoff, a list that repeats an id and a
+// cutoff past the list must all give a share between 0 and 1, never a NaN or
+// more than everything.
+func TestRetrievalMetrics_StayInRange(t *testing.T) {
+	rel := toSet([]string{"b", "d"})
+	cases := []struct {
+		name               string
+		ranked             []string
+		k                  int
+		recall, rr, wantND float64
+	}{
+		{"cutoff zero", []string{"b", "d"}, 0, 0, 1, 0},
+		{"negative cutoff", []string{"b", "d"}, -1, 0, 1, 0},
+		{"a repeated relevant id counts once", []string{"b", "b", "b"}, 3, 0.5, 1, 1 / (1 + 1/math.Log2(3))},
+		{"a repeated id takes one rank", []string{"a", "a", "b", "d"}, 3, 1, 0.5, (1/math.Log2(3) + 1/math.Log2(4)) / (1 + 1/math.Log2(3))},
+		{"cutoff past the list", []string{"b"}, 10, 0.5, 1, 1 / (1 + 1/math.Log2(3))},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := recallAt(c.ranked, rel, c.k); !near(got, c.recall) {
+				t.Errorf("recall@%d = %v, want %v", c.k, got, c.recall)
+			}
+			if got := reciprocalRank(c.ranked, rel); !near(got, c.rr) {
+				t.Errorf("RR = %v, want %v", got, c.rr)
+			}
+			if got := ndcgAt(c.ranked, rel, c.k); !near(got, c.wantND) {
+				t.Errorf("nDCG@%d = %v, want %v", c.k, got, c.wantND)
+			}
+		})
+	}
+}
+
 // hits x 0.9, y 0.5, z 0.3 with x and z expected.
 func TestDecisions(t *testing.T) {
 	hits := []scored{{"x", 0.9}, {"y", 0.5}, {"z", 0.3}}
 	exp := toSet([]string{"x", "z"})
+	nan := math.NaN()
 	cases := []struct {
 		name       string
+		hits       []scored
 		floor      float64
 		tp, fp, fn int
 	}{
-		{"floor between y and z", 0.4, 1, 1, 1},
-		{"floor below everything", 0.2, 2, 1, 0},
-		{"floor above everything", 0.95, 0, 0, 2},
-		{"floor inclusive", 0.5, 1, 1, 1},
+		{"floor between y and z", hits, 0.4, 1, 1, 1},
+		{"floor below everything", hits, 0.2, 2, 1, 0},
+		{"floor above everything", hits, 0.95, 0, 0, 2},
+		{"floor inclusive", hits, 0.5, 1, 1, 1},
+		{"no hits", nil, 0.4, 0, 0, 2},
+		{"a score that is not a number is not assigned", []scored{{"x", 0.9}, {"y", nan}, {"z", nan}}, 0.4, 1, 0, 1},
+		{"a tag that comes back twice is one decision", []scored{{"x", 0.9}, {"x", 0.8}, {"y", 0.7}, {"y", 0.6}}, 0.4, 1, 1, 1},
 	}
 	for _, c := range cases {
-		tp, fp, fn := decisions(hits, exp, c.floor)
+		tp, fp, fn := decisions(c.hits, exp, c.floor)
 		if tp != c.tp || fp != c.fp || fn != c.fn {
 			t.Errorf("%s: decisions = %d %d %d, want %d %d %d", c.name, tp, fp, fn, c.tp, c.fp, c.fn)
 		}
@@ -103,6 +140,9 @@ func TestSweepFloorsAndBestCut(t *testing.T) {
 	cuts := []Cut{{Floor: 0.1, F1: 0.5}, {Floor: 0.2, F1: 0.7}, {Floor: 0.3, F1: 0.7}, {Floor: 0.4, F1: 0.6}}
 	if best := bestCut(cuts); best.Floor != 0.2 {
 		t.Errorf("bestCut = %+v, want the lowest floor among the 0.7 ties", best)
+	}
+	if best := bestCut(nil); best != (Cut{}) {
+		t.Errorf("bestCut of no cuts = %+v, want the zero cut", best)
 	}
 }
 

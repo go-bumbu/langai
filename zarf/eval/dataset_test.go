@@ -40,6 +40,7 @@ func TestValidate_RejectsBrokenReferences(t *testing.T) {
 		{"duplicate tag", func(d *Dataset) { d.Tags = append(d.Tags, "dev") }, "duplicate tag path"},
 		{"document with unknown tag spelling", func(d *Dataset) { d.Documents[0].Tags = []string{"dev/go"} }, `documents[0] "go-doc": tag "dev/go" not in tags`},
 		{"document without tags", func(d *Dataset) { d.Documents[0].Tags = nil }, "no expected tags"},
+		{"document with a tag twice", func(d *Dataset) { d.Documents[0].Tags = append(d.Documents[0].Tags, d.Documents[0].Tags[0]) }, "listed twice"},
 		{"document without id", func(d *Dataset) { d.Documents[1].ID = "" }, "documents[1]: empty id"},
 		{"duplicate document id", func(d *Dataset) { d.Documents[1].ID = "go-doc" }, "duplicate id"},
 		{"document without lang", func(d *Dataset) { d.Documents[0].Lang = "" }, "empty lang"},
@@ -52,6 +53,7 @@ func TestValidate_RejectsBrokenReferences(t *testing.T) {
 		{"query without text", func(d *Dataset) { d.Queries[0].Text = "" }, "empty text"},
 		{"query without relevant", func(d *Dataset) { d.Queries[0].Relevant = nil }, "no relevant documents"},
 		{"query with unknown relevant id", func(d *Dataset) { d.Queries[0].Relevant = []string{"nope"} }, `relevant "nope" is not a document id`},
+		{"query with a relevant id twice", func(d *Dataset) { d.Queries[0].Relevant = append(d.Queries[0].Relevant, d.Queries[0].Relevant[0]) }, "listed twice"},
 		{"query relevant to another query", func(d *Dataset) {
 			d.Queries = append(d.Queries, Query{ID: "q2", Lang: "en", Text: "x", Relevant: []string{"q-go"}})
 		}, `relevant "q-go" is not a document id`},
