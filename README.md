@@ -861,10 +861,22 @@ measured on long documents and not on essences.
   on every text, and a tag the model invented falls under it.
 - **The reply is read leniently.** The model is asked for one tag per line, and what it
   wraps around them is dropped: a `<think>…</think>` block (one never closed takes the
-  rest of the reply), code fences, a JSON array or a `{"tags": [...]}` object, a label
-  such as `Tags:`, list markers, quotes, brackets, Markdown emphasis, and a remark in
-  brackets after a tag (`sourdough (bread)`). A name left with a bracket or a quote that
-  does not close, or longer than four words or 40 characters, is not a tag.
+  rest of the reply), code fences, a label such as `Tags:`, `Here are the tags:` or
+  `标签：`, list markers, numbers and checkboxes, quotes, brackets, Markdown emphasis,
+  and a remark in brackets after a tag (`sourdough (bread)`). Several tags on a line are
+  split at commas and semicolons, the Chinese, Japanese and Arabic ones included
+  (`、` `，` `；` `،` `؛`), and a run of hashtags (`#go #rust`) is one tag each. A reply
+  that is JSON gives only the strings that are tags: the strings of an array, and in an
+  object the members named `tags`, `keywords`, `labels` or `topics` and each list item's
+  `name`, `tag` or `label`; scores, flags and other members (`"language": "en"`) are
+  never tags, and such a reply is not read by lines as well. A reply that is only
+  `None`, `No tags.`, `N/A` or the like, in English, Spanish or German, means no tags.
+  What belongs to a tag stays: a colon unless a label word stands before it
+  (`Topic modeling: LDA`, `Star Trek: Voyager`), a bracket that closes inside it
+  (`(re)insurance`), an inch mark (`5" floppy`), a lone `<` or `>` (`x < y`). An arrow
+  is kept in a plain tag (`a -> b`) and is the step to the next level in a tree tag
+  (`a / b`). A name left with a bracket or a quote that does not close, with an HTML
+  element, or longer than four words or 40 characters, is not a tag.
 - **A bad answer is asked for again, once.** A model call that fails or replies with
   nothing is repeated, unless the context has ended. If it fails again on a short text,
   `Generate` returns the error; a model that twice says nothing is
