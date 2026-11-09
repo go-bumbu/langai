@@ -176,6 +176,42 @@ func New(ctx context.Context, cfg Config) (*Notebook, error) {
 // Embedder, the Chat model or the Cache, which the caller made.
 func (nb *Notebook) Close() error { return nb.tagger.Close() }
 
+// PruneCache removes from the Tagger's cache the embeddings last used before
+// unusedSince, and returns how many: the texts of notes edited or deleted
+// since, and what another embedding model left there. It goes through
+// Tagger.Prune with the notebook's space, not the cache's own Prune, so the
+// names and members of tags that have not changed since, which the Tagger
+// never reads again, are marked as used first. unusedSince must be at least
+// tagging.MinPruneAge in the past.
+func (nb *Notebook) PruneCache(ctx context.Context, unusedSince time.Time) (int64, error) {
+	return nb.tagger.Prune(ctx, unusedSince, nb.scope.Space())
+}
+
+// KeepCachePruned prunes the cache of what was unused for unusedFor (see
+// PruneCache) now and then once every interval, until ctx ends, and logs how
+// many embeddings each run removed. It returns when ctx ends or the notebook
+// is closed, so run it on a goroutine and cancel ctx before Close.
+func (nb *Notebook) KeepCachePruned(ctx context.Context, unusedFor, interval time.Duration) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		removed, err := nb.PruneCache(ctx, time.Now().Add(-unusedFor))
+		switch {
+		case ctx.Err() != nil || errors.Is(err, langai.ErrClosed):
+			return
+		case err != nil:
+			nb.logger.Warn("tag cache not pruned", "err", err)
+		default:
+			nb.logger.Info("tag cache pruned", "removed", removed, "unused_for", unusedFor)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
 // revision formats a revision counter as the Tagger reads it.
 func revision(r int64) string { return strconv.FormatInt(r, 10) }
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-bumbu/langai/provider/yzma"
 	"github.com/go-bumbu/langai/tagging"
@@ -21,6 +22,16 @@ import (
 // 2,500-byte prefix already embeds as the whole note, so 2,000 bytes stay
 // inside the window with room for denser text.
 const chunkBytes = 2000
+
+// The embedding cache is pruned every pruneEvery of what was not used for
+// pruneUnusedFor: well over tagging.MinPruneAge (two days), under which
+// Tagger.Prune refuses a cutoff. What the notebook still holds is read at
+// startup and by every page view, so only the embeddings of texts that are
+// gone, or of another model, get that old.
+const (
+	pruneUnusedFor = 30 * 24 * time.Hour
+	pruneEvery     = 24 * time.Hour
+)
 
 // openTagging builds the auto tagging page: the text embedder now, the chat
 // model on the first recommendation. The notebook (notes, tags, hand tags) is
@@ -80,8 +91,17 @@ func openTagging(ctx context.Context, cfg yzma.Config, dataDir, samples string, 
 	if err != nil {
 		return fail(err)
 	}
-	// the Tagger first: it ends its rebuilds before the cache and the model go
-	return nb, func() { _ = nb.Close(); _ = db.Close(); closeAll() }, nil
+	// the cache only grows on its own: every edited note leaves the embedding
+	// of its old text behind. Prune it at startup and once a day after that.
+	pruneCtx, stopPruning := context.WithCancel(ctx)
+	pruned := make(chan struct{})
+	go func() {
+		defer close(pruned)
+		nb.KeepCachePruned(pruneCtx, pruneUnusedFor, pruneEvery)
+	}()
+	// the pruning first, then the Tagger, which ends its rebuilds before the
+	// cache and the model go
+	return nb, func() { stopPruning(); <-pruned; _ = nb.Close(); _ = db.Close(); closeAll() }, nil
 }
 
 // lazyCompleter loads the chat model on the first Complete: it is a 2.5 GB

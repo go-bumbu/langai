@@ -158,7 +158,10 @@ the notebook itself, read when it changes); the Tagger keeps only an embedding c
 `tagging/sqlitecache`, `tagging/pgcache`) and an in-memory index of tag
 vectors. Here that cache is `data/autotag-cache.sqlite`, one for every
 embedding model (the model is part of every key), so `make clean` or another
-model only costs embedding the notes again.
+model only costs embedding the notes again. The service prunes it with
+`Tagger.Prune` at startup and once a day (`Notebook.KeepCachePruned`): what no
+note or tag used for 30 days goes, the texts of edited and deleted notes and
+another model's rows, and the log says how many embeddings that was.
 
 ## How it is built
 
