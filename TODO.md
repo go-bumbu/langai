@@ -346,6 +346,29 @@ and `todo list --json` cover the common actions — run `todo --help`.
 - [ ] phash: measure thresholds on real photos
   The duplicate thresholds come from synthetic pictures. Flat pictures all share the zero hash and a small mark on a near-flat picture flips about half the pHash bits. No ParseHash yet, and the vectors are not a compact bit column in the stores. grey.go has its own compose-on-white code that could use internal/imageutil if it gives identical 8-bit values.
 
+## second pass
+
+- [ ] document ids are not sanitized
+  An id with invalid UTF-8 fails every Postgres call of its batch, and on SQLite is stored but never found again by Hashes, Delete or Exclude. Reject such ids in vector.CheckWrite with a sentinel; IndexBatch puts the doc in Failed.
+- [ ] tables-exist cache never invalidates across Store values
+  After another store or process deletes an index, every read and write of it fails with no such table until restart. On an undefined-table error drop the cached entry and reopen once.
+- [ ] pg: concurrent first write reads as an old schema; DeleteIndex not atomic
+  open checks meta then docs in two statements, so another store's creation in between looks legacy (2 of 160 first writes); DeleteIndex drops four tables in separate statements.
+- [ ] a collection's model record outlives its documents
+  After deleting every doc, an Upsert with a new model still returns ErrModelMismatch; the only way out is DeleteIndex, which drops every collection. Overwrite the record when the collection is empty.
+- [ ] sqlstore.open does database I/O under the store-wide mutex
+  The first write of a new index holds the mutex while waiting for SQLite's write lock, stalling reads of every other index (a 200 ms deadline returned after 1.9 s).
+- [ ] SearchIndexed is N exact scans
+  Measured on sqlitevec at 20.5k chunks x 768: one search 49 ms, a 10-chunk doc 0.49 s, 64 frames 3.3 s, 500 chunks 24.9 s. Cap the query vectors or rank several vectors in one scan.
+- [ ] Validate checks the norm in float64, backends compute in float32
+  A stored {1e-25, 1e-25, 0, 0} passes Validate and scores +Inf on SQLite, topping every search.
+- [ ] pg: deadlock between Delete and Upsert of the same ids
+  Upsert locks docs rows in id order, DELETE ... IN in scan order: 9 deadlock errors in 6 s with 4 writers and 4 deleters.
+- [ ] chunker drops headings that have no body
+  Sibling headings without text vanish from the index, and an indented # comment in a code block is read as a heading.
+- [ ] empty-index and driver errors inconsistent
+  errEmptyIndex is unexported and some methods return tablename's bare error; search.New accepts an empty index; sqlstore returns raw driver errors without the vector: prefix.
+
 # change log
 
 - [x] vector: new Store port (breaking)
