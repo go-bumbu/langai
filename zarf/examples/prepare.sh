@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# prepare.sh <dir>: sample media for the example service.
+# prepare.sh <media dir> [docs dir]: sample data for the example service.
 #
 # Downloads photos from picsum.photos by stable id (Unsplash licence) into
 # <dir>/photos, plus a smaller and a greyscale copy of a few, so that
@@ -7,9 +7,16 @@
 # into <dir>/clips with ffmpeg, four photos each, two seconds per photo, so an
 # image query finds the clip and the second it appears at, and a clip finds
 # its photos. Files already there are kept: add your own, re-run freely.
+#
+# With a docs dir it also writes the sample documents of the text search
+# page there, as Markdown files: the eval golden texts of this repository
+# (zarf/eval/testdata), 84 short ones in English, Spanish and German under
+# golden/ and 24 long ones with sections under long/. The service itself
+# writes them (-write-docs), since it reads their YAML already.
 set -euo pipefail
 
 dir=${1:-data/media}
+docs=${2:-}
 photos="$dir/photos"
 clips="$dir/clips"
 
@@ -59,3 +66,8 @@ slideshow "$clips/slideshow-1.mp4" "$photos/picsum-237.jpg" "$photos/picsum-1074
 slideshow "$clips/slideshow-2.mp4" "$photos/picsum-1025-gray.jpg" "$photos/picsum-1062.jpg" "$photos/picsum-1084.jpg" "$photos/picsum-1050.jpg"
 
 echo "done: $(find "$photos" -type f | wc -l) photos, $(find "$clips" -type f | wc -l) clips in $dir"
+
+if [ -n "$docs" ]; then
+	echo "documents into $docs"
+	go run . -write-docs "$docs"
+fi

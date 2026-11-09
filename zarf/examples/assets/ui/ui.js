@@ -5,6 +5,7 @@
   // the pages, by their path under the service's root
   const pages = [
     ['mediasearch/', 'media search'],
+    ['textsearch/', 'text search'],
     ['autotag/', 'auto tagging'],
   ];
 
@@ -67,6 +68,13 @@
     cut === undefined || cut === null ? null : el('span', { class: 'cut', style: `left:${Math.max(0, Math.min(1, cut)) * 100}%` }));
 
   window.ui = { $, el, toast, api, busy, encPath, secs, bytes, bar };
+
+  // the header is sticky and as tall as its text makes it: --header tells
+  // a page's own sticky panels where it ends
+  const header = document.querySelector('header');
+  if (header && window.ResizeObserver) {
+    new ResizeObserver(() => document.documentElement.style.setProperty('--header', header.offsetHeight + 'px')).observe(header);
+  }
 
   const nav = document.getElementById('nav');
   if (!nav) return;

@@ -30,12 +30,14 @@ import (
 	"github.com/go-bumbu/langai/zarf/examples/assets"
 	"github.com/go-bumbu/langai/zarf/examples/autotag"
 	"github.com/go-bumbu/langai/zarf/examples/mediasearch"
+	"github.com/go-bumbu/langai/zarf/examples/textsearch"
 )
 
 // options are the command's flags.
 type options struct {
 	addr      string
 	mediaDir  string
+	docsDir   string
 	dataDir   string
 	modelsDir string
 	llamaDir  string
@@ -47,12 +49,20 @@ type options struct {
 	minScore  float64
 	samples   string
 	tagScore  float64
+	// textMinScore is the floor of the text search page.
+	textMinScore float64
+	// longSamples is the directory of the long sample documents, and
+	// writeDocs, when set, makes the command write the sample documents
+	// there and exit.
+	longSamples string
+	writeDocs   string
 }
 
 func parseFlags() options {
 	var o options
 	flag.StringVar(&o.addr, "addr", "127.0.0.1:8085", "listen address")
 	flag.StringVar(&o.mediaDir, "media", "data/media", "directory scanned for images and videos")
+	flag.StringVar(&o.docsDir, "docs", "data/docs", "directory scanned for the text search page's .md and .txt documents")
 	flag.StringVar(&o.dataDir, "data", "data", "where the index databases, the catalogs and the thumbnail cache go")
 	flag.StringVar(&o.modelsDir, "models", filepath.Join(homeDir(), ".cache", "semsearch-onnx"), "ONNX models and runtime (shared with make test-images)")
 	flag.StringVar(&o.llamaDir, "llama", filepath.Join(homeDir(), ".cache", "semsearch-yzma"), "GGUF models and the llama.cpp build (shared with make test-vision)")
@@ -62,7 +72,10 @@ func parseFlags() options {
 	flag.DurationVar(&o.segment, "segment", yzma.DefaultSegmentLength, "how much of a video goes through the vision model at once")
 	flag.IntVar(&o.limit, "limit", 12, "hits per search")
 	flag.Float64Var(&o.minScore, "min-score", 0, "drop media hits scoring below this; 0 shows everything")
-	flag.StringVar(&o.samples, "samples", filepath.Join("..", "eval", "testdata", "golden.yaml"), "labelled texts the auto tagging page can import; empty or missing hides the button")
+	flag.StringVar(&o.samples, "samples", filepath.Join("..", "eval", "testdata", "golden.yaml"), "labelled texts: the auto tagging page imports them, and -write-docs writes them out as documents; empty or missing hides the button")
+	flag.StringVar(&o.longSamples, "long-samples", filepath.Join("..", "eval", "testdata", "long"), "long sample documents -write-docs writes out too; empty leaves them out")
+	flag.StringVar(&o.writeDocs, "write-docs", "", "write the sample documents into this directory as Markdown files, for the text search page, and exit (make prepare does)")
+	flag.Float64Var(&o.textMinScore, "text-min-score", 0, "drop text search hits scoring below this; 0 shows everything")
 	flag.Float64Var(&o.tagScore, "tag-min-score", tagging.DefaultGeneratorMinScore, "the cutoff of the recommended tags; the page shows the ones under it greyed")
 	flag.Parse()
 	return o
@@ -76,6 +89,11 @@ func main() {
 }
 
 func run(o options) error {
+	if o.writeDocs != "" {
+		n, err := textsearch.WriteSamples(o.writeDocs, o.samples, o.longSamples)
+		fmt.Printf("wrote %d sample documents into %s\n", n, o.writeDocs)
+		return err
+	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -124,6 +142,10 @@ func run(o options) error {
 	if err != nil {
 		return err
 	}
+	docs, err := openText(ctx, o, text, st, logger)
+	if err != nil {
+		return err
+	}
 	notebook, closeTagging, err := openTagging(ctx, o, text, chat, st.cache, logger)
 	if err != nil {
 		return err
@@ -134,13 +156,18 @@ func run(o options) error {
 	mux.HandleFunc("GET /{$}", home)
 	mux.Handle("/assets/", http.StripPrefix("/assets", assets.Handler()))
 	mux.Handle("/mediasearch/", http.StripPrefix("/mediasearch", mediasearch.Handler(lib)))
+	mux.Handle("/textsearch/", http.StripPrefix("/textsearch", textsearch.Handler(docs)))
 	mux.Handle("/autotag/", http.StripPrefix("/autotag", autotag.Handler(notebook)))
 
-	// the first scans run behind the server, so the service is up at once
-	// and a page shows its scan as it goes; what they need of a model loads
-	// it. They end before anything they use is closed.
+	// the first scans run behind the server, one after the other, so the
+	// service is up at once and a page shows its scan as it goes; what they
+	// need of a model loads it. They end before anything they use is closed.
 	var scans sync.WaitGroup
 	scans.Go(func() {
+		logger.Info("scanning", "dir", o.docsDir)
+		if _, err := docs.Scan(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("documents scan", "err", err)
+		}
 		logger.Info("scanning", "dir", o.mediaDir)
 		if _, err := lib.Scan(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("media scan", "err", err)
@@ -183,6 +210,34 @@ func openMedia(ctx context.Context, o options, m *mediaModel, sampler *ffmpeg.Sa
 	})
 }
 
+// openText builds the text search page: a search.Index over the shared text
+// embedder in that model's own vector store. The chunker is the index's
+// default, handed to both, so the page shows the chunks the index embeds.
+func openText(ctx context.Context, o options, text *textModel, st *stores, logger *slog.Logger) (*textsearch.Library, error) {
+	store, where, _, err := st.vectors(ctx, text.name, text.Dimensions())
+	if err != nil {
+		return nil, err
+	}
+	coord := vector.Coord{Index: indexName, Partition: indexPartition, Collection: "docs"}
+	chunker := &search.MarkdownChunker{}
+	ix, err := search.New(text, store, coord.Index, coord.Partition, coord.Collection,
+		search.WithChunker(chunker), search.WithMinScore(o.textMinScore))
+	if err != nil {
+		return nil, err
+	}
+	return textsearch.New(textsearch.Config{
+		Dir:        o.docsDir,
+		Index:      ix,
+		Chunker:    chunker,
+		Limit:      o.limit,
+		Info:       textsearch.Info{Model: text.Model(), Dimensions: text.Dimensions(), MinScore: o.textMinScore, Store: where},
+		ModelState: func() string { return state(text) },
+		Stored:     func(ctx context.Context) (string, error) { return store.Model(ctx, coord) },
+		Examples:   textsearch.SampleQueries(o.samples, 4),
+		Logger:     logger,
+	})
+}
+
 // serve runs the HTTP server until ctx ends.
 func serve(ctx context.Context, addr string, handler http.Handler, logger *slog.Logger) error {
 	srv := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
@@ -209,6 +264,7 @@ a{color:#5aa9ff}li{margin:8px 0}</style></head><body>
 <h1>langai examples</h1>
 <ul>
 <li><a href="/mediasearch/">Media search</a> — images and videos that look like an image, a video or a text</li>
+<li><a href="/textsearch/">Text search</a> — documents that answer a question, in any language, with the chunk that matched</li>
 <li><a href="/autotag/">Auto tagging</a> — tags for notes, picked among your own tags or written new by a chat model</li>
 </ul>
 </body></html>`)
