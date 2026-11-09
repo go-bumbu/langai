@@ -18,7 +18,7 @@ import (
 type countingStore struct {
 	vector.Store
 	hashes, upserts, maxDocs int
-	failUpsert             int // fail the n-th Upsert (1-based); 0 never
+	failUpsert               int // fail the n-th Upsert (1-based); 0 never
 }
 
 func (s *countingStore) Hashes(ctx context.Context, c vector.Coord, ids ...string) (map[string]string, error) {

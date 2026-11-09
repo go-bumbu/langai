@@ -48,7 +48,9 @@ func dominant(img image.Image) string {
 	return "other"
 }
 
-func near(d, want time.Duration) bool { return d >= want-100*time.Millisecond && d <= want+100*time.Millisecond }
+func near(d, want time.Duration) bool {
+	return d >= want-100*time.Millisecond && d <= want+100*time.Millisecond
+}
 
 // TestSample_TakesTheCutsWithTheirTimes: the first frame, the two cuts, and
 // nothing else within the 5 s interval; the colour of each frame proves the
