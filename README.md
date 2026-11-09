@@ -181,7 +181,9 @@ err = ix.Delete(ctx, "note-7", "note-9")                     // e.g. what was de
 position and text (a snippet), and its score. `SearchIndexed` searches with every stored
 chunk of the document and scores each other document by its best chunk against any of
 them; the document itself is never among the hits, and an id with nothing stored is
-`search.ErrNotIndexed`.
+`search.ErrNotIndexed`. Every error the package returns starts with `search:`, and an
+empty document id anywhere is `search.ErrEmptyID`, refused before a model or the store
+is asked anything.
 
 `IndexBatch` indexes many documents (`[]search.Doc{ID, Text}`) the way `Index` does
 one, in bounded batches: one hash read for all of them, at most 32 chunk texts per
