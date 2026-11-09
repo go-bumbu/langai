@@ -261,6 +261,12 @@ through `image.RegisterFormat`.
   many) and the size frames are scaled to (512 px). Scene detection decodes every frame;
   `KeyframesOnly` decodes only the encoder's keyframes, which sit at cuts and at a fixed
   interval anyway, and makes hours of video cheap at the price of a coarser sample.
+  A path is always a local file, relative or absolute: a colon, a leading dash or a `%d`
+  in a name is never read as a protocol, an option or an image sequence. Frames are read
+  from ffmpeg one at a time, each with pixels of its own, so memory holds the frames
+  taken (at most 64 × 512 × 512 × 4 bytes, 67 MB, with the defaults) and a frame you
+  keep does not keep the others alive. A video no frame comes out of is an error, and
+  cancelling the context kills ffmpeg and ffprobe.
 - **Cost.** On a CPU with the default four threads the SigLIP 2 model embeds a
   1024-pixel picture in about 100 ms, eight per batch (an AMD Ryzen AI 9 HX PRO 370,
   `BenchmarkEmbedImagesReal`), and the process holds about 1.3 GB with the model

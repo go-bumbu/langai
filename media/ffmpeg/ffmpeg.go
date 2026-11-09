@@ -12,15 +12,29 @@
 // cost: scene detection looks at every frame. KeyframesOnly decodes only the
 // encoder's keyframes, which sit at cuts and at a fixed interval anyway, and
 // makes hours of video cheap at the price of a coarser sample.
+//
+// A path is always a local file, whatever it looks like: it reaches the
+// programs behind ffmpeg's file: protocol, which takes the rest of the
+// argument as the name, byte for byte. Bare, "clip:final.mkv" would be read
+// as the protocol "clip" and "-out.mp4" as an option.
+//
+// Frames are read from ffmpeg one at a time, each into an allocation of its
+// own, so memory holds the frames taken and nothing else, and a frame the
+// caller keeps does not keep the others alive.
 package ffmpeg
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
+	"io"
+	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,9 +51,23 @@ const (
 	DefaultMaxSide        = 512
 )
 
-// maxStderr caps what is kept of ffmpeg's log: the frame lines are a few
-// hundred bytes each, so a log past this is a decoder spewing errors.
-const maxStderr = 32 << 20
+const (
+	// maxLog is how much of the end of a program's log is kept for an error
+	// message.
+	maxLog = 2 << 10
+	// maxLogLine is how much of one log line is kept to look for a frame's
+	// showinfo line in it, which is a few hundred bytes long.
+	maxLogLine = 16 << 10
+	// maxProbeOutput caps what is kept of ffprobe's answer, two short lines.
+	maxProbeOutput = 64 << 10
+	// maxFramePixels is the largest frame read: 1 GiB of RGBA. Anything
+	// larger is a broken header, not a video.
+	maxFramePixels = 1 << 28
+	// defaultWaitDelay is how long the output pipes of a program that was
+	// killed or has exited may stay open, held by a child it left behind,
+	// before they are closed under it.
+	defaultWaitDelay = 2 * time.Second
+)
 
 // Config tunes which frames are taken and how they come back. Zero values
 // take the defaults above.
@@ -60,10 +88,12 @@ type Config struct {
 	// MaxInterval is the longest gap: after that long without a cut a frame
 	// is taken anyway. It is never shorter than the (raised) MinInterval.
 	MaxInterval time.Duration
-	// MaxFrames is the most frames per video; ffmpeg stops there.
+	// MaxFrames is the most frames per video; ffmpeg stops there, and is
+	// killed there if it does not.
 	MaxFrames int
 	// MaxSide scales each frame so that its longer side is at most this,
-	// keeping the aspect ratio; a negative value keeps the original size.
+	// keeping the aspect ratio; a negative value keeps the original size,
+	// and with it 4 bytes per pixel of every frame taken in memory.
 	MaxSide int
 	// KeyframesOnly decodes only the stream's keyframes and takes those at
 	// least MinInterval (raised as above) apart. Scene scores are not used:
@@ -101,6 +131,8 @@ func (cfg Config) withDefaults() Config {
 // is safe for concurrent use; every Sample runs its own ffmpeg.
 type Sampler struct {
 	cfg Config
+	// waitDelay is exec.Cmd.WaitDelay for every program run.
+	waitDelay time.Duration
 }
 
 // verify the interface is actually satisfied
@@ -118,33 +150,98 @@ func New(cfg Config) (*Sampler, error) {
 	if cfg.MaxFrames < 0 {
 		return nil, fmt.Errorf("ffmpeg: MaxFrames %d is negative", cfg.MaxFrames)
 	}
-	return &Sampler{cfg: cfg.withDefaults()}, nil
+	return &Sampler{cfg: cfg.withDefaults(), waitDelay: defaultWaitDelay}, nil
 }
 
 // Sample implements media.Sampler: it probes the video's duration, decodes
-// it once and returns the frames taken, in time order, as *image.RGBA. ctx
+// it once and returns the frames taken, in time order, as *image.RGBA, each
+// with pixels of its own. A file no frame comes out of is an error. ctx
 // bounds both programs; cancelling it kills them.
 func (s *Sampler) Sample(ctx context.Context, path string) ([]media.Frame, error) {
-	duration, err := s.probe(ctx, path)
+	in, err := s.probe(ctx, path)
 	if err != nil {
 		return nil, err
 	}
-	args := s.args(path, duration)
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, s.cfg.FFmpeg, args...) //nolint:gosec // the binary is the operator's configuration and the arguments are built here, the path among them as one argv entry
-	cmd.Stdout = &stdout
-	cmd.Stderr = &limitedWriter{buf: &stderr, limit: maxStderr}
-	if err := cmd.Run(); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, fmt.Errorf("ffmpeg: %w", ctxErr)
+	images, log, err := s.decode(ctx, path, in)
+	if err != nil {
+		return nil, err
+	}
+	if log.err != nil {
+		return nil, log.err
+	}
+	if len(images) == 0 {
+		return nil, fmt.Errorf("ffmpeg: no frame came out of %q", path)
+	}
+	// The filters may have logged more frames than ffmpeg wrote (it stops at
+	// MaxFrames once the encoder has them), so the lines past the frames are
+	// ignored; a frame without its line has no timestamp.
+	if len(log.infos) < len(images) {
+		return nil, fmt.Errorf("ffmpeg: %d frames written, %d logged", len(images), len(log.infos))
+	}
+	frames := make([]media.Frame, len(images))
+	for i, img := range images {
+		info := log.infos[i]
+		if b := img.Bounds(); b.Dx() != info.w || b.Dy() != info.h {
+			return nil, fmt.Errorf("ffmpeg: frame %d is %dx%d, logged as %dx%d", i, b.Dx(), b.Dy(), info.w, info.h)
 		}
-		return nil, fmt.Errorf("ffmpeg: %w: %s", err, tail(stderr.Bytes()))
+		frames[i] = media.Frame{Image: img, At: info.at}
 	}
-	infos, err := parseShowinfo(stderr.Bytes())
+	return frames, nil
+}
+
+// decode runs ffmpeg over path and reads the frames it writes, at most
+// MaxFrames. ffmpeg is gone when it returns, on every path: it is killed
+// when ctx is cancelled, when a frame cannot be read and when MaxFrames are
+// in, and it is always waited for, which also brings in the rest of its log.
+// An error ends with the end of that log.
+func (s *Sampler) decode(ctx context.Context, path string, in probed) ([]*image.RGBA, *frameLog, error) {
+	runCtx, kill := context.WithCancel(ctx)
+	defer kill()
+	log := &frameLog{}
+	cmd := exec.CommandContext(runCtx, s.cfg.FFmpeg, s.args(path, in)...) //nolint:gosec // the binary is the operator's configuration and the arguments are built here, the path among them as one argv entry
+	cmd.Stderr = log
+	cmd.WaitDelay = s.waitDelay
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("ffmpeg: %w", err)
 	}
-	return splitFrames(stdout.Bytes(), infos)
+	if err := cmd.Start(); err != nil {
+		return nil, nil, fmt.Errorf("ffmpeg: %w", err)
+	}
+	images, readErr := s.readFrames(stdout)
+	full := s.cfg.MaxFrames > 0 && len(images) == s.cfg.MaxFrames
+	if full || readErr != nil {
+		kill()
+	}
+	waitErr := cmd.Wait()
+	switch {
+	case ctx.Err() != nil:
+		return nil, nil, fmt.Errorf("ffmpeg: %w", ctx.Err())
+	case readErr != nil:
+		return nil, nil, fmt.Errorf("ffmpeg: %w: %s", readErr, log.tail.String())
+	case waitErr != nil && !full:
+		// with all frames in, the only error is the kill above
+		return nil, nil, fmt.Errorf("ffmpeg: %w: %s", waitErr, log.tail.String())
+	}
+	return images, log, nil
+}
+
+// readFrames reads the frames ffmpeg writes until it stops writing or
+// MaxFrames are in.
+func (s *Sampler) readFrames(r io.Reader) ([]*image.RGBA, error) {
+	br := bufio.NewReader(r)
+	var images []*image.RGBA
+	for s.cfg.MaxFrames <= 0 || len(images) < s.cfg.MaxFrames {
+		img, err := readPAM(br, s.cfg.MaxSide)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("frame %d: %w", len(images), err)
+		}
+		images = append(images, img)
+	}
+	return images, nil
 }
 
 // verify the interface is actually satisfied
@@ -153,7 +250,8 @@ var _ media.Cutter = (*Sampler)(nil)
 // Duration implements media.Cutter: the container's duration from ffprobe,
 // 0 when it has none (a stream, a still image).
 func (s *Sampler) Duration(ctx context.Context, path string) (time.Duration, error) {
-	return s.probe(ctx, path)
+	in, err := s.probe(ctx, path)
+	return in.duration, err
 }
 
 // Cut implements media.Cutter: it copies the video stream of path from
@@ -161,43 +259,116 @@ func (s *Sampler) Duration(ctx context.Context, path string) (time.Duration, err
 // re-encoding, so a cut starts at the last keyframe before start and the
 // segment's own timestamps start at zero. Audio, subtitles and data are
 // dropped; an MP4 or MOV gets its index at the front, so it plays from a
-// pipe. ctx bounds ffmpeg; cancelling it kills the program.
+// pipe. A file at out is overwritten, and a failed or cancelled cut may
+// leave a partial one there. ctx bounds ffmpeg; cancelling it kills the
+// program.
 func (s *Sampler) Cut(ctx context.Context, path string, start, length time.Duration, out string) error {
-	args := []string{"-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", seconds(start), "-i", path}
+	if path == "" || out == "" {
+		return errors.New("ffmpeg: empty path")
+	}
+	args := []string{"-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", seconds(start), "-i", local(path)}
 	if length > 0 {
 		args = append(args, "-t", seconds(length))
 	}
-	args = append(args, "-map", "0:v:0", "-an", "-sn", "-dn", "-c", "copy", "-movflags", "+faststart", out)
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, s.cfg.FFmpeg, args...) //nolint:gosec // the binary is the operator's configuration and the arguments are built here, the paths among them as single argv entries
-	cmd.Stderr = &limitedWriter{buf: &stderr, limit: maxStderr}
-	if err := cmd.Run(); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("ffmpeg: %w", ctxErr)
-		}
-		return fmt.Errorf("ffmpeg: %w: %s", err, tail(stderr.Bytes()))
-	}
-	return nil
+	args = append(args, "-map", "0:v:0", "-an", "-sn", "-dn", "-c", "copy", "-movflags", "+faststart", local(out))
+	_, err := s.run(ctx, "ffmpeg", s.cfg.FFmpeg, args)
+	return err
 }
 
-// probe asks ffprobe for the container's duration; 0 when it has none (a
-// stream, a still image).
-func (s *Sampler) probe(ctx context.Context, path string) (time.Duration, error) {
-	args := []string{"-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", "-i", path}
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, s.cfg.FFprobe, args...) //nolint:gosec // the binary is the operator's configuration and the path is one argv entry, never a shell string
-	cmd.Stdout = &stdout
-	cmd.Stderr = &limitedWriter{buf: &stderr, limit: maxStderr}
-	if err := cmd.Run(); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return 0, fmt.Errorf("ffprobe: %w", ctxErr)
-		}
-		return 0, fmt.Errorf("ffprobe: %w: %s", err, tail(stderr.Bytes()))
-	}
-	return parseDuration(stdout.String()), nil
+// local writes a file path the way ffmpeg and ffprobe take it for a local
+// file whatever its name, as an input and as an output: behind the file:
+// protocol, which reads the rest as the name without unescaping anything.
+func local(path string) string {
+	return "file:" + path
 }
 
-// parseDuration reads ffprobe's duration line; anything but a number ("N/A",
+// run runs one of the two programs to its end and returns what it wrote to
+// stdout. name says which program it is in the error, which is ctx's when
+// ctx ended the run and otherwise ends with the end of the program's log.
+func (s *Sampler) run(ctx context.Context, name, bin string, args []string) ([]byte, error) {
+	var stdout bytes.Buffer
+	var stderr tailWriter
+	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // the binary is the operator's configuration and the arguments are built by the callers, each path as one argv entry, never a shell string
+	cmd.Stdout = &limitedWriter{buf: &stdout, limit: maxProbeOutput}
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = s.waitDelay
+	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("%s: %w", name, ctxErr)
+		}
+		return nil, fmt.Errorf("%s: %w: %s", name, err, stderr.String())
+	}
+	return stdout.Bytes(), nil
+}
+
+// probed is what ffprobe says about an input.
+type probed struct {
+	// duration is the container's; 0 when it has none.
+	duration time.Duration
+	// image2 says that the image demuxer reads the file. It takes a "%d" in
+	// the name for the pattern of a numbered sequence unless told not to.
+	image2 bool
+}
+
+// literalName is the input option that makes the image demuxer read the
+// file named, whatever pattern the name spells. Only that demuxer has it:
+// ffmpeg refuses it for any other.
+var literalName = []string{"-pattern_type", "none"}
+
+// probe asks ffprobe for the container's duration and demuxer.
+//
+// A name with a percent sign may spell a sequence pattern, and the image
+// demuxer would then read other files than the one named. Such a name is
+// probed with patterns turned off first; the image demuxer then answers
+// without opening the file, so the file is opened here. An ffprobe that
+// refuses that option for other demuxers is asked again without it; when
+// the answer is then the image demuxer after all, it speaks for the sequence
+// and not for the file, and the first error stands.
+func (s *Sampler) probe(ctx context.Context, path string) (probed, error) {
+	if path == "" {
+		return probed{}, errors.New("ffprobe: empty path")
+	}
+	args := []string{"-v", "error", "-show_entries", "format=format_name,duration", "-of", "default=noprint_wrappers=1", "-i", local(path)}
+	if !strings.Contains(path, "%") {
+		out, err := s.run(ctx, "ffprobe", s.cfg.FFprobe, args)
+		return parseProbe(out), err
+	}
+	f, err := os.Open(path) //nolint:gosec // the path is the video the caller asked for; it is only opened to see that it can be read
+	if err != nil {
+		return probed{}, fmt.Errorf("ffprobe: %w", err)
+	}
+	_ = f.Close()
+	out, literalErr := s.run(ctx, "ffprobe", s.cfg.FFprobe, slices.Concat(literalName, args))
+	if literalErr == nil || ctx.Err() != nil {
+		return parseProbe(out), literalErr
+	}
+	out, err = s.run(ctx, "ffprobe", s.cfg.FFprobe, args)
+	if err != nil {
+		return probed{}, err
+	}
+	in := parseProbe(out)
+	if in.image2 {
+		return probed{}, literalErr
+	}
+	return in, nil
+}
+
+// parseProbe reads ffprobe's key=value lines.
+func parseProbe(out []byte) probed {
+	var in probed
+	for line := range strings.Lines(string(out)) {
+		key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch key {
+		case "duration":
+			in.duration = parseDuration(value)
+		case "format_name":
+			in.image2 = slices.Contains(strings.Split(value, ","), "image2")
+		}
+	}
+	return in
+}
+
+// parseDuration reads ffprobe's duration; anything but a number ("N/A",
 // nothing at all) is 0, unknown.
 func parseDuration(out string) time.Duration {
 	secs, err := strconv.ParseFloat(strings.TrimSpace(out), 64)
@@ -245,11 +416,12 @@ func seconds(d time.Duration) string {
 
 // args builds the ffmpeg command line for path: decode (keyframes only when
 // asked), select, scale into the MaxSide box, log every frame that got
-// through (showinfo) and write them as raw RGBA to stdout, stopping at
-// MaxFrames. The three filters form one chain, so showinfo's lines come in
-// the order of the frames on stdout.
-func (s *Sampler) args(path string, duration time.Duration) []string {
-	gap, maxI := s.gaps(duration)
+// through (showinfo) and write them to stdout as RGBA images in the PAM
+// format, whose header gives each frame's size, stopping at MaxFrames. The
+// three filters form one chain, so showinfo's lines come in the order of the
+// frames on stdout.
+func (s *Sampler) args(path string, in probed) []string {
+	gap, maxI := s.gaps(in.duration)
 	filters := []string{"select='" + s.selectExpr(gap, maxI) + "'"}
 	if s.cfg.MaxSide > 0 {
 		side := strconv.Itoa(s.cfg.MaxSide)
@@ -260,12 +432,15 @@ func (s *Sampler) args(path string, duration time.Duration) []string {
 	if s.cfg.KeyframesOnly {
 		args = append(args, "-skip_frame", "nokey")
 	}
-	args = append(args, "-i", path, "-map", "0:v:0", "-an", "-sn", "-dn",
+	if in.image2 {
+		args = append(args, literalName...)
+	}
+	args = append(args, "-i", local(path), "-map", "0:v:0", "-an", "-sn", "-dn",
 		"-vf", strings.Join(filters, ","), "-fps_mode", "vfr")
 	if s.cfg.MaxFrames > 0 {
 		args = append(args, "-frames:v", strconv.Itoa(s.cfg.MaxFrames))
 	}
-	return append(args, "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1")
+	return append(args, "-f", "image2pipe", "-c:v", "pam", "-pix_fmt", "rgba", "pipe:1")
 }
 
 // frameInfo is what one showinfo line says about a frame.
@@ -278,54 +453,133 @@ type frameInfo struct {
 // "[Parsed_showinfo_2 @ 0x...] n:   1 pts:  25600 pts_time:2  ... s:320x240 ...".
 var showinfoLine = regexp.MustCompile(`showinfo.*\bn: *\d+ .*\bpts_time:(\S+) .*\bs:(\d+)x(\d+)\b`)
 
-// parseShowinfo picks the frame lines out of ffmpeg's log, in order.
-func parseShowinfo(stderr []byte) ([]frameInfo, error) {
-	var infos []frameInfo
-	for line := range bytes.Lines(stderr) {
-		m := showinfoLine.FindSubmatch(line)
-		if m == nil {
+// parseShowinfo reads one line of ffmpeg's log: the showinfo line of frame
+// n gives its time and size, and any other line is not a frame's.
+func parseShowinfo(line []byte, n int) (info frameInfo, ok bool, err error) {
+	m := showinfoLine.FindSubmatch(line)
+	if m == nil {
+		return frameInfo{}, false, nil
+	}
+	secs, err := strconv.ParseFloat(string(m[1]), 64)
+	if err != nil {
+		return frameInfo{}, false, fmt.Errorf("ffmpeg: frame %d has no timestamp (%q)", n, m[1])
+	}
+	w, _ := strconv.Atoi(string(m[2]))
+	h, _ := strconv.Atoi(string(m[3]))
+	if w <= 0 || h <= 0 {
+		return frameInfo{}, false, fmt.Errorf("ffmpeg: frame %d has size %dx%d", n, w, h)
+	}
+	return frameInfo{at: time.Duration(secs * float64(time.Second)), w: w, h: h}, true, nil
+}
+
+// frameLog is where ffmpeg's log goes while it samples: it picks the frame
+// lines out as they come, in order, and keeps the end of the log for an
+// error message. Nothing else of the log is held, however long it gets. Its
+// fields are read once ffmpeg has been waited for.
+type frameLog struct {
+	tail  tailWriter
+	line  []byte // the line being written, up to maxLogLine of it
+	infos []frameInfo
+	err   error // the first frame line that made no sense
+}
+
+// Write implements io.Writer; it never fails and never blocks.
+func (l *frameLog) Write(p []byte) (int, error) {
+	_, _ = l.tail.Write(p)
+	for rest := p; len(rest) > 0; {
+		part, after, ended := bytes.Cut(rest, []byte{'\n'})
+		l.line = append(l.line, part[:min(len(part), maxLogLine-len(l.line))]...)
+		if ended {
+			l.endLine()
+		}
+		rest = after
+	}
+	return len(p), nil
+}
+
+// endLine takes the finished line in, when it is a frame's.
+func (l *frameLog) endLine() {
+	info, ok, err := parseShowinfo(l.line, len(l.infos))
+	l.line = l.line[:0]
+	switch {
+	case err != nil && l.err == nil:
+		l.err = err
+	case ok:
+		l.infos = append(l.infos, info)
+	}
+}
+
+// readPAM reads one RGBA image in the PAM format, as ffmpeg's pam encoder
+// writes it: a text header and then the pixels, which are read into an
+// allocation of their own. io.EOF means the stream ended before the image
+// began; an image cut short is io.ErrUnexpectedEOF. maxSide, when positive,
+// is the longest side the frame may have.
+func readPAM(br *bufio.Reader, maxSide int) (*image.RGBA, error) {
+	w, h, err := readPAMHeader(br)
+	if err != nil {
+		return nil, err
+	}
+	if maxSide > 0 && (w > maxSide || h > maxSide) {
+		return nil, fmt.Errorf("frame is %dx%d, larger than MaxSide %d", w, h, maxSide)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	if _, err := io.ReadFull(br, img.Pix); err != nil {
+		return nil, fmt.Errorf("%dx%d pixels: %w", w, h, cutShort(err))
+	}
+	return img, nil
+}
+
+// maxPAMHeaderLines is more lines than a PAM header has.
+const maxPAMHeaderLines = 16
+
+// readPAMHeader reads the header of an 8-bit RGBA PAM image, a line each:
+// "P7", WIDTH, HEIGHT, DEPTH 4, MAXVAL 255, TUPLTYPE and ENDHDR. It returns
+// the size, or io.EOF when the stream ends before the first byte.
+func readPAMHeader(br *bufio.Reader) (w, h int, err error) {
+	magic, err := br.ReadSlice('\n')
+	if errors.Is(err, io.EOF) && len(magic) == 0 {
+		return 0, 0, io.EOF
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("PAM header: %w", cutShort(err))
+	}
+	if string(magic) != "P7\n" {
+		return 0, 0, fmt.Errorf("not a PAM image: it starts with %q", magic[:min(len(magic), 16)])
+	}
+	fields := map[string]int{}
+	for range maxPAMHeaderLines {
+		line, err := br.ReadSlice('\n')
+		if err != nil {
+			return 0, 0, fmt.Errorf("PAM header: %w", cutShort(err))
+		}
+		key, value, _ := strings.Cut(strings.TrimSpace(string(line)), " ")
+		if key != "ENDHDR" {
+			fields[key], _ = strconv.Atoi(strings.TrimSpace(value))
 			continue
 		}
-		secs, err := strconv.ParseFloat(string(m[1]), 64)
-		if err != nil {
-			return nil, fmt.Errorf("ffmpeg: frame %d has no timestamp (%q)", len(infos), m[1])
+		w, h = fields["WIDTH"], fields["HEIGHT"]
+		if fields["DEPTH"] != 4 || fields["MAXVAL"] != 255 {
+			return 0, 0, fmt.Errorf("PAM image has depth %d and maxval %d, want 8-bit RGBA", fields["DEPTH"], fields["MAXVAL"])
 		}
-		w, _ := strconv.Atoi(string(m[2]))
-		h, _ := strconv.Atoi(string(m[3]))
-		if w <= 0 || h <= 0 {
-			return nil, fmt.Errorf("ffmpeg: frame %d has size %dx%d", len(infos), w, h)
+		if w <= 0 || h <= 0 || int64(w)*int64(h) > maxFramePixels {
+			return 0, 0, fmt.Errorf("PAM image is %dx%d", w, h)
 		}
-		infos = append(infos, frameInfo{at: time.Duration(secs * float64(time.Second)), w: w, h: h})
+		return w, h, nil
 	}
-	return infos, nil
+	return 0, 0, errors.New("PAM header does not end")
 }
 
-// splitFrames cuts the raw RGBA stream into one image per showinfo line.
-// The filters may have logged more frames than ffmpeg wrote (it stops at
-// MaxFrames once the encoder has them), so the lines past the data are
-// ignored; data past the lines, or a partial frame, is an error.
-func splitFrames(data []byte, infos []frameInfo) ([]media.Frame, error) {
-	frames := make([]media.Frame, 0, len(infos))
-	for _, info := range infos {
-		if len(data) == 0 {
-			break
-		}
-		n := info.w * info.h * 4
-		if len(data) < n {
-			return nil, fmt.Errorf("ffmpeg: frame %d is %d bytes short of %dx%d RGBA", len(frames), n-len(data), info.w, info.h)
-		}
-		img := &image.RGBA{Pix: data[:n:n], Stride: info.w * 4, Rect: image.Rect(0, 0, info.w, info.h)}
-		frames = append(frames, media.Frame{Image: img, At: info.at})
-		data = data[n:]
+// cutShort turns the io.EOF of a read inside an image into
+// io.ErrUnexpectedEOF: the end of the stream is only clean before an image.
+func cutShort(err error) error {
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
 	}
-	if len(data) != 0 {
-		return nil, fmt.Errorf("ffmpeg: %d bytes of frame data beyond the %d frames logged", len(data), len(infos))
-	}
-	return frames, nil
+	return err
 }
 
-// limitedWriter keeps the first limit bytes written and drops the rest, so a
-// log that never ends cannot grow without bound.
+// limitedWriter keeps the first limit bytes written and drops the rest, so
+// an output that never ends cannot grow without bound.
 type limitedWriter struct {
 	buf   *bytes.Buffer
 	limit int
@@ -338,12 +592,24 @@ func (w *limitedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// tail returns the end of a log for an error message: the last lines, at
-// most 2 KB, whitespace trimmed.
-func tail(log []byte) string {
-	const n = 2 << 10
-	if len(log) > n {
-		log = log[len(log)-n:]
+// tailWriter keeps the last maxLog bytes written and drops what came before,
+// so a log that never ends cannot grow without bound and an error message
+// still ends with what the program said last. The zero value is ready.
+type tailWriter struct {
+	buf []byte
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	p = p[max(0, len(p)-maxLog):]
+	if len(w.buf)+len(p) > 2*maxLog {
+		w.buf = append(w.buf[:0], w.buf[len(w.buf)-maxLog:]...)
 	}
-	return strings.TrimSpace(string(log))
+	w.buf = append(w.buf, p...)
+	return n, nil
+}
+
+// String returns the end of the log, whitespace trimmed.
+func (w *tailWriter) String() string {
+	return strings.TrimSpace(string(w.buf[max(0, len(w.buf)-maxLog):]))
 }
