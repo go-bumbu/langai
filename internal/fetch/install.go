@@ -79,8 +79,17 @@ type DirInstall struct {
 // under the last two only when it is recognizably that (see clearLeftover);
 // anything else under those names stops the install with an error.
 //
+// in.Dir is resolved first (see ResolveDir), so a directory that is a
+// symbolic link is installed where the link points, next to which the lock
+// and the staging then are, and the link stays a link. A caller that names
+// the directory elsewhere (in Ready, in Use, to compare it with the one it
+// loaded from) resolves it the same way.
+//
 // installed reports whether the directory was filled by this call.
 func (d Downloader) InstallDir(ctx context.Context, in DirInstall) (installed bool, err error) {
+	if in.Dir, err = ResolveDir(in.Dir); err != nil {
+		return false, err
+	}
 	release, err := inProcess.acquire(ctx, in.Dir)
 	if err != nil {
 		return false, err
@@ -112,6 +121,64 @@ func (d Downloader) InstallDir(ctx context.Context, in DirInstall) (installed bo
 		}
 	}
 	return installed, nil
+}
+
+// maxLinkHops is how many symbolic links ResolveDir follows by hand, one
+// pointing at the next, before it takes them for a loop.
+const maxLinkHops = 40
+
+// ResolveDir returns dir as an absolute path with its symbolic links
+// resolved, as far as the path exists: the part that is not there yet is
+// kept as it is, behind the real path of the part that is, and a link whose
+// target is not there yet is followed to that target. It is the name to
+// install into and to compare directories by. A managed directory that is
+// a link (to another disk, say) must be filled where it points: the renames
+// of an install would otherwise replace the link by a directory and leave
+// the old files behind it; and one directory reached under two names must
+// compare equal to itself.
+func ResolveDir(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	return resolve(abs, 0)
+}
+
+// resolve is ResolveDir for an absolute path; hops counts the links
+// followed by hand so far.
+func resolve(path string, hops int) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return path, nil
+	}
+	realParent, err := resolve(parent, hops)
+	if err != nil {
+		return "", err
+	}
+	here := filepath.Join(realParent, filepath.Base(path))
+	info, err := os.Lstat(here)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return here, nil // not there, which is fine: the rest of the path is kept
+	}
+	// a link whose target does not exist
+	if hops == maxLinkHops {
+		return "", fmt.Errorf("%s: too many levels of symbolic links", path)
+	}
+	target, err := os.Readlink(here)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(realParent, target)
+	}
+	return resolve(target, hops+1)
 }
 
 // ready asks in.Ready, which may be nil.

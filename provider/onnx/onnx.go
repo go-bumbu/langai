@@ -27,11 +27,11 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
-	"path/filepath"
 	"runtime"
 	"sync"
 
 	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/langai/internal/fetch"
 )
 
 // DefaultModel is the logical identity of the model New runs unless
@@ -256,8 +256,9 @@ type Runtime struct {
 	// is missing, or was installed for another Provider, the pinned build is
 	// downloaded into it. Give it a directory of its own: only a missing or
 	// empty one, or one an earlier install left its record in, is ever filled
-	// or replaced, and anything else is an error rather than a deletion.
-	// Installs are serialized by a lock file next to it ("<LibDir>.lock"),
+	// or replaced, and anything else is an error rather than a deletion. A
+	// LibDir that is a symbolic link is filled where it points, and stays a
+	// link. Installs are serialized by a lock file next to it ("<LibDir>.lock"),
 	// between goroutines and processes, and the library a process has loaded
 	// is never replaced under it: CUDA after CPU in the same process is an
 	// error (CPU after CUDA runs on the CUDA build). An operator-supplied
@@ -355,9 +356,11 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 		return nil, err
 	}
 	provider, _ := rt.Provider.normalized() // validate checked it
-	libDir, err := filepath.Abs(rt.LibDir)
+	// the real directory: a LibDir that is a link is installed where it
+	// points, and is the same directory as its target named directly
+	libDir, err := fetch.ResolveDir(rt.LibDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("onnx: Runtime.LibDir: %w", err)
 	}
 	if rt.Threads == 0 {
 		rt.Threads = defaultThreads()

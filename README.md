@@ -155,6 +155,9 @@ go get github.com/go-bumbu/langai
   libraries in place writes nothing but the lock file, and what a killed install left
   under those names is cleared only when it carries the install's marker or record
   (anything else there stops the install with an error). A `libs.old` of yours stays.
+  A `LibDir` that is a symbolic link (to another disk, say) is filled where it points
+  and stays a link; the lock and the staging are then next to its target, and the link
+  and its target are one directory to a process that names both.
   Libraries a process has loaded are never replaced under it:
   asking by name for another build in the same process (`AccelCPU` first and
   `AccelVulkan` later, `ProviderCPU` and then `ProviderCUDA`) is an error, so open the

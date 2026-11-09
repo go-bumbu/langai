@@ -277,6 +277,63 @@ func TestRuntime_PrepareInstallsTheBuildTheHardwareNeeds(t *testing.T) {
 	}
 }
 
+// TestRuntime_PrepareResolvesALinkedLibDir: a managed LibDir that is a
+// symbolic link (to another disk, say) is installed where it points and
+// stays a link, and the directory the libraries were loaded from is known
+// by its real path, so naming it through the link in one open and directly
+// in the next is one directory, not two.
+func TestRuntime_PrepareResolvesALinkedLibDir(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the pinned archives hold Linux .so files")
+	}
+	_, cpuAsset := serve(t, tarGz(t, "llama-b11429", releaseLibs()))
+	cpuOnly(t)
+	key := platform() + "/cpu"
+	orig, had := libAssets[key]
+	libAssets[key] = cpuAsset
+	t.Cleanup(func() {
+		if had {
+			libAssets[key] = orig
+		} else {
+			delete(libAssets, key)
+		}
+	})
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "bigdisk", "llama")
+	link := filepath.Join(root, "home", "llama")
+	for _, dir := range []string{target, filepath.Dir(link)} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	loader, f := &runtimeLoader{}, newFakeAPI()
+	for _, libDir := range []string{link, target, link} {
+		rt := Runtime{LibDir: libDir, ManagedLibDir: true}
+		got, _, err := (&rt).prepare(context.Background(), f, loader)
+		if err != nil {
+			t.Fatalf("prepare with LibDir %s: %v", libDir, err)
+		}
+		if got != target || loader.loadedDir() != target {
+			t.Errorf("prepare with LibDir %s: the directory is %q and the libraries are loaded from %q, want %q", libDir, got, loader.loadedDir(), target)
+		}
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link was replaced (%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "libllama.so")); err != nil {
+		t.Errorf("the libraries are not where the link points: %v", err)
+	}
+	if f.count("load") != 1 {
+		t.Errorf("the libraries were loaded %d times", f.count("load"))
+	}
+}
+
 // TestRuntime_PrepareWarnsWhenTheGPUBuildFindsNoGPU: a GPU build that was
 // installed because the hardware looked like it has a GPU, and then
 // registers none, runs every model on the CPU. That must not be silent.

@@ -396,6 +396,116 @@ func TestInstallDir_LeftoversOfItsOwnNames(t *testing.T) {
 	}
 }
 
+// realTemp is a fresh temp directory under its real path: the system's temp
+// directory is itself behind a symbolic link on some systems.
+func realTemp(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestResolveDir: the directory an install works on is the real one, as far
+// as its path exists, so that the renames of an install replace the
+// directory and never a link to it, and so that one directory has one name
+// to compare by.
+func TestResolveDir(t *testing.T) {
+	root := realTemp(t)
+	mkdir(t, filepath.Join(root, "disk", "libs"))
+	for link, target := range map[string]string{
+		"link":     filepath.Join(root, "disk", "libs"), // absolute
+		"rel":      filepath.Join("disk", "libs"),       // relative to the link's directory
+		"mount":    "disk",
+		"dangling": filepath.Join(root, "disk", "later"),
+		"chain":    "dangling",
+		"loop":     "loop",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(root)
+	for _, tc := range []struct {
+		name, in, want string
+		wantErr        bool
+	}{
+		{name: "a plain directory", in: filepath.Join(root, "disk", "libs"), want: filepath.Join(root, "disk", "libs")},
+		{name: "a link to it", in: filepath.Join(root, "link"), want: filepath.Join(root, "disk", "libs")},
+		{name: "a relative link", in: filepath.Join(root, "rel"), want: filepath.Join(root, "disk", "libs")},
+		{name: "a relative path", in: "link", want: filepath.Join(root, "disk", "libs")},
+		{name: "a link on the way", in: filepath.Join(root, "mount", "libs"), want: filepath.Join(root, "disk", "libs")},
+		{name: "not there yet, behind a link", in: filepath.Join(root, "mount", "new", "1.0"), want: filepath.Join(root, "disk", "new", "1.0")},
+		{name: "not there at all", in: filepath.Join(root, "nope", "1.0"), want: filepath.Join(root, "nope", "1.0")},
+		{name: "a link to a directory that is not there yet", in: filepath.Join(root, "dangling"), want: filepath.Join(root, "disk", "later")},
+		{name: "a link to such a link", in: filepath.Join(root, "chain", "1.0"), want: filepath.Join(root, "disk", "later", "1.0")},
+		{name: "a link to itself", in: filepath.Join(root, "loop"), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveDir(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("ResolveDir = %q, want an error", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Errorf("ResolveDir(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestInstallDir_ThroughALink: a library directory that is a link to
+// another disk stays one. The install replaces the directory the link
+// points at, with its staging next to that directory, and the files of the
+// install before it are gone from there.
+func TestInstallDir_ThroughALink(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, target string) // what the link points at before the install
+	}{
+		{"to an earlier install", func(t *testing.T, target string) {
+			mkdir(t, target)
+			write(t, filepath.Join(target, testRecord), "{}")
+			write(t, filepath.Join(target, "libold.so"), "old")
+		}},
+		{"to an empty directory", func(t *testing.T, target string) { mkdir(t, target) }},
+		{"to a directory that is not there yet", func(t *testing.T, target string) { mkdir(t, filepath.Dir(target)) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := realTemp(t)
+			target := filepath.Join(root, "bigdisk", "libs")
+			tc.prepare(t, target)
+			link := filepath.Join(root, "home", "libs")
+			mkdir(t, filepath.Dir(link))
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			in := install(link, libArchive(t))
+			in.Ready = nil
+			var used string
+			in.Use = func() error { used = "ran"; return nil }
+			if installed, err := dl(cap).InstallDir(context.Background(), in); err != nil || !installed || used == "" {
+				t.Fatalf("InstallDir = %v, %v (Use %q)", installed, err, used)
+			}
+			if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("the link was replaced by %v (%v)", info.Mode(), err)
+			}
+			if got := names(t, target); got != testRecord+",libx.so,libx.so.1" {
+				t.Errorf("the link's target holds %s", got)
+			}
+			if got := names(t, filepath.Dir(link)); got != "libs" {
+				t.Errorf("next to the link: %s, want the link alone", got)
+			}
+			if got := names(t, filepath.Dir(target)); got != "libs,libs.lock" {
+				t.Errorf("next to the target: %s", got)
+			}
+		})
+	}
+}
+
 // TestInstallDir_UnlockableButReady: a directory whose parent cannot take a
 // lock file (a read-only image) is used when it is ready, and is an error
 // only when it would have to be written.

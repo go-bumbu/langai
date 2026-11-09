@@ -32,7 +32,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -193,7 +192,8 @@ type Runtime struct {
 	// are missing, the pinned build is downloaded into it. Give it a directory
 	// of its own: only a missing or empty one, or one an earlier install left
 	// its record in, is ever filled or replaced, and anything else is an
-	// error rather than a deletion. Installs are serialized by a lock file
+	// error rather than a deletion. A LibDir that is a symbolic link is filled
+	// where it points, and stays a link. Installs are serialized by a lock file
 	// next to it ("<LibDir>.lock"), between goroutines and processes, and the
 	// libraries a process has loaded are never replaced under it: asking for
 	// another build by name in the same process is an error. An
@@ -246,8 +246,9 @@ func (rt Runtime) validate() error {
 // the libraries from it through api, once per process (see runtimeLoader).
 // Install and load are one step under the directory's lock (see
 // ensureLibs): nothing replaces the libraries between the check and the
-// load, and loaded libraries are never replaced. It returns the absolute
-// library directory and the logger this package logs to. ctx bounds the
+// load, and loaded libraries are never replaced. It returns the library
+// directory, absolute and with its symbolic links resolved (see
+// fetch.ResolveDir), and the logger this package logs to. ctx bounds the
 // download.
 func (rt *Runtime) prepare(ctx context.Context, api runtimeAPI, loader *runtimeLoader) (libDir string, logger *slog.Logger, err error) {
 	logger = rt.Logger
@@ -257,9 +258,11 @@ func (rt *Runtime) prepare(ctx context.Context, api runtimeAPI, loader *runtimeL
 	if err := rt.validate(); err != nil {
 		return "", nil, err
 	}
-	libDir, err = filepath.Abs(rt.LibDir)
+	// the real directory: a LibDir that is a link is installed where it
+	// points, and is the same directory as its target named directly
+	libDir, err = fetch.ResolveDir(rt.LibDir)
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("yzma: Runtime.LibDir: %w", err)
 	}
 	if rt.Threads == 0 {
 		rt.Threads = defaultThreads()

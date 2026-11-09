@@ -144,7 +144,13 @@ func (loopbackOnly) RoundTrip(r *http.Request) (*http.Response, error) {
 // downloading.
 func fakeInstall(t *testing.T) (libDir, modelFile string) {
 	t.Helper()
-	libDir = filepath.Join(t.TempDir(), "onnxruntime")
+	// under its real path, which is how Open knows a library directory (a
+	// temp directory is behind a link on some systems)
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	libDir = filepath.Join(tmp, "onnxruntime")
 	if err := os.MkdirAll(libDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -210,6 +216,34 @@ func TestRuntimeLoader_LoadsOnceAndLocksVersionAndPath(t *testing.T) {
 	}
 	if len(f.loads) != 1 {
 		t.Errorf("a failed load was retried: %v", f.loads)
+	}
+}
+
+// TestOpen_ALinkedLibDirIsItsTarget: a LibDir that is a symbolic link and
+// the directory it points at are one library directory: the runtime is
+// loaded from the real path, and an Open that names it the other way shares
+// the load instead of being refused as another directory.
+func TestOpen_ALinkedLibDirIsItsTarget(t *testing.T) {
+	f := &fakeAPI{dims: 4}
+	useFake(t, f)
+	libDir, modelFile := fakeInstall(t)
+	real, err := filepath.EvalSymlinks(libDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "ort")
+	if err := os.Symlink(libDir, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{link, libDir, link} {
+		emb, err := Open(context.Background(), testSpec(modelFile), Runtime{LibDir: dir})
+		if err != nil {
+			t.Fatalf("Open with LibDir %s: %v", dir, err)
+		}
+		_ = emb.Close()
+	}
+	if len(f.loads) != 1 || f.loads[0] != filepath.Join(real, libFile()) {
+		t.Errorf("loads = %v, want one, from %s", f.loads, real)
 	}
 }
 

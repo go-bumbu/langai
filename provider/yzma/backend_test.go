@@ -577,7 +577,12 @@ func TestNew_LoadsThroughTheAPI(t *testing.T) {
 		api, libs = origAPI, origLibs
 	})
 
-	tmp := t.TempDir()
+	// the library directory is known by its real path (a temp directory is
+	// behind a link on some systems)
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	modelsDir := filepath.Join(tmp, "models")
 	modelPath := filepath.Join(modelsDir, defaultModelFile)
 	libDir := filepath.Join(tmp, "llama-cpp", LibTag)
