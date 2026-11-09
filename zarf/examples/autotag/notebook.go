@@ -334,6 +334,11 @@ type TagView struct {
 	Tag
 	Hand int `json:"hand"`
 	Auto int `json:"auto"`
+	// Incomplete says the tag was built without one or more of the notes
+	// that carry it by hand, because the embedder could not take their text
+	// (tagging.Scope.Incomplete): it suggests on its name and its other
+	// notes until the notebook next changes, when they get another try.
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 // NoteView is a note with the tags the Tagger picks for it, best first, and
@@ -423,7 +428,58 @@ func (nb *Notebook) View(ctx context.Context) (View, error) {
 		v.Notes = append(v.Notes, nv)
 	}
 	v.SuggestMs = time.Since(start).Milliseconds()
+	// the tags the rebuild above left a member out of
+	incomplete, err := nb.scope.Incomplete(ctx)
+	if err != nil {
+		nb.logger.Warn("incomplete tags not read", "err", err)
+	}
+	for _, id := range incomplete {
+		if i, ok := known[id]; ok {
+			v.Tags[i].Incomplete = true
+		}
+	}
 	return v, nil
+}
+
+// WarmStats says what a Warm did.
+type WarmStats struct {
+	// Notes and Tags are how many texts and tags the Tagger was warmed
+	// with, at Revision.
+	Notes    int    `json:"notes"`
+	Tags     int    `json:"tags"`
+	Revision string `json:"revision"`
+	Ms       int64  `json:"ms"`
+	// Incomplete are the ids of the tags built without one of their notes
+	// (see TagView.Incomplete).
+	Incomplete []string `json:"incomplete"`
+}
+
+// Warm brings the Tagger up to the notebook's revision and has it embed
+// every note the cache does not hold yet (tagging.Scope.Warm), so that no
+// View pays for them: what an application does after it switches embedding
+// models. New does it at startup; over a cache that holds everything it
+// embeds nothing and takes milliseconds, which is the point of the cache.
+// A note the embedder cannot take does not stop the others: the error names
+// it by its place, and the stats still say what was done.
+func (nb *Notebook) Warm(ctx context.Context) (WarmStats, error) {
+	nb.mu.RLock()
+	texts := make([]string, len(nb.cat.Notes))
+	for i, n := range nb.cat.Notes {
+		texts[i] = itemText(n)
+	}
+	st := WarmStats{Notes: len(texts), Tags: len(nb.cat.Tags), Revision: revision(nb.rev), Incomplete: []string{}}
+	nb.mu.RUnlock()
+
+	start := time.Now()
+	err := nb.scope.Warm(ctx, st.Revision, texts...)
+	st.Ms = time.Since(start).Milliseconds()
+	if incomplete, ierr := nb.scope.Incomplete(ctx); ierr == nil && incomplete != nil {
+		st.Incomplete = incomplete
+	}
+	if err != nil {
+		return st, fmt.Errorf("autotag: warm the tagger: %w", err)
+	}
+	return st, nil
 }
 
 // AddTag creates a tag, or returns the one with that name (case does not

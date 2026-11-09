@@ -53,6 +53,9 @@ type options struct {
 	tagScore  float64
 	// textMinScore is the floor of the text search page.
 	textMinScore float64
+	// maxImageBytes is the most the media index reads of an image; 0 keeps
+	// the library's default.
+	maxImageBytes int64
 	// longSamples is the directory of the long sample documents, and
 	// writeDocs, when set, makes the command write the sample documents
 	// there and exit.
@@ -78,6 +81,7 @@ func parseFlags() options {
 	flag.StringVar(&o.longSamples, "long-samples", filepath.Join("..", "eval", "testdata", "long"), "long sample documents -write-docs writes out too; empty leaves them out")
 	flag.StringVar(&o.writeDocs, "write-docs", "", "write the sample documents into this directory as Markdown files, for the text search page, and exit (make prepare does)")
 	flag.Float64Var(&o.textMinScore, "text-min-score", 0, "drop text search hits scoring below this; 0 shows everything")
+	flag.Int64Var(&o.maxImageBytes, "max-image-bytes", 0, "the most the media index reads of an image; a longer one is listed as too large (0: the library's 64 MiB)")
 	flag.Float64Var(&o.tagScore, "tag-min-score", tagging.DefaultGeneratorMinScore, "the cutoff of the recommended tags; the page shows the ones under it greyed")
 	flag.Parse()
 	return o
@@ -213,7 +217,9 @@ func openMedia(ctx context.Context, o options, m *mediaModel, sampler *ffmpeg.Sa
 		return nil, indexed{}, err
 	}
 	coord := vector.Coord{Index: indexName, Partition: indexPartition, Collection: "media"}
-	opts := append([]search.MediaOption{search.WithSampler(sampler), search.WithMediaMinScore(o.minScore)}, m.opts...)
+	opts := append([]search.MediaOption{
+		search.WithSampler(sampler), search.WithMediaMinScore(o.minScore), search.WithMaxImageBytes(o.maxImageBytes),
+	}, m.opts...)
 	ix, err := search.NewMediaIndex(m.embedder, store, coord.Index, coord.Partition, coord.Collection, opts...)
 	if err != nil {
 		return nil, indexed{}, err
@@ -227,6 +233,7 @@ func openMedia(ctx context.Context, o options, m *mediaModel, sampler *ffmpeg.Sa
 		Limit:       o.limit,
 		Info:        m.info,
 		ModelState:  m.state,
+		Stored:      func(ctx context.Context) (string, error) { return store.Model(ctx, coord) },
 		Logger:      logger,
 	})
 	return lib, indexed{store: store, coord: coord, where: where}, err

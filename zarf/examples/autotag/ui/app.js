@@ -86,7 +86,9 @@
 
   function tagRow(t) {
     return el('li', { class: filter === t.id ? 'active' : '', title: t.name, onclick: () => { filter = filter === t.id ? null : t.id; render(); } },
-      el('span', { class: 'name' }, t.name),
+      el('span', { class: 'name' }, t.name, t.incomplete
+        ? el('span', { class: 'incomplete', title: 'built without one of the notes it was put on by hand: the embedder could not take that note\'s text (Scope.Incomplete). It suggests on its name and its other notes until the notebook next changes.' }, ' ⚠ incomplete')
+        : null),
       el('span', { class: 'counts', title: 'notes tagged by hand · notes the Tagger picks it for' }, `${t.hand} · ${t.auto}`),
       el('button', { class: 'icon', title: 'rename', onclick: (e) => { e.stopPropagation(); renameTag(t); } }, '✎'),
       el('button', { class: 'icon del', title: 'delete', onclick: (e) => { e.stopPropagation(); deleteTag(t); } }, '×'));
@@ -264,6 +266,13 @@
       await load();
     }));
   }
+
+  $('#warm').addEventListener('click', (e) => busy(e.target, async () => {
+    const st = await api('api/warm', { method: 'POST' });
+    toast(`Tagger warm at revision ${st.revision}: ${st.notes} notes and ${st.tags} tags in ${s(st.ms)}` +
+      (st.incomplete.length ? `; ${st.incomplete.length} tags built without one of their notes` : '; what the cache held was not embedded again'));
+    await Promise.all([loadInfo(), load()]);
+  }));
 
   // the recommendation settings survive a reload, in this browser only
   const remember = (sel, prop) => {

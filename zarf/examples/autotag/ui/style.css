@@ -11,7 +11,7 @@ textarea { resize: vertical; }
 main {
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  min-height: calc(100vh - 54px);
+  min-height: calc(100vh - var(--header, 54px));
 }
 @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
 
@@ -20,8 +20,8 @@ main {
   background: var(--panel);
   padding: 16px;
   position: sticky;
-  top: 54px;
-  max-height: calc(100vh - 54px);
+  top: var(--header, 54px);
+  max-height: calc(100vh - var(--header, 54px));
   overflow: auto;
 }
 @media (max-width: 800px) { .tags { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); } }
@@ -43,6 +43,7 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 #taglist li:hover { background: #2a2f37; }
 #taglist li.active { background: #2a2f37; outline: 1px solid var(--accent); }
 #taglist .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#taglist .incomplete { color: var(--warn); font-size: 11px; }
 #taglist .counts { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .icon { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; padding: 0 2px; }
 .icon:hover { color: var(--text); }

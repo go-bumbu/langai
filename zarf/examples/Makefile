@@ -24,6 +24,8 @@ LIMIT      ?= 12
 TAG_MIN_SCORE ?= 0.45
 # the floor of the text search page's hits; 0 shows everything
 TEXT_MIN_SCORE ?= 0
+# the most the media index reads of an image; 0 is the library's 64 MiB
+MAX_IMAGE_BYTES ?= 0
 
 default: help
 
@@ -33,7 +35,7 @@ prepare: ## download sample photos and render sample clips into data/media, writ
 run: ## index data/media and data/docs and serve the pages on http://127.0.0.1:8085 (first run downloads the models)
 	@go run . -addr "$(ADDR)" -media "$(MEDIA_DIR)" -docs "$(DOCS_DIR)" -data "$(DATA_DIR)" -models "$(MODELS_DIR)" \
 		-llama "$(LLAMA_DIR)" -model "$(MODEL)" -provider "$(PROVIDER)" -accel "$(ACCEL)" -segment "$(SEGMENT)" -min-score "$(MIN_SCORE)" -limit "$(LIMIT)" \
-		-tag-min-score "$(TAG_MIN_SCORE)" -text-min-score "$(TEXT_MIN_SCORE)"
+		-tag-min-score "$(TAG_MIN_SCORE)" -text-min-score "$(TEXT_MIN_SCORE)" -max-image-bytes "$(MAX_IMAGE_BYTES)"
 
 clean: ## remove the index and tag databases, the catalogs and the thumbnail cache; the media, the documents, the notebook and the models stay
 	@rm -rf "$(DATA_DIR)"/index-* "$(DATA_DIR)"/autotag-* "$(DATA_DIR)"/thumbs
@@ -41,5 +43,5 @@ clean: ## remove the index and tag databases, the catalogs and the thumbnail cac
 .PHONY: default prepare run clean help
 help: # Display this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
-	@printf "\nSettings (environment or make arguments):\n  MEDIA_DIR=%s DOCS_DIR=%s DATA_DIR=%s MODELS_DIR=%s\n  MODEL=%s PROVIDER=%s ACCEL=%s SEGMENT=%s LLAMA_DIR=%s\n  ADDR=%s MIN_SCORE=%s LIMIT=%s TAG_MIN_SCORE=%s TEXT_MIN_SCORE=%s\n\n" \
-		"$(MEDIA_DIR)" "$(DOCS_DIR)" "$(DATA_DIR)" "$(MODELS_DIR)" "$(MODEL)" "$(PROVIDER)" "$(ACCEL)" "$(SEGMENT)" "$(LLAMA_DIR)" "$(ADDR)" "$(MIN_SCORE)" "$(LIMIT)" "$(TAG_MIN_SCORE)" "$(TEXT_MIN_SCORE)"
+	@printf "\nSettings (environment or make arguments):\n  MEDIA_DIR=%s DOCS_DIR=%s DATA_DIR=%s MODELS_DIR=%s\n  MODEL=%s PROVIDER=%s ACCEL=%s SEGMENT=%s LLAMA_DIR=%s\n  ADDR=%s MIN_SCORE=%s LIMIT=%s TAG_MIN_SCORE=%s TEXT_MIN_SCORE=%s MAX_IMAGE_BYTES=%s\n\n" \
+		"$(MEDIA_DIR)" "$(DOCS_DIR)" "$(DATA_DIR)" "$(MODELS_DIR)" "$(MODEL)" "$(PROVIDER)" "$(ACCEL)" "$(SEGMENT)" "$(LLAMA_DIR)" "$(ADDR)" "$(MIN_SCORE)" "$(LIMIT)" "$(TAG_MIN_SCORE)" "$(TEXT_MIN_SCORE)" "$(MAX_IMAGE_BYTES)"

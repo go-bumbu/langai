@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/go-bumbu/langai/search"
+	"github.com/go-bumbu/langai/vector"
 )
 
 //go:embed ui
@@ -35,6 +36,7 @@ func Handler(l *Library) http.Handler {
 	mux.HandleFunc("POST /api/search", h.search)
 	mux.HandleFunc("GET /api/text", h.text)
 	mux.HandleFunc("POST /api/rescan", h.rescan)
+	mux.HandleFunc("POST /api/reset", h.reset)
 	mux.HandleFunc("GET /api/frames/{id...}", h.frames)
 	mux.HandleFunc("GET /thumb/{id...}", h.thumb)
 	mux.HandleFunc("GET /storyboard/{id...}", h.storyboard)
@@ -52,9 +54,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeError answers an error with the status its kind calls for.
+// writeError answers an error with the status its kind calls for. The
+// failures the library names say what they are: a model mismatch is a
+// conflict the page resolves with a reset, an image over the limit is too
+// large, and a video nothing could be taken from cannot be processed.
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
+	body := map[string]any{"error": err.Error()}
 	switch {
 	case errors.Is(err, ErrNotFound), errors.Is(err, search.ErrNotIndexed):
 		status = http.StatusNotFound
@@ -62,11 +68,20 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case errors.Is(err, ErrScanning):
 		status = http.StatusConflict
+	case errors.Is(err, vector.ErrModelMismatch):
+		status = http.StatusConflict
+		body["mismatch"] = true
+	case errors.Is(err, search.ErrTooLarge):
+		status = http.StatusRequestEntityTooLarge
+		body["reason"] = ReasonTooLarge
+	case errors.Is(err, search.ErrNoFrames):
+		status = http.StatusUnprocessableEntity
+		body["reason"] = ReasonNoFrames
 	}
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+	writeJSON(w, status, body)
 }
 
-func (h *handler) info(w http.ResponseWriter, _ *http.Request) {
+func (h *handler) info(w http.ResponseWriter, r *http.Request) {
 	images, videos := 0, 0
 	for _, it := range h.lib.Items() {
 		if it.Kind == KindVideo {
@@ -75,18 +90,25 @@ func (h *handler) info(w http.ResponseWriter, _ *http.Request) {
 			images++
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	last := h.lib.LastScan()
+	body := map[string]any{
 		"info":     h.lib.Info(),
 		"limit":    h.lib.Limit(),
 		"dir":      h.lib.Dir(),
 		"images":   images,
 		"videos":   videos,
-		"lastScan": h.lib.LastScan(),
+		"lastScan": last,
 		// the first scan runs behind the server, and a lazy model loads on
 		// the first file that needs it
 		"scanning":   h.lib.Scanning(),
 		"modelState": h.lib.ModelState(),
-	})
+	}
+	// the model that built the collection, when it is not the one the page
+	// runs: what the reset is for
+	if last.Mismatch {
+		body["storedModel"] = h.lib.StoredModel(r.Context())
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (h *handler) items(w http.ResponseWriter, _ *http.Request) {
@@ -146,6 +168,15 @@ func (h *handler) rescan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// reset empties the index; the page rescans afterwards.
+func (h *handler) reset(w http.ResponseWriter, r *http.Request) {
+	if err := h.lib.Reset(context.WithoutCancel(r.Context())); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) frames(w http.ResponseWriter, r *http.Request) {

@@ -26,6 +26,7 @@ import (
 
 	"github.com/go-bumbu/langai/media"
 	"github.com/go-bumbu/langai/search"
+	"github.com/go-bumbu/langai/vector"
 )
 
 // Kinds of items.
@@ -34,8 +35,30 @@ const (
 	KindVideo = "video"
 )
 
-// ErrScanning is returned by Scan while another scan runs.
+// ErrScanning is returned by Scan and Reset while another scan runs.
 var ErrScanning = errors.New("mediasearch: a scan is already running")
+
+// Why an item was not indexed, when the reason is one the library names.
+const (
+	// ReasonTooLarge marks an image longer than the index reads
+	// (search.ErrTooLarge, see search.WithMaxImageBytes).
+	ReasonTooLarge = "too large"
+	// ReasonNoFrames marks a video the sampler took no frames from, or the
+	// video model no segments (search.ErrNoFrames): nothing is stored, and
+	// the next scan tries it again.
+	ReasonNoFrames = "no frames"
+)
+
+// reasonOf names the reason behind an index error, "" for any other.
+func reasonOf(err error) string {
+	switch {
+	case errors.Is(err, search.ErrTooLarge):
+		return ReasonTooLarge
+	case errors.Is(err, search.ErrNoFrames):
+		return ReasonNoFrames
+	}
+	return ""
+}
 
 // Config wires a Library.
 type Config struct {
@@ -59,6 +82,10 @@ type Config struct {
 	// ModelState says where the model's lazy loader stands ("not started",
 	// "loaded"...); nil leaves it out.
 	ModelState func() string
+	// Stored returns the model the store recorded for the index's
+	// collection (vector.Store.Model), to name it when it is not the one
+	// Index writes with; nil leaves the name out.
+	Stored func(ctx context.Context) (string, error)
 	// Logger receives the scan's progress; nil discards it.
 	Logger *slog.Logger
 }
@@ -93,17 +120,25 @@ type Item struct {
 	// so the index call was its cheap no-op.
 	Skipped bool `json:"skipped"`
 	// Error is why indexing failed; the item stays listed and is retried on
-	// the next scan.
-	Error string `json:"error,omitempty"`
+	// the next scan. Reason names the failure when it is one the library
+	// names (ReasonTooLarge, ReasonNoFrames): a file to leave alone, not a
+	// broken one.
+	Error  string `json:"error,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // ScanStats sums up one scan.
 type ScanStats struct {
-	Indexed int           `json:"indexed"`
-	Skipped int           `json:"skipped"`
-	Failed  int           `json:"failed"`
-	Removed int           `json:"removed"`
-	Elapsed time.Duration `json:"-"`
+	Indexed int `json:"indexed"`
+	Skipped int `json:"skipped"`
+	Failed  int `json:"failed"`
+	Removed int `json:"removed"`
+	// Mismatch says the scan stopped at its first file because the index's
+	// collection holds another model's vectors (vector.ErrModelMismatch),
+	// with Error saying so: nothing can be indexed or searched until Reset.
+	Mismatch bool          `json:"mismatch,omitempty"`
+	Error    string        `json:"error,omitempty"`
+	Elapsed  time.Duration `json:"-"`
 	// ElapsedMs is Elapsed for the page.
 	ElapsedMs int64     `json:"elapsedMs"`
 	At        time.Time `json:"at"`
@@ -172,6 +207,20 @@ func (l *Library) ModelState() string {
 		return ""
 	}
 	return l.cfg.ModelState()
+}
+
+// StoredModel returns the model the store recorded for the collection; ""
+// when the collection is empty or the Library was not given a way to ask.
+func (l *Library) StoredModel(ctx context.Context) string {
+	if l.cfg.Stored == nil {
+		return ""
+	}
+	model, err := l.cfg.Stored(ctx)
+	if err != nil {
+		l.logger.Warn("stored model not read", "err", err)
+		return ""
+	}
+	return model
 }
 
 // LastScan returns the stats of the last scan; zero before the first.
@@ -265,6 +314,11 @@ func walk(dir string) ([]Item, error) {
 // deleted from the index. The catalog fills as the scan goes, so the page
 // can show it meanwhile. Only one scan runs at a time: a second one gets
 // ErrScanning.
+//
+// When the index's collection holds another model's vectors, every write
+// would fail alike with vector.ErrModelMismatch: the scan stops at the first
+// file, lists the others without indexing them, and returns that error with
+// the stats saying so. Reset is the way out.
 func (l *Library) Scan(ctx context.Context) (ScanStats, error) {
 	if !l.scanning.CompareAndSwap(false, true) {
 		return ScanStats{}, ErrScanning
@@ -283,10 +337,13 @@ func (l *Library) Scan(ctx context.Context) (ScanStats, error) {
 		}
 		it := found[i]
 		seen[it.ID] = true
-		l.indexOne(ctx, &it, &stats, len(found)-i-1)
+		err := l.indexOne(ctx, &it, &stats, len(found)-i-1)
 		l.mu.Lock()
 		l.items[it.ID] = &it
 		l.mu.Unlock()
+		if errors.Is(err, vector.ErrModelMismatch) {
+			return l.mismatched(it.ID, found[i+1:], stats, start, err)
+		}
 	}
 	stats.Removed = l.removeGone(ctx, seen)
 	stats.Elapsed = time.Since(start)
@@ -301,9 +358,32 @@ func (l *Library) Scan(ctx context.Context) (ScanStats, error) {
 	return stats, nil
 }
 
-// indexOne hashes and indexes one file and fills in the item's index fields;
-// remaining is how many items of the scan still wait after this one, for the log.
-func (l *Library) indexOne(ctx context.Context, it *Item, stats *ScanStats, remaining int) {
+// mismatched ends a scan that met another model's vectors at the file
+// tried: the files it did not reach are listed as they are, so the page
+// still shows them, and the stats keep the error for the page to offer the
+// reset.
+func (l *Library) mismatched(tried string, rest []Item, stats ScanStats, start time.Time, err error) (ScanStats, error) {
+	stats.Failed-- // the file tried failed for the collection's reason, not its own
+	stats.Mismatch, stats.Error = true, err.Error()
+	stats.Elapsed = time.Since(start)
+	stats.ElapsedMs = stats.Elapsed.Milliseconds()
+	l.mu.Lock()
+	l.items[tried].Error = ""
+	for i := range rest {
+		if _, ok := l.items[rest[i].ID]; !ok {
+			l.items[rest[i].ID] = &rest[i]
+		}
+	}
+	l.last = stats
+	l.mu.Unlock()
+	l.logger.Warn("scan stopped: the index holds another model's vectors, reset it to index with this one", "err", err)
+	return stats, fmt.Errorf("mediasearch: scan: %w", err)
+}
+
+// indexOne hashes and indexes one file and fills in the item's index fields,
+// and returns the index error, if any; remaining is how many items of the
+// scan still wait after this one, for the log.
+func (l *Library) indexOne(ctx context.Context, it *Item, stats *ScanStats, remaining int) error {
 	path := filepath.Join(l.cfg.Dir, filepath.FromSlash(it.ID))
 	start := time.Now()
 	hash, err := fileHash(path)
@@ -314,21 +394,22 @@ func (l *Library) indexOne(ctx context.Context, it *Item, stats *ScanStats, rema
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err != nil {
-		it.Error = err.Error()
+		it.Error, it.Reason = err.Error(), reasonOf(err)
 		delete(l.hashes, it.ID)
 		stats.Failed++
 		l.logger.Warn("index failed", "id", it.ID, "err", err, "remaining", remaining)
-		return
+		return err
 	}
 	it.Skipped = l.hashes[it.ID] == hash
 	l.hashes[it.ID] = hash
 	if it.Skipped {
 		stats.Skipped++
 		l.logger.Info("unchanged", "id", it.ID, "remaining", remaining)
-		return
+		return nil
 	}
 	stats.Indexed++
 	l.logger.Info("indexed", "id", it.ID, "kind", it.Kind, "took", time.Duration(it.IndexedMs)*time.Millisecond, "remaining", remaining)
+	return nil
 }
 
 func (l *Library) index(ctx context.Context, it *Item, path string) error {

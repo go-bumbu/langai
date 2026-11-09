@@ -9,7 +9,7 @@
 main {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(360px, 520px);
-  min-height: calc(100vh - 54px);
+  min-height: calc(100vh - var(--header, 54px));
 }
 @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 
@@ -50,7 +50,7 @@ main {
 }
 .badge.video { background: var(--accent); color: #000; }
 .badge.error { left: auto; right: 6px; background: var(--bad); color: #000; }
-.badge.skipped { left: auto; right: 6px; background: rgba(0,0,0,.65); color: var(--muted); }
+.badge.skipped { left: auto; right: 6px; background: var(--warn); color: #000; }
 
 .detail {
   border-left: 1px solid var(--line);
@@ -58,8 +58,8 @@ main {
   padding: 16px;
   overflow: auto;
   position: sticky;
-  top: 54px;
-  max-height: calc(100vh - 54px);
+  top: var(--header, 54px);
+  max-height: calc(100vh - var(--header, 54px));
 }
 @media (max-width: 900px) { .detail { position: static; max-height: none; border-left: 0; border-top: 1px solid var(--line); } }
 .hint { color: var(--muted); }
