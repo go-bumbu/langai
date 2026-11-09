@@ -11,7 +11,8 @@
 // already has (Tagger) or written from nothing (Generator). The implementations
 // sit in groups by the port they implement: provider/yzma runs GGUF models
 // locally through llama.cpp, provider/onnx runs image embedding models through
-// ONNX Runtime, media/ffmpeg samples the frames of a video, and
+// ONNX Runtime, provider/phash hashes pictures perceptually to find duplicates
+// without a model, media/ffmpeg samples the frames of a video, and
 // vector/sqlitevec and vector/pgvec store search vectors. LazyEmbedder defers
 // loading a model to its first use, langaitest has the fakes for tests, and
 // eval measures an Embedder's search and tagging quality over a labelled
