@@ -74,7 +74,8 @@ langai/                 the shared ports: Embedder, ImageEmbedder, VideoEmbedder
 │
 └── zarf/               tooling around the library, not part of it
     ├── eval/           golden-set evaluation of embedding models
-    └── examples/       the example service: a page per feature, media search and auto tagging
+    └── examples/       the example service: a page per feature (media search, text search,
+                        duplicates, auto tagging) and a status page
 ```
 
 A capability never names a model: it calls a port, and the app hands it a provider that
@@ -1067,12 +1068,30 @@ keeps every metric, and the Makefile lists the other settings.
 ## Examples
 
 `zarf/examples/` is a single-user web service that exercises the features by hand,
-one page per feature. Media search is the first: `make example-prepare` fetches
-sample photos and renders two slideshow clips, `make example` indexes them
-and serves a grid of thumbnails on http://127.0.0.1:8085/mediasearch/; click one
-to see the items that look like it with their scores, the frame of a video that
-matched and when, the frames the index saw of a video, and how long the search
-took; or search with a file of your own. See [zarf/examples/README.md](zarf/examples/README.md).
+one page per feature, each a debug view with the numbers behind every result.
+`make example-prepare` fetches sample photos, makes copies of some, renders two
+slideshow clips and writes the golden texts out as documents; `make example` indexes
+them and serves the pages on http://127.0.0.1:8085/:
+
+- **Status** (the home page): every model with the state of its lazy loader, its
+  identity and what runs it, and a *load now*; every collection with its store, the
+  model the store recorded for it and a *reset*; the Tagger's cache and its last prune.
+- **Media search**: a grid of thumbnails; click one to see the items that look like
+  it with their scores, the frame of a video that matched and when, the frames the
+  index saw of a video, and how long the search took; or search with a file of your
+  own, or by text with the vision model.
+- **Text search**: `search.Index` over a directory of Markdown and text files, with
+  what the last `IndexBatch` did, the chunk behind every hit, a document cut into the
+  chunks that were embedded, and "more like this".
+- **Duplicates**: `provider/phash` both ways, as groups of pictures by the Hamming
+  distance of their raw hashes and as a `MediaIndex` over the hash, with the cosine
+  next to the distance it stands for.
+- **Auto tagging**: a notebook whose notes get tags from your own tags (`Tagger`) and
+  new ones written by a chat model (`Generator`), with every score and cutoff.
+
+The models load through `LazyEmbedder`, `LazyImageEmbedder` and `LazyCompleter`, so the
+service is up at once, and `POSTGRES=<dsn>` switches the stores from SQLite files to
+`vector/pgvec` and `tagging/pgcache`. See [zarf/examples/README.md](zarf/examples/README.md).
 
 ## Upgrading from v0.1.1: what changes for stored data
 

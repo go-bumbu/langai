@@ -113,13 +113,14 @@ semeval: ## compare embedding models on the golden set (downloads candidates int
 ##@ Examples
 #==========================================================================================
 # example runs zarf/examples' `make run`; its settings pass through, e.g.
-# `make example MODEL=qwen3vl ADDR=0.0.0.0:8085`. `make example-prepare` fetches the
-# sample media first (needs curl and ffmpeg).
+# `make example MODEL=qwen3vl ADDR=0.0.0.0:8085` or `make example POSTGRES=<dsn>`.
+# `make example-prepare` fetches the sample media and writes the sample
+# documents first (needs curl and ffmpeg).
 .PHONY: example example-prepare
-example: ## serve the example pages on http://127.0.0.1:8085 (media search, auto tagging)
+example: ## serve the example pages on http://127.0.0.1:8085 (status, media search, text search, duplicates, auto tagging)
 	@$(MAKE) --no-print-directory -C zarf/examples run
 
-example-prepare: ## download the example's sample photos and render its sample clips (needs curl and ffmpeg)
+example-prepare: ## download the example's sample photos, make copies and clips of them, write its sample documents (needs curl and ffmpeg)
 	@$(MAKE) --no-print-directory -C zarf/examples prepare
 
 #==========================================================================================
