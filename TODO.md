@@ -55,7 +55,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
   family, re-measure, and only then quote the result as a wrong-tag rate and
   set a new floor; until then 0.75 untagged only bounds that rate from above
   (at most about 1 document in 4 gets a wrong tag).
-- [ ] cachetest: check that Get refreshes the last-used time
+- [x] cachetest: check that Get refreshes the last-used time
   The conformance suite never checks that Get rewrites an entry's last-used time once it is older than CacheRefreshAfter, so a backend that skips it still passes, and Prune then drops vectors still in use and they get embedded again. Needs an injectable clock or a time-shifted Prune cutoff in the suite.
 - [x] per-chunk scoring for the Tagger's side topics
   Done 2026-11-07 (docs/superpowers/specs/2026-11-07-tagger-long-items-results.md): with ChunkBytes an item of 3+ pieces scores by the mean of its two best pieces, one of 2 by the best of its halves and their centroid, and a long member enters its tag's blend as its piece closest to the name. Long set: side 0.68 vs 0.58 (mean), precision 0.78 both, mention 0.02; pure max found 0.74 but 3.5 off-label tags a doc vs 2.0, and lost stitched two-topic pages (0.77 vs 0.80). Title-per-chunk added nothing. Cutoffs 0.42/0.58 hold; floors in TestTaggerLongTags.
@@ -277,32 +277,34 @@ and `todo list --json` cover the common actions — run `todo --help`.
 
 ## tagging and eval
 
-- [ ] one failing member text makes a space un-rebuildable
+- [x] one failing member text makes a space un-rebuildable
   All single-piece texts go in one Embed call that returns nil on error, so nothing is cached and every Suggest re-embeds everything and returns ErrNotRebuilt. Embed in sub-batches, Put after each, isolate the bad text, and decide a policy for a poison member.
-- [ ] a rebuild cannot be cancelled and a panic in it kills the process
+- [x] a rebuild cannot be cancelled and a panic in it kills the process
   The flight runs under context.WithoutCancel with no recover and Tagger has no Close, so a hung embedder blocks callers and a rebuild can outlive the DB or model.
-- [ ] same Model name with another dimension gives zero scores or a panic
+- [x] same Model name with another dimension gives zero scores or a panic
   Cached vectors are never checked against Dimensions(); a ragged centroid indexes out of range. Treat a wrong-length hit as a miss, error on length mismatch in scores, refuse ragged input.
-- [ ] Prune drops vectors that are still needed
+- [x] Prune drops vectors that are still needed
   Only changed tags are rebuilt, so stable tags' entries never refresh their last-used time and Prune(now-30d) removes them. Add a way to retain every key of the current catalog before pruning; document the 24h refresh granularity.
-- [ ] parseTags keeps reply scaffolding as tags
+- [x] parseTags keeps reply scaffolding as tags
   JSON arrays, a Tags: label, think blocks and bold markers come back as tag text. Strip think blocks and fences, try JSON, cut labels, widen the trim sets.
-- [ ] cleanPath drops an existing path the model reused
+- [x] cleanPath drops an existing path the model reused
   A level over 4 words or 40 runes voids the whole path, and reused paths are not mapped back to the application's spelling.
-- [ ] one failed window discards a whole long Generate
+- [x] one failed window discards a whole long Generate
   No retry; an empty reply on the short path looks like no tags. Retry a window once and return partial results with a joined error.
-- [ ] best-effort cache writes fail the request
+- [x] best-effort cache writes fail the request
   A failed last-used UPDATE fails Get and so Suggest although the vectors were read; a Put error discards freshly embedded vectors.
-- [ ] non-finite vectors are cached forever
+- [x] non-finite vectors are cached forever
   embedBatch checks only lengths; one NaN member makes the tag never match until the cache is wiped.
-- [ ] callers at two revisions re-read the catalog on every call
+- [x] callers at two revisions re-read the catalog on every call
   Flights are keyed by state, so two revisions rebuild concurrently and the later Apply leaves an unrecorded state. Key the flight by space.
 - [ ] eval.aliasSim matches inside words
   Tag ai scores 1 against container shipping; only the alias has a length floor. Match on word boundaries. Needs a re-measure of the long-set floors.
 - [ ] long-set headline numbers hide conventions
   A zero-tag document counts as precision 0 and the F1 is that of the mean precision and recall, not the mean per-document F1.
-- [ ] sqlcache: Postgres and SQLite differ behind the shared code
+- [x] sqlcache: Postgres and SQLite differ behind the shared code
   Postgres rejects NUL or invalid UTF-8 in index or model; concurrent CREATE TABLE IF NOT EXISTS at startup can fail.
+- [ ] examples: handle ErrPartial and call Tagger.Close / Prune
+  zarf/examples/autotag/notebook.go discards tags on any Generate error, including ErrPartial, and the examples never call Tagger.Close or Tagger.Prune.
 
 ## providers and fetch
 
@@ -349,3 +351,11 @@ and `todo list --json` cover the common actions — run `todo --help`.
   vectortest.Run runs 23 cases against MemStore, sqlitevec and pgvec (replacing the hand-copied per-backend tests): batch atomicity, exact coordinates, scope filters, allow/exclude lists, crowding, large limits, invalid vectors, dimension and model mismatch, deterministic ties, concurrent upserts, reads on an unknown index.
 - [x] langai.Normalize moved from vector to the root package
   Providers no longer import the storage port for it.
+- [x] tagging: rebuilds survive bad texts, cancels and panics
+  Commits 018142c 133ee49 f6bc9e6. Texts embed in batches of 32 with a cache write after each, so progress survives a failure or cancel; a failed batch is retried text by text, a member text that cannot be embedded (or embeds to NaN/zero) is skipped and logged at Warn through the new TaggerConfig.Logger, and a failing tag name fails the rebuild naming the tag. A rebuild is cancelled when its last waiter leaves, a panic in it becomes an ErrNotRebuilt error, rebuilds of one space serialize, and Tagger.Close() (tagging.ErrClosed) waits for them. A cached vector of another length is re-embedded and mixed lengths are an error, not a zero score or a panic. Open point: an embedder outage during a rebuild skips members and builds tags name-only until the space's next revision.
+- [x] tagging: Tagger.Prune and EmbeddingCache.Touch (breaking)
+  Commit acda626. Tagger.Prune(ctx, unusedSince, spaces...) first refreshes the last-used time of every name and member key of the given spaces, then prunes, and refuses a cutoff younger than CacheRefreshAfter; before, pruning dropped the vectors of stable tags. EmbeddingCache gained Touch (all backends, MemCache, cachetest); new Space{Index, Partition} and Scope.Touch.
+- [x] tagging: cache hardening and a clocked conformance suite (breaking)
+  Commits 6abd7c5 cfb3d4b. cachetest.Run now passes an injected clock and checks the last-used refresh, duplicate keys and the prune boundary (NewMemCacheWithClock). sqlcache refuses NUL or invalid UTF-8 in index and model names on both databases and creates its schema under a Postgres advisory lock. A failed last-used write no longer fails Get (ErrCacheWrite is logged) and a failed Put no longer discards fresh vectors.
+- [x] tagging: Generator reply parsing, tree paths and partial results
+  Commits 9fe889a ab8c4ae. parseTags strips think blocks and code fences, reads JSON arrays and {tags: [...]}, cuts labels, emphasis and trailing parentheticals and drops names with unbalanced markup (so a flat tag like dev > go is now dropped). cleanPath maps a reused tree path back to the application's spelling before the word limits. A failed or empty model call is retried once; a long Generate returns the tags of the windows it read together with ErrPartial, and an empty reply is ErrEmptyReply. make test-gentags was not re-run for the parser change.
