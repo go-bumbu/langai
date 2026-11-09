@@ -82,6 +82,10 @@ func (h *handler) info(w http.ResponseWriter, _ *http.Request) {
 		"images":   images,
 		"videos":   videos,
 		"lastScan": h.lib.LastScan(),
+		// the first scan runs behind the server, and a lazy model loads on
+		// the first file that needs it
+		"scanning":   h.lib.Scanning(),
+		"modelState": h.lib.ModelState(),
 	})
 }
 

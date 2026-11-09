@@ -72,7 +72,9 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 func (h *handler) info(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"info": h.nb.Info(), "chat": h.nb.ChatState()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"info": h.nb.Info(), "chat": h.nb.ChatState(), "embedder": h.nb.EmbedderState(), "runsOn": h.nb.RunsOn(),
+	})
 }
 
 func (h *handler) view(w http.ResponseWriter, r *http.Request) {

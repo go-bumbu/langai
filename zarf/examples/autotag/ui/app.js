@@ -55,9 +55,10 @@
     const d = await api('api/info');
     info = d.info;
     const chat = d.chat ? ` (${d.chat})` : '';
+    const embedder = d.embedder ? ` (${d.embedder})` : '';
     const chunks = info.chunkBytes > 0 ? ` · notes over ${info.chunkBytes} bytes read in parts` : '';
-    infoEl.innerHTML = `existing tags: <b>${info.embedder}</b> · name ≥ ${info.nameMinScore}, examples ≥ ${info.memberMinScore}${chunks}<br>` +
-      `new tags: <b>${info.completer}</b>${chat} scored by the embedder · cutoff ${info.minScore} · ${info.accel}`;
+    infoEl.innerHTML = `existing tags: <b>${info.embedder}</b>${embedder} · name ≥ ${info.nameMinScore}, examples ≥ ${info.memberMinScore}${chunks}<br>` +
+      `new tags: <b>${info.completer}</b>${chat} scored by the embedder · cutoff ${info.minScore} · ${d.runsOn || info.accel}`;
     $('#samples').hidden = !info.samples;
     $('#samples-tagged').hidden = !info.samples;
   }

@@ -68,11 +68,17 @@ type Config struct {
 	// SamplesFile is an eval dataset (zarf/eval/testdata/golden.yaml) that
 	// LoadSamples imports; empty disables it.
 	SamplesFile string
-	// ChatState says whether the chat model is loaded yet ("not loaded",
-	// "loading", "ready" or an error); nil leaves it out.
+	// ChatState says where the chat model's lazy loader stands ("not
+	// started", "loading", "loaded", or the error of a load that failed);
+	// nil leaves it out.
 	ChatState func() string
-	Info      Info
-	Logger    *slog.Logger
+	// EmbedderState says the same of the embedding model, and RunsOn what
+	// it runs on, which a lazy model knows once it is loaded; nil leaves
+	// them out, and the page then shows Info.Accel.
+	EmbedderState func() string
+	RunsOn        func() string
+	Info          Info
+	Logger        *slog.Logger
 }
 
 // Tag is one of the notebook's tags.
@@ -124,7 +130,10 @@ type Notebook struct {
 // New loads the notebook file, if there is one, builds a Tagger over it (the
 // notebook is the Catalog) and warms it: the tags are built and every note is
 // embedded, unless the cache holds it already. A fresh cache, or another
-// model, embeds everything again.
+// model, embeds everything again. When the cache holds everything, the
+// embedder is never called, so a lazy one stays unloaded. An embedder that
+// fails does not keep the notebook from opening: the failure is logged and
+// each note shows it until the embedder works.
 func New(ctx context.Context, cfg Config) (*Notebook, error) {
 	if cfg.Cache == nil || cfg.Chat == nil || cfg.Embedder == nil {
 		return nil, errors.New("autotag: Config needs a Cache, a Chat model and an Embedder")
@@ -162,8 +171,11 @@ func New(ctx context.Context, cfg Config) (*Notebook, error) {
 		texts[i] = itemText(n)
 	}
 	if err := nb.scope.Warm(ctx, revision(nb.rev), texts...); err != nil {
-		_ = tg.Close()
-		return nil, fmt.Errorf("autotag: warm the tagger: %w", err)
+		if ctx.Err() != nil {
+			_ = tg.Close()
+			return nil, fmt.Errorf("autotag: warm the tagger: %w", err)
+		}
+		nb.logger.Warn("notebook not warmed: its notes are embedded when the embedder works", "err", err)
 	}
 	nb.logger.Info("notebook loaded", "tags", len(nb.cat.Tags), "notes", len(nb.cat.Notes), "elapsed", time.Since(start).Round(time.Millisecond))
 	return nb, nil
@@ -270,6 +282,23 @@ func (nb *Notebook) ChatState() string {
 		return ""
 	}
 	return nb.cfg.ChatState()
+}
+
+// EmbedderState says whether the embedding model is loaded.
+func (nb *Notebook) EmbedderState() string {
+	if nb.cfg.EmbedderState == nil {
+		return ""
+	}
+	return nb.cfg.EmbedderState()
+}
+
+// RunsOn says what the embedding model runs on: what the Notebook was told
+// (Config.RunsOn), or Info.Accel.
+func (nb *Notebook) RunsOn() string {
+	if nb.cfg.RunsOn == nil {
+		return nb.cfg.Info.Accel
+	}
+	return nb.cfg.RunsOn()
 }
 
 // TagView is a tag with how many notes carry it by hand and how many the

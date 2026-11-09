@@ -47,11 +47,13 @@
     info = d.info;
     const scan = d.lastScan && d.lastScan.at && !d.lastScan.at.startsWith('0001')
       ? ` · scan ${ms(d.lastScan.elapsedMs)}: ${d.lastScan.indexed} indexed, ${d.lastScan.skipped} unchanged, ${d.lastScan.failed} failed, ${d.lastScan.removed} removed`
-      : '';
+      : (d.scanning ? ' · scanning…' : '');
+    const model = d.modelState ? ` · model ${d.modelState}` : '';
     const videos = info.mode === 'segments' ? `videos as ${ms(info.segmentMs)} segments` : 'videos as sampled frames';
-    infoEl.innerHTML = `<b>${info.model}</b> · ${info.dimensions} dims · ${info.provider} · ${videos} · min score ${info.minScore} · limit ${d.limit}<br>` +
+    infoEl.innerHTML = `<b>${info.model}</b> · ${info.dimensions} dims · ${info.provider}${model} · ${videos} · min score ${info.minScore} · limit ${d.limit}<br>` +
       `<b>${d.images}</b> images, <b>${d.videos}</b> videos in ${d.dir}${scan}`;
     $('#textsearch').hidden = !info.text;
+    return d;
   }
 
   // segmentOf names the segment a time falls in, in the segments mode
@@ -210,5 +212,11 @@
     }
   });
 
-  Promise.all([loadInfo(), loadItems()]).catch((e) => toast(e.message));
+  // while the startup scan runs, the catalog fills: look again until it is
+  // done
+  async function start() {
+    const [d] = await Promise.all([loadInfo(), loadItems()]);
+    if (d.scanning) setTimeout(() => start().catch(() => {}), 2000);
+  }
+  start().catch((e) => toast(e.message));
 })();

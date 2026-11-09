@@ -216,3 +216,28 @@ func TestHandler_TextSearch(t *testing.T) {
 		t.Errorf("no text embedder: %v", err)
 	}
 }
+
+func TestHandler_InfoSaysWhereTheModelAndTheScanStand(t *testing.T) {
+	f := scanned(t)
+	cfg := f.lib.cfg
+	cfg.ModelState = func() string { return "not started" }
+	lib, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib.scanning.Store(true)
+	srv := httptest.NewServer(Handler(lib))
+	t.Cleanup(srv.Close)
+	_, body, _ := get(t, srv.URL+"/api/info")
+	var info struct {
+		Scanning   bool   `json:"scanning"`
+		ModelState string `json:"modelState"`
+	}
+	decode(t, body, &info)
+	if !info.Scanning || info.ModelState != "not started" {
+		t.Errorf("info: %+v", info)
+	}
+	if f.lib.Scanning() || f.lib.ModelState() != "" {
+		t.Errorf("a library that is idle and was told nothing: %v %q", f.lib.Scanning(), f.lib.ModelState())
+	}
+}

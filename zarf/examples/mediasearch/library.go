@@ -56,6 +56,9 @@ type Config struct {
 	Limit int
 	// Info describes the setup; it is shown on the page as is.
 	Info Info
+	// ModelState says where the model's lazy loader stands ("not started",
+	// "loaded"...); nil leaves it out.
+	ModelState func() string
 	// Logger receives the scan's progress; nil discards it.
 	Logger *slog.Logger
 }
@@ -158,6 +161,18 @@ func (l *Library) Limit() int { return l.cfg.Limit }
 
 // Dir returns the media directory.
 func (l *Library) Dir() string { return l.cfg.Dir }
+
+// Scanning reports whether a scan runs now.
+func (l *Library) Scanning() bool { return l.scanning.Load() }
+
+// ModelState says where the model's loader stands; "" when the Library was
+// not told.
+func (l *Library) ModelState() string {
+	if l.cfg.ModelState == nil {
+		return ""
+	}
+	return l.cfg.ModelState()
+}
 
 // LastScan returns the stats of the last scan; zero before the first.
 func (l *Library) LastScan() ScanStats {
