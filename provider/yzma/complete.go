@@ -89,25 +89,25 @@ func (s CompleterSpec) validate() error {
 		return fmt.Errorf("yzma: model %q: URL without SHA256; pin the digest (make semeval logs it for an unpinned entry)", s.Name)
 	case s.Template == "":
 		return fmt.Errorf("yzma: model %q: Template is required", s.Name)
-	case s.ContextTokens < 0 || s.MaxNewTokens < 0:
-		return fmt.Errorf("yzma: model %q: ContextTokens and MaxNewTokens must not be negative", s.Name)
+	case s.ContextTokens < 0 || s.MaxNewTokens < 0 || s.Size < 0:
+		return fmt.Errorf("yzma: model %q: ContextTokens, MaxNewTokens and Size must not be negative", s.Name)
 	}
 	return nil
 }
 
 // NewCompleter prepares the libraries and the chat model cfg.Model selects
 // (downloading whatever is missing, see fetch.go) and loads them. cfg is New's
-// Config, read for the chat model: Model names one of the pinned chat models
-// (see LookupCompleterSpec), "" meaning DefaultCompleterModel, so a Config
-// that leaves it empty can build the Embedder and the Completer both. ctx
-// bounds the downloads only; the returned Completer outlives it. It is
-// OpenCompleter with LookupCompleterSpec(cfg.Model, cfg.ModelsDir).
+// Config, read for the chat model: Model names one of CompleterModels, ""
+// meaning DefaultCompleterModel, so a Config that leaves it empty can build
+// the Embedder and the Completer both. ctx bounds the downloads only; the
+// returned Completer outlives it. It is OpenCompleter with
+// LookupCompleterSpec(cfg.Model, cfg.ModelsDir) and cfg.Runtime.
 func NewCompleter(ctx context.Context, cfg Config) (*Completer, error) {
 	spec, err := LookupCompleterSpec(cfg.Model, cfg.ModelsDir)
 	if err != nil {
 		return nil, err
 	}
-	return OpenCompleter(ctx, spec, cfg.runtime())
+	return OpenCompleter(ctx, spec, cfg.Runtime)
 }
 
 // OpenCompleter prepares the libraries and the model described by spec
@@ -119,6 +119,9 @@ func NewCompleter(ctx context.Context, cfg Config) (*Completer, error) {
 // OpenCompleter.
 func OpenCompleter(ctx context.Context, spec CompleterSpec, rt Runtime) (*Completer, error) {
 	if err := spec.validate(); err != nil {
+		return nil, err
+	}
+	if err := rt.validate(); err != nil {
 		return nil, err
 	}
 	ctx, cancel := fetch.WithDefaultTimeout(ctx, completerDownloadTimeout)

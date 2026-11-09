@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Pinned models. The files are the Optimum exports onnx-community publishes
@@ -22,7 +23,7 @@ const (
 )
 
 // pinned maps a model name to its spec with File relative to the models
-// directory; Spec fills the directory in.
+// directory; LookupSpec fills the directory in.
 var pinned = map[string]ModelSpec{
 	// the vision tower only, fp32; Apache-2.0
 	DefaultModel: {
@@ -57,20 +58,24 @@ var pinned = map[string]ModelSpec{
 	},
 }
 
-// Models lists the pinned model names, sorted.
+// Models lists the names of the pinned models New selects from,
+// DefaultModel first and the others sorted.
 func Models() []string {
 	names := make([]string, 0, len(pinned))
 	for name := range pinned {
-		names = append(names, name)
+		if name != DefaultModel {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
-	return names
+	return append([]string{DefaultModel}, names...)
 }
 
-// Spec returns the pinned spec of the named model ("" means DefaultModel)
-// with its file placed inside modelsDir ("" means "models"), or an error
-// listing the pinned names.
-func Spec(name, modelsDir string) (ModelSpec, error) {
+// LookupSpec returns the pinned spec of the named model, its file inside
+// modelsDir ("" means "models"). name "" means DefaultModel; any other name
+// must be one of Models, and the error for one that is not lists them. Its
+// Dims lets a caller size a vector store before the model is loaded.
+func LookupSpec(name, modelsDir string) (ModelSpec, error) {
 	if name == "" {
 		name = DefaultModel
 	}
@@ -79,7 +84,7 @@ func Spec(name, modelsDir string) (ModelSpec, error) {
 	}
 	spec, ok := pinned[name]
 	if !ok {
-		return ModelSpec{}, fmt.Errorf("onnx: unknown model %q: pinned models are %v; use Open with a ModelSpec for another", name, Models())
+		return ModelSpec{}, fmt.Errorf("onnx: unsupported model %q: use one of %s, or Open with a ModelSpec for another", name, strings.Join(Models(), ", "))
 	}
 	spec.File = filepath.Join(modelsDir, spec.File)
 	return spec, nil

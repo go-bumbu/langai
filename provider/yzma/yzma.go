@@ -8,14 +8,16 @@
 // are offline. The libraries load once per process, so an Embedder and a
 // Completer run side by side.
 //
-// New runs one of the pinned models (see Spec), DefaultModel unless
-// Config.Model selects another; Open runs any GGUF described by a ModelSpec
-// (pooling, prefixes, context cap) for the evaluation tooling. An Embedder
-// runs the model it was opened with until Close. Running another model means
-// opening another Embedder, and two run side by side, e.g. while a migration
-// builds the next model's vectors into another store generation. NewCompleter
-// and OpenCompleter do the same for chat models (see LookupCompleterSpec and
-// CompleterSpec), DefaultCompleterModel unless Config.Model selects another.
+// Each kind of model opens two ways, in one shape. New, NewCompleter and
+// NewVision take a Config, which names one of the pinned models (Models,
+// CompleterModels, VisionModels; the default of each kind when it names
+// none) and embeds the Runtime; Open, OpenCompleter and OpenVision take a
+// spec instead (ModelSpec, CompleterSpec, VisionSpec: any GGUF, e.g. for the
+// evaluation tooling) and the Runtime. LookupSpec, LookupCompleterSpec and
+// LookupVisionSpec return the pinned specs. A Vision also takes its
+// VisionOptions, both ways. A model runs until Close. Running another model
+// means opening another one, and two run side by side, e.g. while a
+// migration builds the next model's vectors into another store generation.
 //
 // The pinned llama.cpp build (LibTag) matches the yzma version this module
 // requires, whose Go bindings mirror exactly that build's ABI. A module that
@@ -90,54 +92,26 @@ func (p Pooling) normalized() (Pooling, error) {
 // rather than sizing its context for inputs that never come.
 const defaultMaxTokens = 512
 
-// Config selects the model, where models and libraries live, and how the
-// model runs.
+// Config selects a pinned model by name and the runtime that runs it: what
+// New, NewCompleter and NewVision take. Open, OpenCompleter and OpenVision
+// take a spec and the Runtime instead.
 type Config struct {
+	// Runtime is the llama.cpp libraries and how the model runs.
+	Runtime
 	// ModelsDir is the directory the GGUF model is downloaded to and loaded
 	// from. Defaults to "models". Pre-seed it for offline installs.
 	ModelsDir string
-	// Model selects one of the pinned models by name (see Spec); "" means
-	// DefaultModel. The Embedder runs it for its whole life. NewCompleter reads
-	// it as the name of a pinned chat model instead (see LookupCompleterSpec),
-	// "" meaning DefaultCompleterModel, so a Config that leaves it empty builds
-	// both.
+	// Model selects one of the pinned models by name; "" means the default
+	// of the kind being opened. New reads it as an embedding model (see
+	// Models and LookupSpec, "" meaning DefaultModel), NewCompleter as a chat
+	// model (CompleterModels, DefaultCompleterModel) and NewVision as a
+	// vision model (VisionModels, DefaultVisionModel), so a Config that
+	// leaves it empty builds all three.
 	Model string
-	// LibDir holds the llama.cpp shared libraries (libllama.so and friends).
-	// Required.
-	LibDir string
-	// ManagedLibDir marks LibDir as owned by this package: when the libraries
-	// are missing, the pinned build is downloaded into it. Give it a directory
-	// of its own: only a missing or empty one, or one an earlier install left
-	// its record in, is ever filled or replaced, and anything else is an
-	// error rather than a deletion. Installs are serialized by a lock file
-	// next to it ("<LibDir>.lock"), between goroutines and processes, and the
-	// libraries a process has loaded are never replaced under it: asking for
-	// another build by name in the same process is an error. An
-	// operator-supplied LibDir (false) is never written to, only checked.
-	ManagedLibDir bool
-	// Threads is the thread count for model evaluation; <= 0 picks a default
-	// of at most four.
-	Threads int
-	// Accel is what runs the model: "" picks from the hardware (a GPU when
-	// one registers, the CPU otherwise), AccelCPU stays on the CPU, and
-	// AccelVulkan, AccelCUDA or AccelMetal require that backend. A managed
-	// LibDir gets the llama.cpp build the choice needs.
-	Accel Accel
-	// GPULayers caps how many layers go to the GPU when one is used; 0 means
-	// all of them.
-	GPULayers int
-	// Logger receives this package's progress at Info (each first-use
-	// download before it starts, the installed libraries and the downloaded
-	// model, the llama.cpp load) and llama.cpp's own warnings and errors; nil
-	// discards this package's lines. llama.cpp has one log sink for the whole
-	// process, so its lines go to the Logger of the latest New, NewCompleter
-	// or NewVision that set one, whichever model they are about: a nil Logger
-	// leaves them where an earlier open pointed them.
-	Logger *slog.Logger
 }
 
 // ModelSpec describes one GGUF embedding model: where its file is (or comes
-// from) and how it must be run. Spec returns the pinned ones New selects
+// from) and how it must be run. LookupSpec returns the pinned ones New selects
 // from; the evaluation command builds others from its models file.
 type ModelSpec struct {
 	// Name names the model. It is the first part of the identity to store
@@ -170,15 +144,79 @@ type ModelSpec struct {
 	Dims int
 }
 
-// Runtime is what Open needs besides the model: the llama.cpp libraries and
-// how to run them. The fields mirror Config's.
+// validate reports a spec Open cannot run.
+func (spec ModelSpec) validate() error {
+	switch {
+	case spec.Name == "":
+		return errors.New("yzma: ModelSpec.Name is required")
+	case spec.File == "":
+		return fmt.Errorf("yzma: model %q: File is required", spec.Name)
+	case spec.URL != "" && spec.SHA256 == "":
+		return fmt.Errorf("yzma: model %q: URL without SHA256; pin the digest (make semeval logs it for an unpinned entry)", spec.Name)
+	case spec.MaxTokens < 0 || spec.Dims < 0 || spec.Size < 0:
+		return fmt.Errorf("yzma: model %q: MaxTokens, Dims and Size must not be negative", spec.Name)
+	}
+	if _, err := spec.Pooling.normalized(); err != nil {
+		return fmt.Errorf("yzma: model %q: %w", spec.Name, err)
+	}
+	return nil
+}
+
+// Runtime is what Open, OpenCompleter and OpenVision need besides the
+// model: the llama.cpp libraries and how to run them. The libraries load
+// once per process, so every model opened in it shares them.
 type Runtime struct {
-	LibDir        string
+	// LibDir holds the llama.cpp shared libraries (libllama.so and friends).
+	// Required.
+	LibDir string
+	// ManagedLibDir marks LibDir as owned by this package: when the libraries
+	// are missing, the pinned build is downloaded into it. Give it a directory
+	// of its own: only a missing or empty one, or one an earlier install left
+	// its record in, is ever filled or replaced, and anything else is an
+	// error rather than a deletion. Installs are serialized by a lock file
+	// next to it ("<LibDir>.lock"), between goroutines and processes, and the
+	// libraries a process has loaded are never replaced under it: asking for
+	// another build by name in the same process is an error. An
+	// operator-supplied LibDir (false) is never written to, only checked.
 	ManagedLibDir bool
-	Threads       int
-	Accel         Accel
-	GPULayers     int
-	Logger        *slog.Logger
+	// Threads is the thread count for model evaluation; 0 picks a default of
+	// at most four. Negative is an error.
+	Threads int
+	// Accel is what runs the model: "" picks from the hardware (a GPU when
+	// one registers, the CPU otherwise), AccelCPU stays on the CPU, and
+	// AccelVulkan, AccelCUDA or AccelMetal require that backend. A managed
+	// LibDir gets the llama.cpp build the choice needs. Any other value is an
+	// error.
+	Accel Accel
+	// GPULayers caps how many layers go to the GPU when one is used; 0 means
+	// all of them. Negative is an error.
+	GPULayers int
+	// Logger receives this package's progress at Info (each first-use
+	// download before it starts, the installed libraries and the downloaded
+	// model, the llama.cpp load) and llama.cpp's own warnings and errors; nil
+	// discards this package's lines. llama.cpp has one log sink for the whole
+	// process, so its lines go to the Logger of the latest open that set one,
+	// whichever model they are about: a nil Logger leaves them where an
+	// earlier open pointed them.
+	Logger *slog.Logger
+}
+
+// validate reports a Runtime no open can run with, before anything is
+// downloaded or loaded.
+func (rt Runtime) validate() error {
+	if rt.LibDir == "" {
+		return errors.New("yzma: Runtime.LibDir is required")
+	}
+	if _, err := rt.Accel.normalized(); err != nil {
+		return fmt.Errorf("yzma: %w", err)
+	}
+	if rt.Threads < 0 {
+		return fmt.Errorf("yzma: Runtime.Threads %d is negative: use 0 for the default", rt.Threads)
+	}
+	if rt.GPULayers < 0 {
+		return fmt.Errorf("yzma: Runtime.GPULayers %d is negative: use 0 for all layers", rt.GPULayers)
+	}
+	return nil
 }
 
 // prepare validates rt, fills its defaults, makes sure libDir holds the
@@ -194,17 +232,14 @@ func (rt *Runtime) prepare(ctx context.Context, api runtimeAPI, loader *runtimeL
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	if rt.LibDir == "" {
-		return "", nil, errors.New("yzma: LibDir is required")
-	}
-	if _, err := rt.Accel.normalized(); err != nil {
-		return "", nil, fmt.Errorf("yzma: %w", err)
+	if err := rt.validate(); err != nil {
+		return "", nil, err
 	}
 	libDir, err = filepath.Abs(rt.LibDir)
 	if err != nil {
 		return "", nil, err
 	}
-	if rt.Threads <= 0 {
+	if rt.Threads == 0 {
 		rt.Threads = defaultThreads()
 	}
 	if from := loader.loadedDir(); rt.ManagedLibDir && from != "" && from != libDir {
@@ -250,11 +285,11 @@ func hasGPU(devices []device) bool {
 	return false
 }
 
-// DefaultSpec is Spec(DefaultModel, modelsDir): the pinned EmbeddingGemma
+// DefaultSpec is LookupSpec(DefaultModel, modelsDir): the pinned EmbeddingGemma
 // Q8_0 GGUF inside modelsDir ("" means "models"), mean pooling, its query and
 // document prompts, the 512-token cap, 768 dimensions.
 func DefaultSpec(modelsDir string) ModelSpec {
-	spec, _ := Spec(DefaultModel, modelsDir) // DefaultModel is always pinned
+	spec, _ := LookupSpec(DefaultModel, modelsDir) // DefaultModel is always pinned
 	return spec
 }
 
@@ -270,18 +305,14 @@ var detectHW = func() hw.Report { return hw.Detect(hw.Needs{CUDARuntime: cudaRun
 // New prepares the libraries and the model cfg.Model selects (downloading
 // whatever is missing, see fetch.go), loads them, and probes the model once
 // for its dimensionality. ctx bounds the downloads only; the returned
-// Embedder outlives it. It is Open with Spec(cfg.Model, cfg.ModelsDir).
+// Embedder outlives it. It is Open with LookupSpec(cfg.Model, cfg.ModelsDir)
+// and cfg.Runtime.
 func New(ctx context.Context, cfg Config) (*Embedder, error) {
-	spec, err := Spec(cfg.Model, cfg.ModelsDir)
+	spec, err := LookupSpec(cfg.Model, cfg.ModelsDir)
 	if err != nil {
 		return nil, err
 	}
-	return Open(ctx, spec, cfg.runtime())
-}
-
-// runtime is the Runtime a Config describes.
-func (cfg Config) runtime() Runtime {
-	return Runtime{LibDir: cfg.LibDir, ManagedLibDir: cfg.ManagedLibDir, Threads: cfg.Threads, Accel: cfg.Accel, GPULayers: cfg.GPULayers, Logger: cfg.Logger}
+	return Open(ctx, spec, cfg.Runtime)
 }
 
 // Open prepares the libraries and the model described by spec (downloading
@@ -292,19 +323,13 @@ func (cfg Config) runtime() Runtime {
 // outlives it and is released with Close. A download that was cut short is
 // picked up where it stopped by the next Open.
 func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
-	if spec.Name == "" {
-		return nil, errors.New("yzma: ModelSpec.Name is required")
+	if err := spec.validate(); err != nil {
+		return nil, err
 	}
-	if spec.File == "" {
-		return nil, fmt.Errorf("yzma: model %q: File is required", spec.Name)
+	if err := rt.validate(); err != nil {
+		return nil, err
 	}
-	if spec.URL != "" && spec.SHA256 == "" {
-		return nil, fmt.Errorf("yzma: model %q: URL without SHA256; pin the digest (make semeval logs it for an unpinned entry)", spec.Name)
-	}
-	pooling, err := spec.Pooling.normalized()
-	if err != nil {
-		return nil, fmt.Errorf("yzma: model %q: %w", spec.Name, err)
-	}
+	pooling, _ := spec.Pooling.normalized() // validate checked it
 	ctx, cancel := fetch.WithDefaultTimeout(ctx, downloadTimeout)
 	defer cancel()
 	// This package logs to logger, which discards when rt.Logger is nil.

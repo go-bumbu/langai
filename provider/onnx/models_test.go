@@ -7,32 +7,32 @@ import (
 )
 
 func TestSpec_PinnedModels(t *testing.T) {
-	if got := Models(); strings.Join(got, ",") != DINOv2Model+","+DefaultModel {
+	if got := Models(); strings.Join(got, ",") != DefaultModel+","+DINOv2Model {
 		t.Errorf("Models() = %v", got)
 	}
 	for _, name := range Models() {
-		spec, err := Spec(name, "data/models")
+		spec, err := LookupSpec(name, "data/models")
 		if err != nil {
-			t.Fatalf("Spec(%s): %v", name, err)
+			t.Fatalf("LookupSpec(%s): %v", name, err)
 		}
 		if spec.Name != name || filepath.Dir(spec.File) != filepath.Clean("data/models") {
-			t.Errorf("Spec(%s) = %+v", name, spec)
+			t.Errorf("LookupSpec(%s) = %+v", name, spec)
 		}
 		if spec.URL == "" || len(spec.SHA256) != 64 || spec.Size == 0 || spec.Dims != 768 || spec.Side != 224 {
-			t.Errorf("Spec(%s) is not fully pinned: %+v", name, spec)
+			t.Errorf("LookupSpec(%s) is not fully pinned: %+v", name, spec)
 		}
 		if _, err := spec.normalized(); err != nil {
-			t.Errorf("Spec(%s) does not validate: %v", name, err)
+			t.Errorf("LookupSpec(%s) does not validate: %v", name, err)
 		}
 	}
 	def := DefaultSpec("")
 	if def.Name != DefaultModel || def.File != filepath.Join("models", defaultModelFile) {
 		t.Errorf("DefaultSpec = %+v", def)
 	}
-	if spec, err := Spec("", ""); err != nil || spec != def {
-		t.Errorf("Spec(\"\", \"\") = %+v, %v; want the default", spec, err)
+	if spec, err := LookupSpec("", ""); err != nil || spec != def {
+		t.Errorf("LookupSpec(\"\", \"\") = %+v, %v; want the default", spec, err)
 	}
-	_, err := Spec("nobody/nothing", "")
+	_, err := LookupSpec("nobody/nothing", "")
 	if err == nil || !strings.Contains(err.Error(), DefaultModel) {
 		t.Errorf("unknown model: err = %v, want the pinned names listed", err)
 	}

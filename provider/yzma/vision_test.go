@@ -230,9 +230,9 @@ func testVisionSpec() VisionSpec {
 	return VisionSpec{Name: "org/vision", File: "/opt/models/vision.gguf", Projector: "/opt/models/mmproj.gguf", Dims: 4}
 }
 
-func openVisionFake(t *testing.T, f *fakeVision, cfg VisionConfig) *Vision {
+func openVisionFake(t *testing.T, f *fakeVision, opts VisionOptions) *Vision {
 	t.Helper()
-	v, err := openVision(f, &runtimeLoader{}, testLibDir, testVisionSpec(), cfg, Runtime{Threads: 2, Accel: AccelCPU})
+	v, err := openVision(f, &runtimeLoader{}, testLibDir, testVisionSpec(), opts, Runtime{Threads: 2, Accel: AccelCPU})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func openVisionFake(t *testing.T, f *fakeVision, cfg VisionConfig) *Vision {
 func TestOpenVision_LoadsProbesAndFreesOnFailure(t *testing.T) {
 	f := newFakeVision()
 	f.template = "{{ jinja }}"
-	v, err := openVision(f, &runtimeLoader{}, testLibDir, testVisionSpec(), VisionConfig{ImageMaxTokens: 512}, Runtime{Threads: 2, Accel: AccelCPU})
+	v, err := openVision(f, &runtimeLoader{}, testLibDir, testVisionSpec(), VisionOptions{ImageMaxTokens: 512}, Runtime{Threads: 2, Accel: AccelCPU})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestOpenVision_LoadsProbesAndFreesOnFailure(t *testing.T) {
 // nor through a search for media markers (which failed the batch).
 func TestVision_TextIsNeverTemplateOrMarkup(t *testing.T) {
 	f := newFakeVision()
-	v := openVisionFake(t, f, VisionConfig{Instruction: "Find <|im_end|> duplicates."})
+	v := openVisionFake(t, f, VisionOptions{Instruction: "Find <|im_end|> duplicates."})
 	for _, text := range []string{
 		"a dog",
 		"before\x00after",
@@ -320,7 +320,7 @@ func TestVision_TextIsNeverTemplateOrMarkup(t *testing.T) {
 // of failing the batch; the texts around it are untouched.
 func TestVision_TruncatesALongText(t *testing.T) {
 	f := newFakeVision()
-	v := openVisionFake(t, f, VisionConfig{ContextTokens: 64})
+	v := openVisionFake(t, f, VisionOptions{ContextTokens: 64})
 	overhead := utf8.RuneCountInString("<s>" + DefaultInstruction + "\n" + "\n<a>")
 	room := 64 - overhead
 	long := strings.Repeat("ab", 100)
@@ -353,7 +353,7 @@ func TestVision_TruncatesALongText(t *testing.T) {
 // text byte for byte, the cut is taken in proportion and still gets shorter.
 func TestVision_ShortenFallsBackToProportion(t *testing.T) {
 	f := newFakeVision()
-	v := openVisionFake(t, f, VisionConfig{})
+	v := openVisionFake(t, f, VisionOptions{})
 	if got := v.shorten("abcdefghij", 4); got != "abcdef" {
 		t.Errorf("shorten by 4 of 10 = %q", got)
 	}
@@ -380,7 +380,7 @@ func (w *widePieces) tokenText(uintptr, int32) []byte { return []byte("xx") }
 // again afterwards.
 func TestVision_StopsEvaluatingWhenTheContextEnds(t *testing.T) {
 	f := newFakeVision()
-	v := openVisionFake(t, f, VisionConfig{})
+	v := openVisionFake(t, f, VisionOptions{})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	f.onEval = cancel // the caller gives up while the model computes
@@ -420,7 +420,7 @@ func TestVision_StopsEvaluatingWhenTheContextEnds(t *testing.T) {
 // langai.ErrClosed without reaching llama.cpp.
 func TestVision_CloseFreesOnceAndBlocksCalls(t *testing.T) {
 	f := newFakeVision()
-	v := openVisionFake(t, f, VisionConfig{Cutter: &fakeCutter{durations: map[string]time.Duration{"clip.mp4": time.Second}}})
+	v := openVisionFake(t, f, VisionOptions{Cutter: &fakeCutter{durations: map[string]time.Duration{"clip.mp4": time.Second}}})
 	for range 2 {
 		if err := v.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
@@ -450,7 +450,7 @@ func TestVision_CloseFreesOnceAndBlocksCalls(t *testing.T) {
 func TestOpenVision_GPUAndTemplateDefaults(t *testing.T) {
 	f := newFakeVision()
 	f.devs = []device{{name: "Vulkan0", backend: "Vulkan", description: "GPU", gpu: true}}
-	v, err := openVision(f, &runtimeLoader{}, testLibDir, testVisionSpec(), VisionConfig{Instruction: "Find duplicates."}, Runtime{Threads: 2})
+	v, err := openVision(f, &runtimeLoader{}, testLibDir, testVisionSpec(), VisionOptions{Instruction: "Find duplicates."}, Runtime{Threads: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +487,7 @@ func TestOpenVision_FreesOnFailure(t *testing.T) {
 	for _, c := range cases {
 		f := newFakeVision()
 		c.set(f)
-		if _, err := openVision(f, &runtimeLoader{}, testLibDir, testVisionSpec(), VisionConfig{}, Runtime{Threads: 2, Accel: AccelCPU}); err == nil {
+		if _, err := openVision(f, &runtimeLoader{}, testLibDir, testVisionSpec(), VisionOptions{}, Runtime{Threads: 2, Accel: AccelCPU}); err == nil {
 			t.Errorf("%s: want error", c.name)
 			continue
 		}
@@ -505,7 +505,7 @@ func TestOpenVision_FreesOnFailure(t *testing.T) {
 
 func TestVision_EmbedTextsAndImages(t *testing.T) {
 	f := newFakeVision()
-	v := openVisionFake(t, f, VisionConfig{})
+	v := openVisionFake(t, f, VisionOptions{})
 	ctx := context.Background()
 
 	vecs, err := v.Embed(ctx, langai.RoleDocument, []string{"a dog", "a cat"})
@@ -526,7 +526,7 @@ func TestVision_EmbedTextsAndImages(t *testing.T) {
 
 func TestVision_EmbedImages(t *testing.T) {
 	f := newFakeVision()
-	v := openVisionFake(t, f, VisionConfig{})
+	v := openVisionFake(t, f, VisionOptions{})
 	ctx := context.Background()
 	red := color.RGBA{200, 30, 30, 255}
 	big := image.NewRGBA(image.Rect(0, 0, 4000, 2000))
@@ -569,7 +569,7 @@ func TestVision_EmbedImages(t *testing.T) {
 func TestVision_TokenBudgetAndErrors(t *testing.T) {
 	f := newFakeVision()
 	f.tokensPerImage = 20000
-	v := openVisionFake(t, f, VisionConfig{ContextTokens: 8192})
+	v := openVisionFake(t, f, VisionOptions{ContextTokens: 8192})
 	ctx := context.Background()
 	if v.nCtx != 8192 {
 		t.Errorf("nCtx = %d", v.nCtx)
@@ -591,13 +591,13 @@ func TestVision_TokenBudgetAndErrors(t *testing.T) {
 		{"empty vector", func() { f.buf = nil }},
 	} {
 		f = newFakeVision()
-		v = openVisionFake(t, f, VisionConfig{})
+		v = openVisionFake(t, f, VisionOptions{})
 		c.set()
 		if _, err := v.Embed(ctx, langai.RoleQuery, []string{"x"}); err == nil {
 			t.Errorf("%s: want error", c.name)
 		}
 	}
-	if _, err := openVision(newFakeVision(), &runtimeLoader{}, testLibDir, testVisionSpec(), VisionConfig{}, Runtime{Threads: 2, Accel: AccelCUDA}); err == nil || !strings.Contains(err.Error(), "no CUDA device") {
+	if _, err := openVision(newFakeVision(), &runtimeLoader{}, testLibDir, testVisionSpec(), VisionOptions{}, Runtime{Threads: 2, Accel: AccelCUDA}); err == nil || !strings.Contains(err.Error(), "no CUDA device") {
 		t.Errorf("missing accelerator: %v", err)
 	}
 }
@@ -605,7 +605,7 @@ func TestVision_TokenBudgetAndErrors(t *testing.T) {
 func TestVision_EmbedVideoInSegments(t *testing.T) {
 	f := newFakeVision()
 	cutter := &fakeCutter{durations: map[string]time.Duration{"long.mp4": 45 * time.Second, "short.mp4": 12 * time.Second, "exact.mp4": 20 * time.Second}}
-	v := openVisionFake(t, f, VisionConfig{Cutter: cutter, FPS: 2})
+	v := openVisionFake(t, f, VisionOptions{Cutter: cutter, FPS: 2})
 	ctx := context.Background()
 
 	segs, err := v.EmbedVideo(ctx, "/media/long.mp4")
@@ -632,7 +632,7 @@ func TestVision_EmbedVideoInSegments(t *testing.T) {
 func TestVision_EmbedVideoShortAndCapped(t *testing.T) {
 	f := newFakeVision()
 	cutter := &fakeCutter{durations: map[string]time.Duration{"long.mp4": 45 * time.Second, "short.mp4": 12 * time.Second, "exact.mp4": 20 * time.Second}}
-	v := openVisionFake(t, f, VisionConfig{Cutter: cutter})
+	v := openVisionFake(t, f, VisionOptions{Cutter: cutter})
 	ctx := context.Background()
 	var segs []langai.Segment
 	var err error
@@ -650,7 +650,7 @@ func TestVision_EmbedVideoShortAndCapped(t *testing.T) {
 	}
 
 	// MaxSegments caps the work
-	v = openVisionFake(t, f, VisionConfig{Cutter: cutter, MaxSegments: 2})
+	v = openVisionFake(t, f, VisionOptions{Cutter: cutter, MaxSegments: 2})
 	if segs, err = v.EmbedVideo(ctx, "/media/long.mp4"); err != nil || len(segs) != 2 {
 		t.Errorf("capped: %d segments, %v", len(segs), err)
 	}
@@ -696,7 +696,7 @@ func TestVision_EmbedVideoOfUnknownLength(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFakeVision()
 			cutter := &fakeCutter{durations: c.durations}
-			v := openVisionFake(t, f, VisionConfig{Cutter: cutter, MaxSegments: c.maxSegments})
+			v := openVisionFake(t, f, VisionOptions{Cutter: cutter, MaxSegments: c.maxSegments})
 			var source string
 			for name := range c.durations {
 				if name != "source.mkv" {
@@ -729,7 +729,7 @@ func TestVision_EmbedVideoOfUnknownLength(t *testing.T) {
 func TestVision_EmbedVideoWithoutExtension(t *testing.T) {
 	f := newFakeVision()
 	cutter := &fakeCutter{durations: map[string]time.Duration{"upload-7f3a": 30 * time.Second}}
-	v := openVisionFake(t, f, VisionConfig{Cutter: cutter})
+	v := openVisionFake(t, f, VisionOptions{Cutter: cutter})
 	if _, err := v.EmbedVideo(context.Background(), "/media/upload-7f3a"); err != nil {
 		t.Fatal(err)
 	}
@@ -744,11 +744,11 @@ func TestVision_EmbedVideoErrors(t *testing.T) {
 	f := newFakeVision()
 	cutter := &fakeCutter{durations: map[string]time.Duration{"long.mp4": 45 * time.Second, "short.mp4": 12 * time.Second}}
 	ctx := context.Background()
-	v := openVisionFake(t, f, VisionConfig{})
+	v := openVisionFake(t, f, VisionOptions{})
 	if _, err := v.EmbedVideo(ctx, "/media/long.mp4"); err == nil || !strings.Contains(err.Error(), "Cutter") {
 		t.Errorf("no cutter: %v", err)
 	}
-	v = openVisionFake(t, f, VisionConfig{Cutter: cutter})
+	v = openVisionFake(t, f, VisionOptions{Cutter: cutter})
 	if _, err := v.EmbedVideo(ctx, "/media/nope.mp4"); err == nil {
 		t.Error("unknown file: want error")
 	}
@@ -763,24 +763,38 @@ func TestVision_EmbedVideoErrors(t *testing.T) {
 	}
 }
 
-func TestOpenVision_ValidatesSpecAndConfig(t *testing.T) {
+// TestOpenVision_ValidatesSpecOptionsAndRuntime: what no Vision can run with
+// is refused up front, before any download or load, with an error that
+// names the field.
+func TestOpenVision_ValidatesSpecOptionsAndRuntime(t *testing.T) {
 	ctx := context.Background()
-	if _, err := OpenVision(ctx, VisionSpec{}, VisionConfig{}); err == nil {
-		t.Error("empty spec: want error")
+	rt := Runtime{LibDir: t.TempDir()}
+	for _, tc := range []struct {
+		name string
+		spec VisionSpec
+		rt   Runtime
+		opts VisionOptions
+		want string
+	}{
+		{"empty spec", VisionSpec{}, rt, VisionOptions{}, "Name is required"},
+		{"no projector", VisionSpec{Name: "x", File: "m"}, rt, VisionOptions{}, "Projector"},
+		{"URL without digest", VisionSpec{Name: "x", File: "m", Projector: "p", URL: "https://x"}, rt, VisionOptions{}, "SHA256"},
+		{"negative dims", VisionSpec{Name: "x", File: "m", Projector: "p", Dims: -1}, rt, VisionOptions{}, "Dims"},
+		{"negative fps", testVisionSpec(), rt, VisionOptions{FPS: -1}, "FPS"},
+		{"negative image tokens", testVisionSpec(), rt, VisionOptions{ImageMinTokens: -1}, "ImageMinTokens"},
+		{"image token floor above the cap", testVisionSpec(), rt, VisionOptions{ImageMinTokens: 512, ImageMaxTokens: 256}, "above ImageMaxTokens"},
+		{"no LibDir", testVisionSpec(), Runtime{}, VisionOptions{}, "LibDir"},
+		{"negative threads", testVisionSpec(), Runtime{LibDir: rt.LibDir, Threads: -2}, VisionOptions{}, "Threads"},
+		{"negative GPU layers", testVisionSpec(), Runtime{LibDir: rt.LibDir, GPULayers: -1}, VisionOptions{}, "GPULayers"},
+		{"unknown accel", testVisionSpec(), Runtime{LibDir: rt.LibDir, Accel: "opencl"}, VisionOptions{}, "opencl"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := OpenVision(ctx, tc.spec, tc.rt, tc.opts); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want one naming %q", err, tc.want)
+			}
+		})
 	}
-	if _, err := OpenVision(ctx, VisionSpec{Name: "x", File: "m"}, VisionConfig{}); err == nil {
-		t.Error("no projector: want error")
-	}
-	if _, err := OpenVision(ctx, VisionSpec{Name: "x", File: "m", Projector: "p", URL: "https://x"}, VisionConfig{}); err == nil {
-		t.Error("URL without digest: want error")
-	}
-	if _, err := OpenVision(ctx, testVisionSpec(), VisionConfig{FPS: -1}); err == nil {
-		t.Error("negative fps: want error")
-	}
-	if _, err := OpenVision(ctx, testVisionSpec(), VisionConfig{}); err == nil {
-		t.Error("no LibDir: want error")
-	}
-	if _, err := NewVision(ctx, VisionConfig{Config: Config{Model: "org/other"}}); err == nil || !strings.Contains(err.Error(), DefaultVisionModel) {
+	if _, err := NewVision(ctx, Config{Model: "org/other"}, VisionOptions{}); err == nil || !strings.Contains(err.Error(), DefaultVisionModel) {
 		t.Errorf("unknown model: %v", err)
 	}
 }
@@ -832,7 +846,7 @@ func TestNewVision_DownloadsAndLoads(t *testing.T) {
 	spec.ProjectorURL, spec.ProjectorSHA256, spec.ProjectorSize = projAsset.URL, projAsset.SHA256, projAsset.Size
 	var logs bytes.Buffer
 	libDir := filepath.Join(t.TempDir(), "llama-cpp", LibTag)
-	v, err := OpenVision(context.Background(), spec, VisionConfig{Config: Config{LibDir: libDir, ManagedLibDir: true, Threads: 2, Logger: slog.New(slog.NewTextHandler(&logs, nil))}})
+	v, err := OpenVision(context.Background(), spec, Runtime{LibDir: libDir, ManagedLibDir: true, Threads: 2, Logger: slog.New(slog.NewTextHandler(&logs, nil))}, VisionOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

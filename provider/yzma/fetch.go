@@ -90,7 +90,7 @@ var defaultCompleterAsset = asset{
 // host; the macOS build has Metal built in). linux/amd64 is the release
 // target; the others are pinned because their digests are published with
 // the same release. Other platforms install the libraries with the yzma CLI
-// into an operator-supplied LibDir (see Config.ManagedLibDir). The digests
+// into an operator-supplied LibDir (see Runtime.ManagedLibDir). The digests
 // are those of the ggml-org release assets, except linux/arm64/cpu, which
 // comes from the manifest yzma verifies against.
 var libAssets = map[string]asset{
@@ -174,11 +174,11 @@ type libsWant struct {
 	plat string
 	// dir is the absolute library directory.
 	dir string
-	// managed marks dir as owned by this package (Config.ManagedLibDir).
+	// managed marks dir as owned by this package (Runtime.ManagedLibDir).
 	managed bool
 	// build is the build dir should hold (see chooseBackend).
 	build build
-	// explicit says the build was asked for by name (Config.Accel) rather
+	// explicit says the build was asked for by name (Runtime.Accel) rather
 	// than picked from the hardware.
 	explicit bool
 	// loadedDir is where this process loaded llama.cpp from, "" while it has

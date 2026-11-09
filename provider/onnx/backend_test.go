@@ -268,13 +268,16 @@ func TestOpen_Errors(t *testing.T) {
 		rt   Runtime
 		want string
 	}{
-		"bad spec":        {ModelSpec{File: modelFile, Side: 8}, Runtime{LibDir: libDir}, "Name"},
-		"bad provider":    {testSpec(modelFile), Runtime{LibDir: libDir, Provider: "tpu"}, "provider"},
-		"no lib dir":      {testSpec(modelFile), Runtime{}, "LibDir"},
-		"empty lib dir":   {testSpec(modelFile), Runtime{LibDir: t.TempDir()}, libFile()},
-		"no model":        {testSpec(filepath.Join(t.TempDir(), "gone.onnx")), Runtime{LibDir: libDir}, "no URL"},
-		"dims mismatch":   {ModelSpec{Name: "m", File: modelFile, Side: 8, Dims: 5}, Runtime{LibDir: libDir}, "declares 4"},
-		"another lib dir": {testSpec(modelFile), Runtime{LibDir: t.TempDir()}, "already loaded"},
+		"bad spec":         {ModelSpec{File: modelFile, Side: 8}, Runtime{LibDir: libDir}, "Name"},
+		"bad provider":     {testSpec(modelFile), Runtime{LibDir: libDir, Provider: "tpu"}, "provider"},
+		"no lib dir":       {testSpec(modelFile), Runtime{}, "LibDir"},
+		"negative threads": {testSpec(modelFile), Runtime{LibDir: libDir, Threads: -1}, "Threads -1 is negative"},
+		"negative batch":   {testSpec(modelFile), Runtime{LibDir: libDir, BatchSize: -8}, "BatchSize -8 is negative"},
+		"negative device":  {testSpec(modelFile), Runtime{LibDir: libDir, DeviceID: -1}, "DeviceID -1 is negative"},
+		"empty lib dir":    {testSpec(modelFile), Runtime{LibDir: t.TempDir()}, libFile()},
+		"no model":         {testSpec(filepath.Join(t.TempDir(), "gone.onnx")), Runtime{LibDir: libDir}, "no URL"},
+		"dims mismatch":    {ModelSpec{Name: "m", File: modelFile, Side: 8, Dims: 5}, Runtime{LibDir: libDir}, "declares 4"},
+		"another lib dir":  {testSpec(modelFile), Runtime{LibDir: t.TempDir()}, "already loaded"},
 	}
 	// "another lib dir" needs a loaded runtime first, and a library file
 	another := cases["another lib dir"]
@@ -502,7 +505,7 @@ func TestNew_SelectsAPinnedModel(t *testing.T) {
 	useFake(t, f)
 	libDir, _ := fakeInstall(t)
 	modelsDir := t.TempDir()
-	if _, err := New(context.Background(), Config{Model: "nobody/nothing", LibDir: libDir, ModelsDir: modelsDir}); err == nil {
+	if _, err := New(context.Background(), Config{Runtime: Runtime{LibDir: libDir}, Model: "nobody/nothing", ModelsDir: modelsDir}); err == nil {
 		t.Error("unknown model: want an error")
 	}
 	// a pre-seeded file that is not the pinned size is what a crash left: it is
@@ -511,7 +514,7 @@ func TestNew_SelectsAPinnedModel(t *testing.T) {
 	if err := os.WriteFile(seeded, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(context.Background(), Config{LibDir: libDir, ModelsDir: modelsDir}); err == nil || !strings.Contains(err.Error(), "offline") {
+	if _, err := New(context.Background(), Config{Runtime: Runtime{LibDir: libDir}, ModelsDir: modelsDir}); err == nil || !strings.Contains(err.Error(), "offline") {
 		t.Errorf("truncated model: err = %v, want a download attempt", err)
 	}
 	// the default model, pre-seeded (a sparse file of the pinned size) so
@@ -519,7 +522,7 @@ func TestNew_SelectsAPinnedModel(t *testing.T) {
 	if err := os.Truncate(seeded, pinned[DefaultModel].Size); err != nil {
 		t.Fatal(err)
 	}
-	emb, err := New(context.Background(), Config{LibDir: libDir, ModelsDir: modelsDir, Threads: 3, BatchSize: 16})
+	emb, err := New(context.Background(), Config{Runtime: Runtime{LibDir: libDir, Threads: 3, BatchSize: 16}, ModelsDir: modelsDir})
 	if err != nil {
 		t.Fatal(err)
 	}

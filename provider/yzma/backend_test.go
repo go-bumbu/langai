@@ -582,7 +582,7 @@ func TestNew_LoadsThroughTheAPI(t *testing.T) {
 	modelPath := filepath.Join(modelsDir, defaultModelFile)
 	libDir := filepath.Join(tmp, "llama-cpp", LibTag)
 	var logs bytes.Buffer
-	e, err := New(context.Background(), Config{ModelsDir: modelsDir, LibDir: libDir, ManagedLibDir: true, Threads: 2, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	e, err := New(context.Background(), Config{Runtime: Runtime{LibDir: libDir, ManagedLibDir: true, Threads: 2, Logger: slog.New(slog.NewTextHandler(&logs, nil))}, ModelsDir: modelsDir})
 	if err != nil {
 		t.Fatal(err)
 	}

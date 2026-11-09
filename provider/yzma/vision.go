@@ -22,13 +22,13 @@ import (
 	"github.com/go-bumbu/langai/media"
 )
 
-// DefaultVisionModel is the model NewVision runs unless VisionConfig.Model
+// DefaultVisionModel is the model NewVision runs unless Config.Model
 // selects another: Qwen/Qwen3-VL-Embedding-2B (Apache-2.0), which embeds
 // text, images and videos into one 2048-dimensional space. The GGUF files
 // behind it are pinned in pinnedVisions.
 const DefaultVisionModel = "Qwen/Qwen3-VL-Embedding-2B"
 
-// Defaults for the zero values of VisionConfig.
+// Defaults for the zero values of VisionOptions.
 const (
 	// DefaultInstruction is what the model's authors wrap every input in.
 	DefaultInstruction = "Represent the user's input."
@@ -48,11 +48,11 @@ const (
 	visionBatch = 2048
 )
 
-// VisionConfig selects the vision model and how it runs. The embedded Config
-// names the model (VisionConfig.Model, "" meaning DefaultVisionModel), the
-// directories, the threads and the acceleration, as for New.
-type VisionConfig struct {
-	Config
+// VisionOptions are how a Vision runs its model, beyond the Runtime that
+// every model shares: what NewVision and OpenVision take next to the model
+// and the runtime. The zero value runs the model with the defaults its
+// authors recommend; negative numbers are an error.
+type VisionOptions struct {
 	// Instruction is the task the model represents every input for; ""
 	// means DefaultInstruction. It goes into the system turn of the prompt,
 	// so texts, images and videos embedded under one instruction compare.
@@ -102,6 +102,34 @@ type VisionSpec struct {
 	Dims int
 }
 
+// validate reports a spec OpenVision cannot run.
+func (spec VisionSpec) validate() error {
+	switch {
+	case spec.Name == "":
+		return errors.New("yzma: VisionSpec.Name is required")
+	case spec.File == "" || spec.Projector == "":
+		return fmt.Errorf("yzma: vision model %q: File and Projector are required", spec.Name)
+	case (spec.URL != "" && spec.SHA256 == "") || (spec.ProjectorURL != "" && spec.ProjectorSHA256 == ""):
+		return fmt.Errorf("yzma: vision model %q: URL without SHA256; pin the digest (make semeval logs it for an unpinned entry)", spec.Name)
+	case spec.Dims < 0 || spec.Size < 0 || spec.ProjectorSize < 0:
+		return fmt.Errorf("yzma: vision model %q: Dims, Size and ProjectorSize must not be negative", spec.Name)
+	}
+	return nil
+}
+
+// validate reports options no Vision runs with.
+func (o VisionOptions) validate() error {
+	switch {
+	case o.FPS < 0 || o.SegmentLength < 0 || o.MaxSegments < 0 || o.ContextTokens < 0:
+		return errors.New("yzma: VisionOptions: FPS, SegmentLength, MaxSegments and ContextTokens must not be negative")
+	case o.ImageMinTokens < 0 || o.ImageMaxTokens < 0:
+		return errors.New("yzma: VisionOptions: ImageMinTokens and ImageMaxTokens must not be negative")
+	case o.ImageMaxTokens != 0 && o.ImageMinTokens > o.ImageMaxTokens:
+		return fmt.Errorf("yzma: VisionOptions: ImageMinTokens %d is above ImageMaxTokens %d", o.ImageMinTokens, o.ImageMaxTokens)
+	}
+	return nil
+}
+
 // pinnedVision is one vision model NewVision can run by name.
 type pinnedVision struct {
 	name      string
@@ -112,7 +140,7 @@ type pinnedVision struct {
 	dims      int
 }
 
-// pinnedVisions lists the vision models VisionConfig.Model selects from,
+// pinnedVisions lists the vision models Config.Model selects from in NewVision,
 // DefaultVisionModel first. The default is DevQuasar's Q8_0 conversion with
 // the f16 projector: its vectors agree with the f16 model's to within 0.005
 // of cosine on the sample set and it runs about 15 % faster.
@@ -137,30 +165,31 @@ func pinnedVisions() []pinnedVision {
 	}
 }
 
+// VisionModels lists the names of the pinned vision models NewVision
+// selects from, DefaultVisionModel first.
+func VisionModels() []string {
+	return names(pinnedVisions(), func(m pinnedVision) string { return m.name })
+}
+
 // LookupVisionSpec returns the pinned spec of the named vision model, its
 // files inside modelsDir ("" means "models"). name "" means
-// DefaultVisionModel; any other name must be one of the pinned vision
-// models, and the error for one that is not lists them.
+// DefaultVisionModel; any other name must be one of VisionModels, and the
+// error for one that is not lists them.
 func LookupVisionSpec(name, modelsDir string) (VisionSpec, error) {
 	if name == "" {
 		name = DefaultVisionModel
 	}
-	if modelsDir == "" {
-		modelsDir = "models"
-	}
-	models := pinnedVisions()
-	names := make([]string, 0, len(models))
-	for _, m := range models {
+	dir := modelsOr(modelsDir)
+	for _, m := range pinnedVisions() {
 		if m.name == name {
 			return VisionSpec{
-				Name: m.name, File: filepath.Join(modelsDir, m.file), URL: m.asset.URL, SHA256: m.asset.SHA256, Size: m.asset.Size,
-				Projector: filepath.Join(modelsDir, m.projFile), ProjectorURL: m.projAsset.URL, ProjectorSHA256: m.projAsset.SHA256, ProjectorSize: m.projAsset.Size,
+				Name: m.name, File: filepath.Join(dir, m.file), URL: m.asset.URL, SHA256: m.asset.SHA256, Size: m.asset.Size,
+				Projector: filepath.Join(dir, m.projFile), ProjectorURL: m.projAsset.URL, ProjectorSHA256: m.projAsset.SHA256, ProjectorSize: m.projAsset.Size,
 				Dims: m.dims,
 			}, nil
 		}
-		names = append(names, m.name)
 	}
-	return VisionSpec{}, fmt.Errorf("unsupported vision model %q: use one of %s", name, strings.Join(names, ", "))
+	return VisionSpec{}, fmt.Errorf("yzma: unsupported vision model %q: use one of %s", name, strings.Join(VisionModels(), ", "))
 }
 
 // DefaultVisionSpec is LookupVisionSpec(DefaultVisionModel, modelsDir).
@@ -177,39 +206,36 @@ const visionDownloadTimeout = time.Hour
 // NewVision prepares the libraries, the model cfg.Model selects and its
 // projector (downloading whatever is missing), loads them and probes the
 // model once. ctx bounds the downloads only; the returned Vision outlives
-// it. It is OpenVision with LookupVisionSpec(cfg.Model, cfg.ModelsDir).
-func NewVision(ctx context.Context, cfg VisionConfig) (*Vision, error) {
+// it. It is OpenVision with LookupVisionSpec(cfg.Model, cfg.ModelsDir),
+// cfg.Runtime and opts.
+func NewVision(ctx context.Context, cfg Config, opts VisionOptions) (*Vision, error) {
 	spec, err := LookupVisionSpec(cfg.Model, cfg.ModelsDir)
 	if err != nil {
 		return nil, err
 	}
-	return OpenVision(ctx, spec, cfg)
+	return OpenVision(ctx, spec, cfg.Runtime, opts)
 }
 
 // OpenVision prepares the libraries and the model and projector described
 // by spec (downloading whatever is missing), loads them on the GPU
-// cfg.Accel resolves to or the CPU, and probes the model once. The
+// rt.Accel resolves to or the CPU, and probes the model once. The
 // libraries load once per process, so a Vision opens next to an Embedder.
 // ctx bounds the downloads only, and gets a deadline of an hour when it has
 // none of its own; the returned Vision outlives it and is released with
 // Close. A download that was cut short is picked up where it stopped by the
 // next OpenVision.
-func OpenVision(ctx context.Context, spec VisionSpec, cfg VisionConfig) (*Vision, error) {
-	if spec.Name == "" {
-		return nil, errors.New("yzma: VisionSpec.Name is required")
+func OpenVision(ctx context.Context, spec VisionSpec, rt Runtime, opts VisionOptions) (*Vision, error) {
+	if err := spec.validate(); err != nil {
+		return nil, err
 	}
-	if spec.File == "" || spec.Projector == "" {
-		return nil, fmt.Errorf("yzma: vision model %q: File and Projector are required", spec.Name)
+	if err := opts.validate(); err != nil {
+		return nil, err
 	}
-	if (spec.URL != "" && spec.SHA256 == "") || (spec.ProjectorURL != "" && spec.ProjectorSHA256 == "") {
-		return nil, fmt.Errorf("yzma: vision model %q: URL without SHA256; pin the digest (make semeval logs it for an unpinned entry)", spec.Name)
-	}
-	if cfg.FPS < 0 || cfg.SegmentLength < 0 || cfg.MaxSegments < 0 || cfg.ContextTokens < 0 {
-		return nil, fmt.Errorf("yzma: vision model %q: FPS, SegmentLength, MaxSegments and ContextTokens must not be negative", spec.Name)
+	if err := rt.validate(); err != nil {
+		return nil, err
 	}
 	ctx, cancel := fetch.WithDefaultTimeout(ctx, visionDownloadTimeout)
 	defer cancel()
-	rt := cfg.runtime()
 	libDir, logger, err := rt.prepare(ctx, visionLib, libs)
 	if err != nil {
 		return nil, err
@@ -222,7 +248,7 @@ func OpenVision(ctx context.Context, spec VisionSpec, cfg VisionConfig) (*Vision
 			return nil, err
 		}
 	}
-	v, err := openVision(visionLib, libs, libDir, spec, cfg, rt)
+	v, err := openVision(visionLib, libs, libDir, spec, opts, rt)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +381,7 @@ var (
 // projector, builds the embedding context and probes the model with a
 // text, so a broken setup fails here and not at the first call. Whatever
 // it created is freed again when a later step fails.
-func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec, cfg VisionConfig, run Runtime) (*Vision, error) {
+func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec, opts VisionOptions, run Runtime) (*Vision, error) {
 	if err := rt.load(api, libDir, run.Logger); err != nil {
 		return nil, err
 	}
@@ -371,11 +397,11 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 		api:         api,
 		model:       model,
 		template:    api.chatTemplate(model),
-		instruction: cfg.Instruction,
-		cutter:      cfg.Cutter,
-		segment:     cfg.SegmentLength,
-		fps:         cfg.FPS,
-		maxSegments: cfg.MaxSegments,
+		instruction: opts.Instruction,
+		cutter:      opts.Cutter,
+		segment:     opts.SegmentLength,
+		fps:         opts.FPS,
+		maxSegments: opts.MaxSegments,
 		accel:       used,
 	}
 	if v.template == "" {
@@ -401,7 +427,7 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 		api.freeModel(model)
 		return nil, fmt.Errorf("load model %s: no training context length in the GGUF metadata", spec.File)
 	}
-	want := cfg.ContextTokens
+	want := opts.ContextTokens
 	if want == 0 {
 		want = DefaultVisionContextTokens
 	}
@@ -417,7 +443,7 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 		v.release()
 		return nil, fmt.Errorf("llama.cpp granted a %d-token context and %d-token batches for %s", v.nCtx, v.batch, spec.File)
 	}
-	proj, err := api.loadProjector(spec.Projector, model, run.Threads, layers > 0, cfg.ImageMinTokens, cfg.ImageMaxTokens)
+	proj, err := api.loadProjector(spec.Projector, model, run.Threads, layers > 0, opts.ImageMinTokens, opts.ImageMaxTokens)
 	if err != nil {
 		v.release()
 		return nil, fmt.Errorf("load projector %s: %w", spec.Projector, err)
@@ -434,7 +460,7 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 		return nil, fmt.Errorf("yzma: vision model %q produces %d-dimensional vectors, its spec says %d", spec.Name, v.dims, spec.Dims)
 	}
 	v.id = fmt.Sprintf("%s;instruction=%s;dims=%d;image_tokens=%d-%d;fps=%s;segment=%s", spec.Name, shortDigest(v.instruction),
-		v.dims, cfg.ImageMinTokens, cfg.ImageMaxTokens, strconv.FormatFloat(v.fps, 'g', -1, 64), v.segment)
+		v.dims, opts.ImageMinTokens, opts.ImageMaxTokens, strconv.FormatFloat(v.fps, 'g', -1, 64), v.segment)
 	return v, nil
 }
 
@@ -560,7 +586,7 @@ func (v *Vision) EmbedImages(ctx context.Context, images []image.Image) ([][]flo
 // elementary stream) is embedded as its first segment only.
 func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
 	if v.cutter == nil {
-		return nil, errors.New("yzma: no Cutter: set VisionConfig.Cutter (media/ffmpeg) to embed videos")
+		return nil, errors.New("yzma: no Cutter: set VisionOptions.Cutter (media/ffmpeg) to embed videos")
 	}
 	duration, err := v.cutter.Duration(ctx, path)
 	if err != nil {

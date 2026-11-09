@@ -87,14 +87,15 @@ func TestVisionReal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := NewVision(ctx, VisionConfig{
-		Config: Config{
-			ModelsDir:     filepath.Join(dir, "models"),
+	v, err := NewVision(ctx, Config{
+		ModelsDir: filepath.Join(dir, "models"),
+		Runtime: Runtime{
 			LibDir:        filepath.Join(dir, "llama-cpp", LibTag),
 			ManagedLibDir: true,
 			Threads:       8,
 			Logger:        slog.New(slog.NewTextHandler(os.Stderr, nil)),
 		},
+	}, VisionOptions{
 		SegmentLength: 4 * time.Second,
 		Cutter:        cutter,
 	})
@@ -259,16 +260,15 @@ func TestVisionRealCutsAndAborts(t *testing.T) {
 	if dir == "" {
 		t.Skip("SEMSEARCH_YZMA_TEST_DIR not set; skipping real-model test")
 	}
-	v, err := NewVision(context.Background(), VisionConfig{
-		Config: Config{
-			ModelsDir:     filepath.Join(dir, "models"),
+	v, err := NewVision(context.Background(), Config{
+		ModelsDir: filepath.Join(dir, "models"),
+		Runtime: Runtime{
 			LibDir:        filepath.Join(dir, "llama-cpp", LibTag),
 			ManagedLibDir: true,
 			Threads:       4,
 			Accel:         AccelCPU,
 		},
-		ContextTokens: 1024,
-	})
+	}, VisionOptions{ContextTokens: 1024})
 	if err != nil {
 		t.Fatalf("NewVision: %v", err)
 	}

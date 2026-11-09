@@ -189,7 +189,7 @@ type libsWant struct {
 	plat string
 	// dir is the absolute library directory.
 	dir string
-	// managed marks dir as owned by this package (Config.ManagedLibDir).
+	// managed marks dir as owned by this package (Runtime.ManagedLibDir).
 	managed bool
 	// variant is the build dir should hold (see variantFor).
 	variant string

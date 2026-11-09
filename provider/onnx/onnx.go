@@ -1,17 +1,19 @@
 // Package onnx runs image embedding models locally through ONNX Runtime, as
 // a langai.ImageEmbedder. The runtime is the shared library the first New or
 // Open loads (through github.com/yalue/onnxruntime_go, which is CGO) from
-// Config.LibDir; a managed directory gets the pinned build downloaded into
+// Runtime.LibDir; a managed directory gets the pinned build downloaded into
 // it, and the pinned model is downloaded into Config.ModelsDir, both verified
 // by digest (see fetch.go). Later loads are offline. The library loads once
 // per process and every Embedder shares it.
 //
-// New runs one of the pinned models (see Spec), DefaultModel unless
-// Config.Model selects another; Open runs any ONNX vision model described by
-// a ModelSpec: the tensor names, the input size, how a picture is resized and
-// normalized. An Embedder runs its model until Close; two run side by side.
+// The constructors have provider/yzma's shape: New takes a Config, which
+// names one of the pinned models (Models, LookupSpec; DefaultModel unless
+// Config.Model selects another) and embeds the Runtime; Open takes any ONNX
+// vision model described by a ModelSpec (the tensor names, the input size,
+// how a picture is resized and normalized) and the Runtime. An Embedder runs
+// its model until Close; two run side by side.
 //
-// CPU is the default. Config.Provider selects CUDA (the gpu build of the
+// CPU is the default. Runtime.Provider selects CUDA (the gpu build of the
 // runtime, CUDA 12 and cuDNN 9 on the host) or CoreML (the macOS build).
 //
 // The pinned runtime build (LibVersion) is the one whose C API headers the
@@ -121,53 +123,26 @@ const (
 )
 
 // defaultBatchSize is how many images one model run takes when
-// Config.BatchSize is not set.
+// Runtime.BatchSize is not set.
 const defaultBatchSize = 8
 
-// Config selects the model, where models and libraries live, and how the
-// model runs.
+// Config selects a pinned model by name and the runtime that runs it: what
+// New takes. Open takes a ModelSpec and the Runtime instead.
 type Config struct {
+	// Runtime is the ONNX Runtime library and how the model runs.
+	Runtime
 	// ModelsDir is the directory the ONNX model is downloaded to and loaded
 	// from. Defaults to "models". Pre-seed it for offline installs.
 	ModelsDir string
-	// Model selects one of the pinned models by name (see Spec); "" means
-	// DefaultModel.
+	// Model selects one of the pinned models by name (see Models and
+	// LookupSpec); "" means DefaultModel.
 	Model string
-	// LibDir holds the ONNX Runtime shared library (libonnxruntime.so.<version>
-	// and, for CUDA, the provider libraries next to it). Required.
-	LibDir string
-	// ManagedLibDir marks LibDir as owned by this package: when the library
-	// is missing, or was installed for another Provider, the pinned build is
-	// downloaded into it. Give it a directory of its own: only a missing or
-	// empty one, or one an earlier install left its record in, is ever filled
-	// or replaced, and anything else is an error rather than a deletion.
-	// Installs are serialized by a lock file next to it ("<LibDir>.lock"),
-	// between goroutines and processes, and the library a process has loaded
-	// is never replaced under it: CUDA after CPU in the same process is an
-	// error (CPU after CUDA runs on the CUDA build). An operator-supplied
-	// LibDir (false) is never written to, only checked.
-	ManagedLibDir bool
-	// Provider is what runs the model; "" means ProviderCPU.
-	Provider Provider
-	// DeviceID is the GPU the CUDA provider uses; 0 is the first.
-	DeviceID int
-	// Threads is the thread count for one model run (ONNX Runtime's
-	// intra-op threads); <= 0 picks a default of at most four.
-	Threads int
-	// BatchSize is how many images go through the model in one run; <= 0
-	// means 8. Larger batches help a GPU; on a CPU they mostly cost memory.
-	BatchSize int
-	// Logger receives this package's progress at Info (each first-use
-	// download before it starts, the installed library and the downloaded
-	// model, the runtime load); nil discards it. ONNX Runtime's own
-	// warnings go to stderr.
-	Logger *slog.Logger
 }
 
 // ModelSpec describes one ONNX vision model: where its file is (or comes
 // from), which tensors to feed and read, and how a picture is prepared for
-// it, which must match what the model was trained with. Spec returns the
-// pinned ones New selects from.
+// it, which must match what the model was trained with. LookupSpec returns
+// the pinned ones New selects from.
 type ModelSpec struct {
 	// Name names the model. It is the first part of the identity to store
 	// next to vectors, which Embedder.Model completes.
@@ -271,15 +246,62 @@ func (spec ModelSpec) normalized() (ModelSpec, error) {
 }
 
 // Runtime is what Open needs besides the model: the runtime library and how
-// to run the model. The fields mirror Config's.
+// to run the model. The library loads once per process, so every Embedder
+// opened in it shares it.
 type Runtime struct {
-	LibDir        string
+	// LibDir holds the ONNX Runtime shared library (libonnxruntime.so.<version>
+	// and, for CUDA, the provider libraries next to it). Required.
+	LibDir string
+	// ManagedLibDir marks LibDir as owned by this package: when the library
+	// is missing, or was installed for another Provider, the pinned build is
+	// downloaded into it. Give it a directory of its own: only a missing or
+	// empty one, or one an earlier install left its record in, is ever filled
+	// or replaced, and anything else is an error rather than a deletion.
+	// Installs are serialized by a lock file next to it ("<LibDir>.lock"),
+	// between goroutines and processes, and the library a process has loaded
+	// is never replaced under it: CUDA after CPU in the same process is an
+	// error (CPU after CUDA runs on the CUDA build). An operator-supplied
+	// LibDir (false) is never written to, only checked.
 	ManagedLibDir bool
-	Provider      Provider
-	DeviceID      int
-	Threads       int
-	BatchSize     int
-	Logger        *slog.Logger
+	// Provider is what runs the model; "" means ProviderCPU. Any other
+	// value than the Provider constants is an error.
+	Provider Provider
+	// DeviceID is the GPU the CUDA provider uses; 0 is the first. Negative
+	// is an error.
+	DeviceID int
+	// Threads is the thread count for one model run (ONNX Runtime's
+	// intra-op threads); 0 picks a default of at most four. Negative is an
+	// error.
+	Threads int
+	// BatchSize is how many images go through the model in one run; 0
+	// means 8. Larger batches help a GPU; on a CPU they mostly cost memory.
+	// Negative is an error.
+	BatchSize int
+	// Logger receives this package's progress at Info (each first-use
+	// download before it starts, the installed library and the downloaded
+	// model, the runtime load); nil discards it. ONNX Runtime's own
+	// warnings go to stderr.
+	Logger *slog.Logger
+}
+
+// validate reports a Runtime Open cannot run with, before anything is
+// downloaded or loaded.
+func (rt Runtime) validate() error {
+	if rt.LibDir == "" {
+		return errors.New("onnx: Runtime.LibDir is required")
+	}
+	if _, err := rt.Provider.normalized(); err != nil {
+		return fmt.Errorf("onnx: %w", err)
+	}
+	switch {
+	case rt.Threads < 0:
+		return fmt.Errorf("onnx: Runtime.Threads %d is negative: use 0 for the default", rt.Threads)
+	case rt.BatchSize < 0:
+		return fmt.Errorf("onnx: Runtime.BatchSize %d is negative: use 0 for the default", rt.BatchSize)
+	case rt.DeviceID < 0:
+		return fmt.Errorf("onnx: Runtime.DeviceID %d is negative", rt.DeviceID)
+	}
+	return nil
 }
 
 // logComponent tags this package's log lines the way the other providers
@@ -292,27 +314,25 @@ func defaultThreads() int {
 	return min(4, runtime.NumCPU())
 }
 
-// DefaultSpec is Spec(DefaultModel, modelsDir): the pinned SigLIP 2 vision
+// DefaultSpec is LookupSpec(DefaultModel, modelsDir): the pinned SigLIP 2 vision
 // tower inside modelsDir ("" means "models"), 224 pixels squashed, mean and
 // std 0.5, 768 dimensions.
 func DefaultSpec(modelsDir string) ModelSpec {
-	spec, _ := Spec(DefaultModel, modelsDir) // DefaultModel is always pinned
+	spec, _ := LookupSpec(DefaultModel, modelsDir) // DefaultModel is always pinned
 	return spec
 }
 
 // New prepares the runtime and the model cfg.Model selects (downloading
 // whatever is missing, see fetch.go), loads them, and runs the model once to
 // check its output. ctx bounds the downloads only; the returned Embedder
-// outlives it. It is Open with Spec(cfg.Model, cfg.ModelsDir).
+// outlives it. It is Open with LookupSpec(cfg.Model, cfg.ModelsDir) and
+// cfg.Runtime.
 func New(ctx context.Context, cfg Config) (*Embedder, error) {
-	spec, err := Spec(cfg.Model, cfg.ModelsDir)
+	spec, err := LookupSpec(cfg.Model, cfg.ModelsDir)
 	if err != nil {
 		return nil, err
 	}
-	return Open(ctx, spec, Runtime{
-		LibDir: cfg.LibDir, ManagedLibDir: cfg.ManagedLibDir, Provider: cfg.Provider, DeviceID: cfg.DeviceID,
-		Threads: cfg.Threads, BatchSize: cfg.BatchSize, Logger: cfg.Logger,
-	})
+	return Open(ctx, spec, cfg.Runtime)
 }
 
 // Open prepares the runtime and the model described by spec (downloading
@@ -331,21 +351,18 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	if err != nil {
 		return nil, err
 	}
-	provider, err := rt.Provider.normalized()
-	if err != nil {
-		return nil, fmt.Errorf("onnx: %w", err)
+	if err := rt.validate(); err != nil {
+		return nil, err
 	}
-	if rt.LibDir == "" {
-		return nil, errors.New("onnx: LibDir is required")
-	}
+	provider, _ := rt.Provider.normalized() // validate checked it
 	libDir, err := filepath.Abs(rt.LibDir)
 	if err != nil {
 		return nil, err
 	}
-	if rt.Threads <= 0 {
+	if rt.Threads == 0 {
 		rt.Threads = defaultThreads()
 	}
-	if rt.BatchSize <= 0 {
+	if rt.BatchSize == 0 {
 		rt.BatchSize = defaultBatchSize
 	}
 	ctx, cancel := downloadContext(ctx)

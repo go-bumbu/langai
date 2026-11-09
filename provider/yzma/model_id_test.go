@@ -87,27 +87,27 @@ func TestOpen_SetsTheModelIdentity(t *testing.T) {
 // vectors is its model plus the instruction, the vector length, the image
 // token bounds and how videos are sampled and cut.
 func TestVisionModel_NamesWhatDecidesAVector(t *testing.T) {
-	id := func(cfg VisionConfig) string {
+	id := func(opts VisionOptions) string {
 		t.Helper()
-		return openVisionFake(t, newFakeVision(), cfg).Model()
+		return openVisionFake(t, newFakeVision(), opts).Model()
 	}
-	def := id(VisionConfig{})
+	def := id(VisionOptions{})
 	if want := "org/vision;instruction=" + shortDigest(DefaultInstruction) + ";dims=4;image_tokens=0-0;fps=1;segment=20s"; def != want {
 		t.Errorf("default identity = %q\nwant               %q", def, want)
 	}
-	if again := id(VisionConfig{}); again != def {
+	if again := id(VisionOptions{}); again != def {
 		t.Errorf("the identity changed between two opens: %q, %q", def, again)
 	}
 	// the zero values and the defaults they mean are one identity
-	if same := id(VisionConfig{Instruction: DefaultInstruction, FPS: DefaultFPS, SegmentLength: DefaultSegmentLength}); same != def {
+	if same := id(VisionOptions{Instruction: DefaultInstruction, FPS: DefaultFPS, SegmentLength: DefaultSegmentLength}); same != def {
 		t.Errorf("spelling the defaults out changed the identity: %q", same)
 	}
 	// what moves no vector is not part of it
-	if same := id(VisionConfig{ContextTokens: 8192, MaxSegments: 3, Cutter: &fakeCutter{}}); same != def {
+	if same := id(VisionOptions{ContextTokens: 8192, MaxSegments: 3, Cutter: &fakeCutter{}}); same != def {
 		t.Errorf("the context size or the segment cap changed the identity: %q", same)
 	}
 	seen := map[string]string{def: "default"}
-	for name, cfg := range map[string]VisionConfig{
+	for name, cfg := range map[string]VisionOptions{
 		"another instruction": {Instruction: "Find duplicates."},
 		"image token cap":     {ImageMaxTokens: 512},
 		"image token floor":   {ImageMinTokens: 512},

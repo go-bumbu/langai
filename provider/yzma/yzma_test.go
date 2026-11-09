@@ -348,7 +348,7 @@ func vecLen(v []float32) float64 {
 }
 
 func TestNew_RejectsUnknownModel(t *testing.T) {
-	_, err := New(context.Background(), Config{Model: "some/other-model", LibDir: t.TempDir()})
+	_, err := New(context.Background(), Config{Runtime: Runtime{LibDir: t.TempDir()}, Model: "some/other-model"})
 	if err == nil || !strings.Contains(err.Error(), DefaultModel) {
 		t.Fatalf("err = %v, want an error naming the only supported model", err)
 	}
@@ -369,7 +369,7 @@ func TestNew_OperatorLibDirWithoutLibraries(t *testing.T) {
 	wd := t.TempDir()
 	t.Chdir(wd)
 	dir := t.TempDir()
-	_, err := New(context.Background(), Config{LibDir: dir})
+	_, err := New(context.Background(), Config{Runtime: Runtime{LibDir: dir}})
 	if err == nil || !strings.Contains(err.Error(), "yzma install") {
 		t.Fatalf("err = %v, want an error telling the operator to run yzma install", err)
 	}
@@ -473,6 +473,8 @@ func TestOpen_RefusesBadSpecsBeforeTouchingAnything(t *testing.T) {
 		{"no file", ModelSpec{Name: "m"}, "File"},
 		{"url without digest", ModelSpec{Name: "m", File: "/m.gguf", URL: "http://x/m.gguf"}, "SHA256"},
 		{"unknown pooling", ModelSpec{Name: "m", File: "/m.gguf", Pooling: "average"}, `"average"`},
+		{"negative MaxTokens", ModelSpec{Name: "m", File: "/m.gguf", MaxTokens: -1}, "MaxTokens"},
+		{"negative Dims", ModelSpec{Name: "m", File: "/m.gguf", Dims: -768}, "Dims"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -482,9 +484,71 @@ func TestOpen_RefusesBadSpecsBeforeTouchingAnything(t *testing.T) {
 			}
 		})
 	}
-	_, err := Open(context.Background(), ModelSpec{Name: "m", File: "/m.gguf"}, Runtime{})
-	if err == nil || !strings.Contains(err.Error(), "LibDir") {
-		t.Fatalf("err = %v, want the LibDir requirement", err)
+}
+
+// TestRuntime_RefusedByEveryOpen: a Runtime no model can run with is refused
+// by all three opens, and by the New functions through their Config, before
+// anything is downloaded, with an error naming the field.
+func TestRuntime_RefusedByEveryOpen(t *testing.T) {
+	ctx := context.Background()
+	lib := t.TempDir()
+	model := ModelSpec{Name: "m", File: "/m.gguf"}
+	chat := CompleterSpec{Name: "c", File: "/c.gguf", Template: "chatml"}
+	vision := VisionSpec{Name: "v", File: "/v.gguf", Projector: "/p.gguf"}
+	for _, tc := range []struct {
+		name string
+		rt   Runtime
+		want string
+	}{
+		{"no LibDir", Runtime{}, "LibDir is required"},
+		{"negative Threads", Runtime{LibDir: lib, Threads: -1}, "Threads -1 is negative"},
+		{"negative GPULayers", Runtime{LibDir: lib, GPULayers: -3}, "GPULayers -3 is negative"},
+		{"unknown Accel", Runtime{LibDir: lib, Accel: "opencl"}, `unknown Accel "opencl"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opens := map[string]func() error{
+				"Open":          func() error { _, err := Open(ctx, model, tc.rt); return err },
+				"OpenCompleter": func() error { _, err := OpenCompleter(ctx, chat, tc.rt); return err },
+				"OpenVision":    func() error { _, err := OpenVision(ctx, vision, tc.rt, VisionOptions{}); return err },
+				"New":           func() error { _, err := New(ctx, Config{Runtime: tc.rt}); return err },
+				"NewCompleter":  func() error { _, err := NewCompleter(ctx, Config{Runtime: tc.rt}); return err },
+				"NewVision":     func() error { _, err := NewVision(ctx, Config{Runtime: tc.rt}, VisionOptions{}); return err },
+			}
+			for name, open := range opens {
+				if err := open(); err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("%s: err = %v, want one saying %q", name, err, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestModels_ListThePinnedModelsDefaultFirst: each listing names what its
+// lookup accepts, the default first, and every name it lists looks up.
+func TestModels_ListThePinnedModelsDefaultFirst(t *testing.T) {
+	for _, tc := range []struct {
+		kind   string
+		names  []string
+		def    string
+		lookup func(name string) error
+	}{
+		{"embedding", Models(), DefaultModel, func(n string) error { _, err := LookupSpec(n, ""); return err }},
+		{"chat", CompleterModels(), DefaultCompleterModel, func(n string) error { _, err := LookupCompleterSpec(n, ""); return err }},
+		{"vision", VisionModels(), DefaultVisionModel, func(n string) error { _, err := LookupVisionSpec(n, ""); return err }},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			if len(tc.names) == 0 || tc.names[0] != tc.def {
+				t.Fatalf("%v, want %s first", tc.names, tc.def)
+			}
+			for _, n := range tc.names {
+				if err := tc.lookup(n); err != nil {
+					t.Errorf("listed %q does not look up: %v", n, err)
+				}
+			}
+		})
+	}
+	if got := len(Models()); got != len(pinnedModels()) {
+		t.Errorf("Models() lists %d of %d pinned models", got, len(pinnedModels()))
 	}
 }
 

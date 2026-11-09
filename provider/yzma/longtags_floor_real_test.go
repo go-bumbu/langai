@@ -63,10 +63,8 @@ func TestGenerateLongTags(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{
-		ModelsDir:     filepath.Join(dir, "models"),
-		LibDir:        filepath.Join(dir, "llama-cpp", LibTag),
-		ManagedLibDir: true,
-		Logger:        slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Runtime:   Runtime{LibDir: filepath.Join(dir, "llama-cpp", LibTag), ManagedLibDir: true, Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))},
+		ModelsDir: filepath.Join(dir, "models"),
 	}
 	emb, err := New(ctx, cfg)
 	if err != nil {

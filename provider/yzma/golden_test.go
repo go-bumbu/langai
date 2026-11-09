@@ -126,10 +126,8 @@ func TestGoldenSetWithDefaultModel(t *testing.T) {
 	ctx := context.Background()
 	start := time.Now()
 	emb, err := New(ctx, Config{
-		ModelsDir:     filepath.Join(dir, "models"),
-		LibDir:        filepath.Join(dir, "llama-cpp", LibTag),
-		ManagedLibDir: true,
-		Logger:        slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Runtime:   Runtime{LibDir: filepath.Join(dir, "llama-cpp", LibTag), ManagedLibDir: true, Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))},
+		ModelsDir: filepath.Join(dir, "models"),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

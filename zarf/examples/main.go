@@ -69,6 +69,18 @@ func run() error {
 		return fmt.Errorf("ffmpeg: %w", err)
 	}
 
+	// the llama.cpp models: the vision model, and the tagging page's
+	// embedding and chat models
+	llama := yzma.Config{
+		ModelsDir: filepath.Join(*llamaDir, "models"),
+		Runtime: yzma.Runtime{
+			LibDir:        filepath.Join(*llamaDir, "llama-cpp", yzma.LibTag),
+			ManagedLibDir: true,
+			Accel:         yzma.Accel(*accel),
+			Logger:        logger,
+		},
+	}
+
 	// the model: an ONNX image model with videos as frames, or the vision
 	// model with videos as segments and text queries
 	var (
@@ -81,17 +93,7 @@ func run() error {
 	if isQwen(*model) {
 		modelID = yzma.DefaultVisionModel
 		logger.Info("loading the vision model", "model", modelID, "accel", *accel, "dir", *llamaDir)
-		v, err := yzma.NewVision(ctx, yzma.VisionConfig{
-			Config: yzma.Config{
-				ModelsDir:     filepath.Join(*llamaDir, "models"),
-				LibDir:        filepath.Join(*llamaDir, "llama-cpp", yzma.LibTag),
-				ManagedLibDir: true,
-				Accel:         yzma.Accel(*accel),
-				Logger:        logger,
-			},
-			SegmentLength: *segment,
-			Cutter:        sampler,
-		})
+		v, err := yzma.NewVision(ctx, llama, yzma.VisionOptions{SegmentLength: *segment, Cutter: sampler})
 		if err != nil {
 			return fmt.Errorf("vision model: %w", err)
 		}
@@ -101,12 +103,14 @@ func run() error {
 	} else {
 		logger.Info("loading the image model", "model", *model, "provider", *provider, "dir", *modelsDir)
 		e, err := onnx.New(ctx, onnx.Config{
-			ModelsDir:     filepath.Join(*modelsDir, "models"),
-			Model:         *model,
-			LibDir:        filepath.Join(*modelsDir, "onnxruntime", onnx.LibVersion),
-			ManagedLibDir: true,
-			Provider:      onnx.Provider(*provider),
-			Logger:        logger,
+			ModelsDir: filepath.Join(*modelsDir, "models"),
+			Model:     *model,
+			Runtime: onnx.Runtime{
+				LibDir:        filepath.Join(*modelsDir, "onnxruntime", onnx.LibVersion),
+				ManagedLibDir: true,
+				Provider:      onnx.Provider(*provider),
+				Logger:        logger,
+			},
 		})
 		if err != nil {
 			return fmt.Errorf("image model: %w", err)
@@ -153,13 +157,6 @@ func run() error {
 		return fmt.Errorf("scan: %w", err)
 	}
 
-	llama := yzma.Config{
-		ModelsDir:     filepath.Join(*llamaDir, "models"),
-		LibDir:        filepath.Join(*llamaDir, "llama-cpp", yzma.LibTag),
-		ManagedLibDir: true,
-		Accel:         yzma.Accel(*accel),
-		Logger:        logger,
-	}
 	notebook, closeTagging, err := openTagging(ctx, llama, *dataDir, *samples, *tagScore, logger)
 	if err != nil {
 		return err

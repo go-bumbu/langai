@@ -34,9 +34,8 @@ func TestGoldenTagging(t *testing.T) {
 	}
 	ctx := context.Background()
 	emb, err := yzma.New(ctx, yzma.Config{
-		ModelsDir:     filepath.Join(dir, "models"),
-		LibDir:        filepath.Join(dir, "llama-cpp", yzma.LibTag),
-		ManagedLibDir: true,
+		Runtime:   yzma.Runtime{LibDir: filepath.Join(dir, "llama-cpp", yzma.LibTag), ManagedLibDir: true},
+		ModelsDir: filepath.Join(dir, "models"),
 	})
 	if err != nil {
 		t.Fatalf("yzma.New: %v", err)

@@ -18,7 +18,7 @@ models run in-process through llama.cpp and ONNX Runtime.
 | `vector/vectortest` | The conformance suite every `Store` passes. |
 | `vector/sqlitevec` | `Store` on SQLite with the sqlite-vec extension (CGO). |
 | `vector/pgvec` | `Store` on Postgres with pgvector. |
-| `provider/yzma` | `Embedder` that runs a GGUF sentence-embedding model, `Completer` that runs a GGUF chat model (the one the `Generator` writes tags with), and `Vision`, which runs Qwen3-VL-Embedding as a text, image and video embedder in one space, through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Downloads and verifies the pinned llama.cpp build and models on first use, and picks the build and the GPU offload from the hardware (`Config.Accel`). |
+| `provider/yzma` | `Embedder` that runs a GGUF sentence-embedding model, `Completer` that runs a GGUF chat model (the one the `Generator` writes tags with), and `Vision`, which runs Qwen3-VL-Embedding as a text, image and video embedder in one space, through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Downloads and verifies the pinned llama.cpp build and models on first use, and picks the build and the GPU offload from the hardware (`Runtime.Accel`). |
 | `provider/onnx` | `ImageEmbedder` that runs an ONNX vision model through [ONNX Runtime](https://onnxruntime.ai) (CGO, via [onnxruntime_go](https://github.com/yalue/onnxruntime_go)): SigLIP 2 base by default, DINOv2 base as the other pinned model, any other through a `ModelSpec`. CPU by default, CUDA or CoreML by configuration. Downloads and verifies the pinned runtime build and model on first use. |
 | `provider/phash` | `ImageEmbedder` without a model: a 64- or 256-bit perceptual hash (pHash or dHash) as a unit vector whose cosine is `1 - 2·hamming/bits`, for finding exact and near-exact duplicates (re-encoded, resized, lightly edited copies) with the same `MediaIndex` and stores. Pure Go, nothing to download, a few milliseconds per picture. `Hash` gives the bits themselves for grouping without a store. |
 | `zarf/eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. `make semeval` compares embedding models side by side on it. |
@@ -130,7 +130,7 @@ go get github.com/go-bumbu/langai
   `sudo apt-get install -y libffi8 libgomp1 libstdc++6`.
 - **The chat model** (`yzma.NewCompleter`, for the tag `Generator`) is a 2.5 GB download on first use,
   and a process with it and the embedding model loaded holds about 5 GB of RAM.
-- **GPUs with `provider/yzma`.** `Config.Accel` left empty picks from the hardware: a
+- **GPUs with `provider/yzma`.** `Runtime.Accel` left empty picks from the hardware: a
   managed `LibDir` gets the pinned llama.cpp build that carries the backend the machine
   has (CUDA 13.4 on linux/amd64 with the CUDA runtime installed, Vulkan on linux/amd64
   and linux/arm64, Metal on macOS, the CPU build otherwise; `internal/hw` looks for the
@@ -162,7 +162,7 @@ go get github.com/go-bumbu/langai
 - **`provider/onnx`** is CGO and needs a C compiler to build (no ONNX Runtime headers:
   the bindings carry their own). At runtime it needs the ONNX Runtime shared library:
   a managed `LibDir` downloads the pinned CPU build (`onnx.LibVersion`, ~11 MB) on
-  linux/amd64, linux/arm64 and darwin/arm64. For **CUDA** set `Config.Provider` to
+  linux/amd64, linux/arm64 and darwin/arm64. For **CUDA** set `Runtime.Provider` to
   `onnx.ProviderCUDA`: a managed `LibDir` on linux/amd64 downloads the CUDA 12 build
   (~450 MB), and the host needs CUDA 12 and cuDNN 9 installed; **CoreML** is built into
   the macOS build. The bindings' headers target one runtime release, so keep
@@ -176,11 +176,14 @@ go get github.com/go-bumbu/langai
 ### Semantic search
 
 ```go
-emb, err := yzma.New(ctx, yzma.Config{
-    ModelsDir:     "data/models",
-    LibDir:        filepath.Join("data", "llama-cpp", yzma.LibTag), // named after the pinned build
-    ManagedLibDir: true,                                            // download the pinned build into it
-})
+cfg := yzma.Config{
+    ModelsDir: "data/models",
+    Runtime: yzma.Runtime{
+        LibDir:        filepath.Join("data", "llama-cpp", yzma.LibTag), // named after the pinned build
+        ManagedLibDir: true,                                            // download the pinned build into it
+    },
+}
+emb, err := yzma.New(ctx, cfg) // cfg.Model "" is yzma.DefaultModel; yzma.Models() lists the others
 store, err := sqlitevec.New(ctx, db, emb.Dimensions())
 
 // index (e.g. a tenant) is the hard isolation boundary; partition and collection
@@ -269,7 +272,7 @@ startup path, wrap the loader in a `LazyEmbedder`, which reports its model and
 dimensions from the model's spec without loading anything:
 
 ```go
-spec, err := yzma.Spec("", "data/models") // "" is the default model
+spec, err := yzma.LookupSpec(cfg.Model, cfg.ModelsDir) // the spec yzma.New(ctx, cfg) loads
 emb := langai.NewLazyEmbedder(spec.Name, spec.Dims, func(ctx context.Context) (langai.Embedder, error) {
     return yzma.New(ctx, cfg) // ctx is the LazyEmbedder's own: only Close cancels it
 })
@@ -309,10 +312,12 @@ a closed provider, lazy loader or `Tagger` returns an error that wraps `langai.E
 
 ```go
 emb, err := onnx.New(ctx, onnx.Config{
-    ModelsDir:     "data/models",
-    LibDir:        filepath.Join("data", "onnxruntime", onnx.LibVersion), // named after the pinned build
-    ManagedLibDir: true,                                                  // download the pinned build into it
-    Provider:      onnx.ProviderCPU,                                      // or ProviderCUDA, ProviderCoreML
+    ModelsDir: "data/models", // Model "" is onnx.DefaultModel; onnx.Models() lists the others
+    Runtime: onnx.Runtime{
+        LibDir:        filepath.Join("data", "onnxruntime", onnx.LibVersion), // named after the pinned build
+        ManagedLibDir: true,                                                  // download the pinned build into it
+        Provider:      onnx.ProviderCPU,                                      // or ProviderCUDA, ProviderCoreML
+    },
 })
 frames, err := ffmpeg.New(ffmpeg.Config{}) // scene cuts, one frame every 5 s, at most 64, 512 px
 store, err := sqlitevec.New(ctx, db, emb.Dimensions())
@@ -372,7 +377,7 @@ stored, so the next run tries it again rather than keep an item that is never fo
 - **Cost.** On a CPU with the default four threads the SigLIP 2 model embeds a
   1024-pixel picture in about 100 ms, eight per batch (an AMD Ryzen AI 9 HX PRO 370,
   `BenchmarkEmbedImagesReal`), and the process holds about 1.3 GB with the model
-  loaded; `Config.Threads` and `BatchSize` tune it, and CUDA takes batches. Indexing a
+  loaded; `Runtime.Threads` and `BatchSize` tune it, and CUDA takes batches. Indexing a
   video costs its decode plus one embedding per frame. Embedding, the ffmpeg run and the
   hash of a video all run per call; the background job that indexes decides how many run
   at once.
@@ -432,8 +437,7 @@ AI 9 HX PRO 370), so a de-duplication job does not pay for a model.
 ### Text, images and videos in one space
 
 ```go
-v, err := yzma.NewVision(ctx, yzma.VisionConfig{
-    Config: yzma.Config{ModelsDir: "data/models", LibDir: filepath.Join("data", "llama-cpp", yzma.LibTag), ManagedLibDir: true},
+v, err := yzma.NewVision(ctx, cfg, yzma.VisionOptions{ // cfg as for yzma.New: the Runtime is shared
     Cutter: frames, // the ffmpeg Sampler cuts videos into segments too
 })
 ix, err := search.NewMediaIndex(v, store, "tenant-1", "space-7", "media",
@@ -446,7 +450,7 @@ vecs, err := v.Embed(ctx, langai.RoleQuery, []string{"..."})  // the same object
 
 `yzma.Vision` runs `Qwen/Qwen3-VL-Embedding-2B` (Apache-2.0, 2048 dimensions) through
 llama.cpp and its libmtmd: the model's chat template wraps every input in an
-instruction (`Represent the user's input.` unless `VisionConfig.Instruction` says
+instruction (`Represent the user's input.` unless `VisionOptions.Instruction` says
 otherwise), the projector turns pictures and frames into tokens, and the vector is the
 last token's hidden state. Texts, images and videos land in one space, so a text finds
 pictures and clips, and an image finds the stretch of a video it appears in.
@@ -869,7 +873,7 @@ measured on long documents and not on essences.
 - **Cost.** The chat model is a 2.5 GB download, and a process with it and the embedding
   model loaded holds about 5 GB. A text takes 7 to 13 s with the default 4 threads on an
   AMD Ryzen AI 9 HX PRO 370 (English about 7 s, German 11), nearly all of it writing the
-  tags; `yzma.Config.Threads` raises that. Decoding is greedy, so a text gets the same tags
+  tags; `yzma.Runtime.Threads` raises that. Decoding is greedy, so a text gets the same tags
   every time.
 - **Limits.** The tags are as good as a 4B model's: their casing is the model's, a rare
   one is malformed (`FitnessimHome`), and they come back in the text's language. They

@@ -867,7 +867,7 @@ func TestNewCompleter_RunsThePinnedModel(t *testing.T) {
 	defaultCompleterAsset = a
 	t.Cleanup(func() { defaultCompleterAsset = orig })
 	modelsDir := filepath.Join(tmp, "models")
-	c, err := NewCompleter(context.Background(), Config{ModelsDir: modelsDir, LibDir: rt.LibDir, ManagedLibDir: true, Threads: 2})
+	c, err := NewCompleter(context.Background(), Config{Runtime: Runtime{LibDir: rt.LibDir, ManagedLibDir: true, Threads: 2}, ModelsDir: modelsDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -908,7 +908,7 @@ func TestNewCompleter_PassesAccelAndGPULayers(t *testing.T) {
 			orig := defaultCompleterAsset
 			defaultCompleterAsset = a
 			t.Cleanup(func() { defaultCompleterAsset = orig })
-			cfg := Config{ModelsDir: filepath.Join(tmp, "models"), LibDir: rt.LibDir, ManagedLibDir: true, Threads: 2, Accel: tc.accel, GPULayers: tc.layers}
+			cfg := Config{Runtime: Runtime{LibDir: rt.LibDir, ManagedLibDir: true, Threads: 2, Accel: tc.accel, GPULayers: tc.layers}, ModelsDir: filepath.Join(tmp, "models")}
 			if _, err := NewCompleter(context.Background(), cfg); err != nil {
 				t.Fatal(err)
 			}
@@ -920,7 +920,7 @@ func TestNewCompleter_PassesAccelAndGPULayers(t *testing.T) {
 }
 
 func TestNewCompleter_UnknownModelListsTheAvailableOnes(t *testing.T) {
-	_, err := NewCompleter(context.Background(), Config{Model: "BAAI/bge-m3", LibDir: t.TempDir()})
+	_, err := NewCompleter(context.Background(), Config{Runtime: Runtime{LibDir: t.TempDir()}, Model: "BAAI/bge-m3"})
 	if err == nil || !strings.Contains(err.Error(), DefaultCompleterModel) {
 		t.Fatalf("err = %v, want a refusal listing the chat models", err)
 	}
