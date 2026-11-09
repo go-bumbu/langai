@@ -110,7 +110,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
   only unit-tested with a fake session; the real-model tests ran on a CPU.
   Check the CUDA provider loads, that batches speed up, and the yalue note on
   CUDA overwriting Go's signal handlers (onnxruntime_go issue 140).
-- [ ] perceptual hash for exact and near-exact duplicates
+- [x] perceptual hash for exact and near-exact duplicates
   A 64-bit dHash/pHash as a second, model-free ImageEmbedder (±1 per bit, so
   cosine = 1 - 2·hamming/64 and the same Store works) for de-duplication
   jobs that should not pay for a model.
@@ -350,6 +350,8 @@ and `todo list --json` cover the common actions — run `todo --help`.
   A cancelled evaluation logs failed to decode at ERROR.
 - [ ] Makefile comment for test-vision is stale
   The target now also loads the model a second time on the CPU.
+- [ ] phash: measure thresholds on real photos
+  The duplicate thresholds come from synthetic pictures. Flat pictures all share the zero hash and a small mark on a near-flat picture flips about half the pHash bits. No ParseHash yet, and the vectors are not a compact bit column in the stores. grey.go has its own compose-on-white code that could use internal/imageutil if it gives identical 8-bit values.
 
 # change log
 
@@ -399,3 +401,5 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Commits 526ad13 537d7e9. Every provider's after-Close path wraps langai.ErrClosed. yzma.Embedder, yzma.Vision and onnx.Embedder report Model() ids that include what changes the vectors (pooling and prefixes; instruction, dims and video settings; preprocessing). Two quantizations of one model need two spec names, since the id leaves out the file digest.
 - [x] real-model runs after the provider changes
   make test-models, make test-images (also with DINOv2) and make test-vision all pass with numbers identical to the baseline before the changes. The unit tests no longer reach the network (the fake runtime now pins the CPU build; yzma tests went from 9 s to 0.4 s).
+- [x] provider/phash: perceptual hash ImageEmbedder (new)
+  Commits 571f5a7 62cc0ee 05b0abe. A model-free langai.ImageEmbedder for exact and near-exact duplicates: pHash (default) or dHash at 64 or 256 bits, as unit vectors so cosine = 1 - 2*hamming/bits and MediaIndex plus any Store work unchanged; Model() is phash-64, dhash-64, phash-256 or dhash-256. Integer arithmetic only (goldens also pass under GOARCH=386), area-average resize read in strips, alpha on white. Embedder.Hash returns the raw Hash with Distance and String. Measured on synthetic pictures (Hamming bits, phash-64): JPEG q60 2, half size 2, double 2, brighter 2, small mark 10; unrelated pairs average 31.5, closest 14. About 1.8 ms per 1920x1080 RGBA picture. Thresholds are not yet measured on real photos; the phash-64 limit for a marked copy has no margin (10 of 10).
