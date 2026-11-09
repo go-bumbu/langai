@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/go-bumbu/langai"
 	"github.com/go-bumbu/langai/internal/fetch"
 )
 
@@ -283,7 +284,7 @@ func (c *Completer) Complete(ctx context.Context, system, user string) (string, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return "", errors.New("completer is closed")
+		return "", fmt.Errorf("yzma: completer: %w", langai.ErrClosed)
 	}
 	prompt, err := c.promptTokens(system, user)
 	if err != nil {

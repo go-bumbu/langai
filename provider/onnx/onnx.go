@@ -481,7 +481,7 @@ func (e *Embedder) encode(images []image.Image) ([][]float32, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
-		return nil, errors.New("embedder is closed")
+		return nil, fmt.Errorf("onnx: embedder: %w", langai.ErrClosed)
 	}
 	values, shape, err := e.s.run(pixels, len(images), e.pre.side)
 	if err != nil {

@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-bumbu/langai"
 )
 
 // fakeAPI is a sessionAPI without native code. It records every call and
@@ -415,8 +417,8 @@ func TestEmbedder_ClosedCancelledAndBadInput(t *testing.T) {
 	if f.sessions[0].closed != 1 {
 		t.Errorf("closed %d times", f.sessions[0].closed)
 	}
-	if _, err := emb.EmbedImages(context.Background(), []image.Image{img}); err == nil || !strings.Contains(err.Error(), "closed") {
-		t.Errorf("after Close: err = %v", err)
+	if _, err := emb.EmbedImages(context.Background(), []image.Image{img}); !errors.Is(err, langai.ErrClosed) {
+		t.Errorf("after Close: err = %v, want langai.ErrClosed", err)
 	}
 }
 

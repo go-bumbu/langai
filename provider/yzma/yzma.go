@@ -415,7 +415,7 @@ func (e *Embedder) encode(_ context.Context, text string) ([]float32, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
-		return nil, errors.New("embedder is closed")
+		return nil, fmt.Errorf("yzma: embedder: %w", langai.ErrClosed)
 	}
 	toks := truncateTokens(e.b.tokenize(text), e.b.limit())
 	if len(toks) == 0 {

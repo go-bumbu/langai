@@ -545,7 +545,7 @@ func (v *Vision) embedBitmap(ctx context.Context, open func() (uintptr, func(), 
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
-		return nil, errors.New("vision embedder is closed")
+		return nil, fmt.Errorf("yzma: vision embedder: %w", langai.ErrClosed)
 	}
 	bitmap, free, err := open()
 	if err != nil {
@@ -561,7 +561,7 @@ func (v *Vision) embedPrompt(ctx context.Context, text string, bitmaps []uintptr
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
-		return nil, errors.New("vision embedder is closed")
+		return nil, fmt.Errorf("yzma: vision embedder: %w", langai.ErrClosed)
 	}
 	return v.embedLocked(ctx, strings.Repeat(v.marker, len(bitmaps))+text, bitmaps)
 }

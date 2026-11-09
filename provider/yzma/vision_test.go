@@ -219,16 +219,36 @@ func TestOpenVision_LoadsProbesAndFreesOnFailure(t *testing.T) {
 	if args := f.only(t, "applyTemplate"); args[1] != DefaultInstruction || args[2] != "dimension probe" {
 		t.Errorf("probe prompt = %v", args)
 	}
-	if err := v.Close(); err != nil || f.count("freeProjector") != 1 || f.count("freeContext") != 1 || f.count("freeModel") != 1 {
-		t.Errorf("Close: %v, calls %v", err, f.names())
-	}
-	if _, err := v.Embed(context.Background(), langai.RoleQuery, []string{"x"}); err == nil {
-		t.Error("Embed after Close succeeded")
-	}
-	if err := v.Close(); err != nil {
-		t.Errorf("second Close: %v", err)
-	}
+}
 
+// TestVision_CloseFreesOnceAndBlocksCalls: Close frees the projector, the
+// context and the model once, and every later call fails with
+// langai.ErrClosed without reaching llama.cpp.
+func TestVision_CloseFreesOnceAndBlocksCalls(t *testing.T) {
+	f := newFakeVision()
+	v := openVisionFake(t, f, VisionConfig{Cutter: &fakeCutter{durations: map[string]time.Duration{"clip.mp4": time.Second}}})
+	for range 2 {
+		if err := v.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+	if f.count("freeProjector") != 1 || f.count("freeContext") != 1 || f.count("freeModel") != 1 {
+		t.Errorf("Close freed %v", f.names())
+	}
+	f.calls = nil
+	ctx := context.Background()
+	if _, err := v.Embed(ctx, langai.RoleQuery, []string{"x"}); !errors.Is(err, langai.ErrClosed) {
+		t.Errorf("Embed after Close = %v, want langai.ErrClosed", err)
+	}
+	if _, err := v.EmbedImages(ctx, []image.Image{pixel(2, 2, color.RGBA{})}); !errors.Is(err, langai.ErrClosed) {
+		t.Errorf("EmbedImages after Close = %v, want langai.ErrClosed", err)
+	}
+	if _, err := v.EmbedVideo(ctx, "/media/clip.mp4"); !errors.Is(err, langai.ErrClosed) {
+		t.Errorf("EmbedVideo after Close = %v, want langai.ErrClosed", err)
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("a closed Vision reached llama.cpp: %v", f.names())
+	}
 }
 
 // TestOpenVision_GPUAndTemplateDefaults: a GPU offloads the projector too,

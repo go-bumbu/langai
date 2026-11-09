@@ -596,8 +596,8 @@ func TestCompleter_CloseFreesTheContextThenTheModel(t *testing.T) {
 		t.Fatalf("calls %s: want the context freed before its model, once", names)
 	}
 	f.calls = nil
-	if _, err := c.Complete(context.Background(), "s", "u"); err == nil {
-		t.Fatal("a closed Completer answered")
+	if _, err := c.Complete(context.Background(), "s", "u"); !errors.Is(err, langai.ErrClosed) {
+		t.Fatalf("a closed Completer answered %v, want langai.ErrClosed", err)
 	}
 	if len(f.calls) != 0 {
 		t.Errorf("a closed Completer reached llama.cpp: %v", f.names())

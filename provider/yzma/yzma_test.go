@@ -399,8 +399,8 @@ func TestClose_FreesOnceAndBlocksEmbed(t *testing.T) {
 	if stub.closes != 1 {
 		t.Fatalf("backend closed %d times, want 1", stub.closes)
 	}
-	if _, err := e.Embed(context.Background(), langai.RoleDocument, []string{"a"}); err == nil || !strings.Contains(err.Error(), "closed") {
-		t.Fatalf("Embed after Close = %v, want an error saying the embedder is closed", err)
+	if _, err := e.Embed(context.Background(), langai.RoleDocument, []string{"a"}); !errors.Is(err, langai.ErrClosed) {
+		t.Fatalf("Embed after Close = %v, want langai.ErrClosed", err)
 	}
 	if len(stub.texts) != 0 {
 		t.Fatal("a closed embedder reached the backend")
