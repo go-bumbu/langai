@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/langai/langaitest"
 	"github.com/go-bumbu/langai/vector"
 )
 
@@ -68,7 +69,7 @@ func TestMediaIndex_VideoWithNothingToEmbedIsAnError(t *testing.T) {
 	path := tempFile(t, "clip.mp4", []byte("clip"))
 	sampler := &countingSampler{}
 	frames, _, frameStore := newMediaIndex(t, WithSampler(sampler))
-	segments, _, segmentStore := newMediaIndex(t, WithVideoEmbedder(&segmentEmbedder{clips: map[string][]image.Image{"clip.mp4": nil}}))
+	segments, _, segmentStore := newMediaIndex(t, WithVideoEmbedder(&langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": nil}}))
 	for name, tc := range map[string]struct {
 		call  func() error
 		store *vector.MemStore

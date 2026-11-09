@@ -5,12 +5,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/go-bumbu/langai/langaitest"
 )
 
 // askedPrompt returns the system prompt a Generator built with opts sends.
 func askedPrompt(t *testing.T, opts ...GeneratorOption) string {
 	t.Helper()
-	llm := &stubLLM{answer: "alpha"}
+	llm := &langaitest.FakeCompleter{Replies: []string{"alpha"}}
 	g, err := NewGenerator(llm, &vecEmbedder{vecs: angled()}, GeneratorConfig{}, opts...)
 	if err != nil {
 		t.Fatal(err)
@@ -18,7 +20,7 @@ func askedPrompt(t *testing.T, opts ...GeneratorOption) string {
 	if _, err := g.Generate(context.Background(), bread, 0); err != nil {
 		t.Fatal(err)
 	}
-	return llm.asked[0].system
+	return llm.Calls()[0].System
 }
 
 func TestGeneratorOptions_Language(t *testing.T) {
@@ -47,7 +49,7 @@ func TestGeneratorOptions_Language(t *testing.T) {
 
 func TestWithLanguageTags_RefusesABadTag(t *testing.T) {
 	for _, lang := range []string{"", "not a language!", "x"} {
-		if _, err := NewGenerator(&stubLLM{}, &vecEmbedder{}, GeneratorConfig{}, WithLanguageTags(lang)); err == nil {
+		if _, err := NewGenerator(&langaitest.FakeCompleter{}, &vecEmbedder{}, GeneratorConfig{}, WithLanguageTags(lang)); err == nil {
 			t.Errorf("WithLanguageTags(%q): want an error", lang)
 		}
 	}
@@ -117,7 +119,7 @@ func TestGenerate_TreeTagsAreScoredByTheirWholePath(t *testing.T) {
 		"cooking / baking / sourdough": {0.8, 0.6, 0},
 		"cooking / baking":             {0.6, 0.8, 0},
 	}
-	llm := &stubLLM{answer: answer}
+	llm := &langaitest.FakeCompleter{Replies: []string{answer}}
 	emb := &vecEmbedder{vecs: vecs}
 	g, err := NewGenerator(llm, emb, GeneratorConfig{}, WithTreeTags())
 	if err != nil {
@@ -136,7 +138,7 @@ func TestGenerate_TreeTagsAreScoredByTheirWholePath(t *testing.T) {
 	// words to be a flat tag, and the other two are flat tags as written
 	vecs["cooking/baking"] = []float32{0.6, 0.8, 0}
 	vecs["Cooking / Baking"] = []float32{0, 1, 0}
-	g, _ = NewGenerator(&stubLLM{answer: answer}, &vecEmbedder{vecs: vecs}, GeneratorConfig{})
+	g, _ = NewGenerator(&langaitest.FakeCompleter{Replies: []string{answer}}, &vecEmbedder{vecs: vecs}, GeneratorConfig{})
 	got, err = g.Generate(context.Background(), bread, 0)
 	if err != nil {
 		t.Fatal(err)
