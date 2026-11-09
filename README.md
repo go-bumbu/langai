@@ -9,7 +9,7 @@ models run in-process through llama.cpp and ONNX Runtime.
 
 | Package | What it does |
 |---|---|
-| `langai` | The ports: `Embedder` (text embedding models), `ImageEmbedder` (image embedding models), `Completer` (chat models), the `Role` a text is embedded as, and the optional `Identified`, by which a model names itself so that stores never mix two models' vectors. `Normalize` scales a vector to unit length for the providers. `LazyEmbedder` defers loading a model to its first use. |
+| `langai` | The ports: `Embedder` (text embedding models), `ImageEmbedder` (image embedding models), `Completer` (chat models), the `Role` a text is embedded as, and the optional `Identified`, by which a model names itself so that stores never mix two models' vectors. `Normalize` scales a vector to unit length for the providers. `LazyEmbedder`, `LazyImageEmbedder` and `LazyCompleter` defer loading a model to its first use and release it on `Close`. |
 | `search` | Turns documents into embedding vectors and answers free-text queries with the closest ones: `Index` and the markdown-aware chunker. `MediaIndex` does the same for pictures: it embeds images and videos (as sampled frames through an image model, or as whole segments through a video model) and answers an image, a video or, with a model that has a text side, a text with the items that look most like it, across both kinds. |
 | `media` | The ports for video input: `Sampler` turns a video file into the `Frame`s that stand for it, `VideoEmbedder` embeds it as whole `Segment`s, `Cutter` measures and cuts it. |
 | `media/ffmpeg` | `Sampler` and `Cutter` over the ffmpeg and ffprobe binaries: the first frame, every scene cut and one frame per interval, scaled down, capped per video, or the keyframes only, for long videos; stream-copy cuts for the segment embedder. |
@@ -200,17 +200,36 @@ the index (`DeleteIndex`) or build a new generation, and index again.
 The first `yzma.New` downloads the llama.cpp libraries (~18 MB) and the default model,
 `google/embeddinggemma-300m` (~329 MB, 768 dimensions, multilingual); both are pinned by
 digest. To keep that off your startup path, wrap the loader in a `LazyEmbedder`, which
-reports its dimensions from the model's spec without loading anything:
+reports its model and dimensions from the model's spec without loading anything:
 
 ```go
-spec := yzma.DefaultSpec("data/models")
-emb := langai.NewLazyEmbedder(func() (langai.Embedder, error) {
-    return yzma.New(ctx, cfg)
-}, spec.Dims)
+spec, err := yzma.Spec("", "data/models") // "" is the default model
+emb := langai.NewLazyEmbedder(spec.Name, spec.Dims, func(ctx context.Context) (langai.Embedder, error) {
+    return yzma.New(ctx, cfg) // ctx is the LazyEmbedder's own: only Close cancels it
+})
+defer emb.Close()
+
+err = emb.Load(ctx)        // optional: load now, e.g. in the background at startup
+state, err := emb.State() // not started, loading, loaded, failed or closed, for a health endpoint
 ```
 
-A failed load is cached and returned by every later call; `State` reports it, e.g. for
-a health endpoint.
+`LazyImageEmbedder` and `LazyCompleter` do the same for an image model and a chat model.
+All three behave alike:
+
+- **One load, shared.** The first call (or `Load`) starts it on a goroutine of its own
+  and every caller waits for it under its own context: a request that times out
+  returns, and the load goes on for the others. The load's context belongs to the lazy
+  value and is cancelled by `Close` alone.
+- **A failed load is kept.** The error is returned by every later call and nothing
+  loads again, so a model that cannot be loaded costs one attempt, not one per request.
+  A loader that panics (`*langai.LoadPanicError`, with the stack) or returns nil fails
+  the same way.
+- **The model is checked.** The name and dimensions given at construction are what the
+  stores record before anything loads (an empty name is unknown and unchecked). A
+  loaded model with other dimensions, or one that names another model, fails the load
+  and is closed instead of mixing two vector spaces.
+- **`Close` releases the model.** It cancels a load in progress and waits for it, closes
+  the loaded model when it has a `Close`, and makes every waiting and later call fail.
 
 ### Image and video search
 
