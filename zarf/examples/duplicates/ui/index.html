@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>langai · duplicates</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="../assets/base.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <nav id="nav" data-page="duplicates/"><a class="home" href="../">langai examples</a></nav>
+  <h1>Duplicates</h1>
+  <div id="info" class="info">loading…</div>
+  <div class="actions">
+    <label class="check" title="pHash thresholds the lowest frequencies of the picture's DCT: unrelated pictures stay furthest apart. dHash compares neighbouring cells of a grid: a local edit moves it least.">hash
+      <select id="algo"><option value="phash">pHash</option><option value="dhash">dHash</option></select>
+    </label>
+    <label class="check" title="256 bits put duplicates and unrelated pictures much further apart than 64">bits
+      <select id="bits"><option value="64">64</option><option value="256">256</option></select>
+    </label>
+    <label class="check" title="pictures at most this many bits apart are duplicates">threshold
+      <input id="threshold" type="number" min="0" max="64" step="1" value="4"> bits <span id="floor"></span>
+    </label>
+    <label class="button" title="hash a picture of your own and look its copies up in a MediaIndex over the hash">find copies of a file<input id="upload" type="file" accept="image/*" hidden></label>
+    <button id="rescan" class="button">rescan</button>
+  </div>
+</header>
+<main>
+  <section class="groups">
+    <div id="summary" class="summary"></div>
+    <div id="grouplist"></div>
+  </section>
+  <aside id="detail" class="detail"><p class="hint">The groups on the left come from comparing the raw hashes of every pair of pictures (<code>phash.Hash.Distance</code>): no store, no vectors. Click a picture, or upload one, to look its copies up the other way: in a <code>search.MediaIndex</code> over the same hash, whose cosine score is the Hamming distance read as <code>1 − 2·distance/bits</code>.</p></aside>
+</main>
+<script src="../assets/ui.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

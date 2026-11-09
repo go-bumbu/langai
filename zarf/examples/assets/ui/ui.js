@@ -6,6 +6,7 @@
   const pages = [
     ['mediasearch/', 'media search'],
     ['textsearch/', 'text search'],
+    ['duplicates/', 'duplicates'],
     ['autotag/', 'auto tagging'],
   ];
 

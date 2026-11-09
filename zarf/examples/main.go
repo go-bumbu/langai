@@ -29,6 +29,7 @@ import (
 	"github.com/go-bumbu/langai/vector"
 	"github.com/go-bumbu/langai/zarf/examples/assets"
 	"github.com/go-bumbu/langai/zarf/examples/autotag"
+	"github.com/go-bumbu/langai/zarf/examples/duplicates"
 	"github.com/go-bumbu/langai/zarf/examples/mediasearch"
 	"github.com/go-bumbu/langai/zarf/examples/textsearch"
 )
@@ -146,6 +147,12 @@ func run(o options) error {
 	if err != nil {
 		return err
 	}
+	// the duplicates page hashes the media directory's pictures: no model
+	// and no database
+	dups, err := duplicates.New(duplicates.Config{Dir: o.mediaDir, Limit: o.limit, Logger: logger})
+	if err != nil {
+		return err
+	}
 	notebook, closeTagging, err := openTagging(ctx, o, text, chat, st.cache, logger)
 	if err != nil {
 		return err
@@ -157,6 +164,7 @@ func run(o options) error {
 	mux.Handle("/assets/", http.StripPrefix("/assets", assets.Handler()))
 	mux.Handle("/mediasearch/", http.StripPrefix("/mediasearch", mediasearch.Handler(lib)))
 	mux.Handle("/textsearch/", http.StripPrefix("/textsearch", textsearch.Handler(docs)))
+	mux.Handle("/duplicates/", http.StripPrefix("/duplicates", duplicates.Handler(dups)))
 	mux.Handle("/autotag/", http.StripPrefix("/autotag", autotag.Handler(notebook)))
 
 	// the first scans run behind the server, one after the other, so the
@@ -164,6 +172,10 @@ func run(o options) error {
 	// need of a model loads it. They end before anything they use is closed.
 	var scans sync.WaitGroup
 	scans.Go(func() {
+		// the cheapest first: hashing takes milliseconds a picture
+		if _, err := dups.Scan(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("duplicates scan", "err", err)
+		}
 		logger.Info("scanning", "dir", o.docsDir)
 		if _, err := docs.Scan(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("documents scan", "err", err)
@@ -265,6 +277,7 @@ a{color:#5aa9ff}li{margin:8px 0}</style></head><body>
 <ul>
 <li><a href="/mediasearch/">Media search</a> — images and videos that look like an image, a video or a text</li>
 <li><a href="/textsearch/">Text search</a> — documents that answer a question, in any language, with the chunk that matched</li>
+<li><a href="/duplicates/">Duplicates</a> — exact and near-exact copies of pictures, found by perceptual hashes without a model</li>
 <li><a href="/autotag/">Auto tagging</a> — tags for notes, picked among your own tags or written new by a chat model</li>
 </ul>
 </body></html>`)
