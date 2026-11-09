@@ -172,7 +172,7 @@ func New(ctx context.Context, cfg Config) (*Notebook, error) {
 // Close stops the notebook's Tagger and waits for what it has running (a
 // rebuild after a change, a View in flight) to end, so nothing reads the
 // embedder or the cache after it: call it before closing those. Every later
-// View and LoadSamples fails with tagging.ErrClosed. It does not close the
+// View and LoadSamples fails with langai.ErrClosed. It does not close the
 // Embedder, the Chat model or the Cache, which the caller made.
 func (nb *Notebook) Close() error { return nb.tagger.Close() }
 

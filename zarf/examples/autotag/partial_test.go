@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-bumbu/langai"
 	"github.com/go-bumbu/langai/langaitest"
 	"github.com/go-bumbu/langai/tagging"
 )
@@ -101,7 +102,7 @@ func TestNotebook_CloseStopsTheTagger(t *testing.T) {
 			t.Fatalf("Close: %v", err)
 		}
 	}
-	if msg := scoreError(); !strings.Contains(msg, tagging.ErrClosed.Error()) {
-		t.Errorf("after Close the note's error is %q, want %q", msg, tagging.ErrClosed)
+	if msg := scoreError(); !strings.Contains(msg, langai.ErrClosed.Error()) {
+		t.Errorf("after Close the note's error is %q, want %q", msg, langai.ErrClosed)
 	}
 }

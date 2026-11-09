@@ -127,7 +127,7 @@ func TestEmbedImagesReal(t *testing.T) {
 		original,
 		resized(original, 160),
 		recompressed(t, original, 40),
-		scene(512, red, 60),                          // the same scene, shifted
+		scene(512, red, 60),                         // the same scene, shifted
 		scene(512, color.RGBA{40, 60, 200, 255}, 0), // another colour
 		checker(512),                                // something else entirely
 	}
