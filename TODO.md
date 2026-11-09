@@ -368,6 +368,24 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Sibling headings without text vanish from the index, and an indented # comment in a code block is read as a heading.
 - [ ] empty-index and driver errors inconsistent
   errEmptyIndex is unexported and some methods return tablename's bare error; search.New accepts an empty index; sqlstore returns raw driver errors without the vector: prefix.
+- [ ] an embedder outage is recorded as a finished rebuild
+  With every Embed failing, members are skipped, the state is recorded and after recovery the tag stays name-only until the space's next revision (score 0 where a healthy build gives -0.24 at another cutoff). Skip a member only on evidence the embedder works; otherwise fail the rebuild and record nothing.
+- [ ] a rebuild longer than each caller's deadline never completes
+  With a 60 ms catalog read and sequential callers on 40 ms deadlines, 0 of 15 succeed and the catalog is read 15 times, because the run is cancelled when its last waiter leaves. Keep an abandoned run alive for a grace period.
+- [ ] parser keeps scaffolding and glues tags
+  Hashtag lists, CJK and Arabic separators and full-width colons glue or keep labels; JSON objects with scores leak numbers; No tags. becomes a tag.
+- [ ] parser drops or truncates legitimate tags
+  (re)insurance, 5" floppy and x < y are dropped; Topic modeling: LDA becomes LDA.
+- [ ] Prune's cutoff guard does not protect recent reads
+  A cutoff of age A only protects reads from the last A minus 24 h, and MemCache and sqlcache differ at exactly 24 h.
+- [ ] Generator retries a closed Completer on every window
+  A closed or down model is called 22 times on a 64 KB text.
+- [ ] FakeEmbedder and FakeImageEmbedder ignore ctx and cannot fail
+  Cancellation and outage paths tested with them pass wrongly.
+- [ ] three spellings of one coordinate in tagging
+  Prune takes Space, Scope takes two strings, vector uses Coord.
+- [ ] lazy loaders: recovery from a kept load failure is undocumented
+  The docs never say to build a new lazy value to retry.
 
 # change log
 
