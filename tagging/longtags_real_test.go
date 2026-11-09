@@ -100,7 +100,7 @@ func TestTaggerLongTags(t *testing.T) {
 		if len(need) == 0 {
 			return
 		}
-		out, err := embedBatch(ctx, emb, langai.RoleDocument, need)
+		out, err := embedTexts(ctx, emb, langai.RoleDocument, need)
 		if err != nil {
 			t.Fatalf("embed names: %v", err)
 		}

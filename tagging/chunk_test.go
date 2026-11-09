@@ -202,7 +202,11 @@ func TestEngine_LongMemberTeachesWithItsBestPiece(t *testing.T) {
 	}
 	ctx := context.Background()
 	emb := langaitest.FakeEmbedder{}
-	nameVec, _ := embedOne(ctx, emb, langai.RoleDocument, "sourdough bread")
+	nameVecs, err := emb.Embed(ctx, langai.RoleDocument, []string{"sourdough bread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nameVec := nameVecs[0]
 	pieces := Chunk(longMember, cfg.ChunkBytes)
 	vecs, err := emb.Embed(ctx, langai.RoleQuery, pieces)
 	if err != nil {

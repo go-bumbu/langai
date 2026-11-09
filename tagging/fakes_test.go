@@ -3,6 +3,7 @@ package tagging
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -32,6 +33,22 @@ type tallyEmbedder struct {
 	// failOn, when not empty, fails every call with a text containing it
 	failOn    string
 	failOnErr error
+	// fixed holds the vector Embed returns for a text instead of the inner
+	// embedder's
+	fixed map[string][]float32
+	// hook, when set, runs at the start of every Embed with the number of the
+	// call in any role (1 for the first); an error from it fails the call
+	hook   func(call int) error
+	nCalls int
+	// largest is the most texts one Embed was asked for
+	largest int
+}
+
+// largestBatch returns the most texts one Embed call was asked for.
+func (e *tallyEmbedder) largestBatch() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.largest
 }
 
 func (e *tallyEmbedder) embedder() langai.Embedder {
@@ -60,14 +77,22 @@ func (e *tallyEmbedder) Embed(ctx context.Context, role langai.Role, texts []str
 		e.texts[role][t]++
 	}
 	e.calls[role]++
+	e.nCalls++
+	e.largest = max(e.largest, len(texts))
+	call, hook := e.nCalls, e.hook
 	err := e.fail[role]
 	for _, t := range texts {
 		if e.failOn != "" && strings.Contains(t, e.failOn) {
 			err = e.failOnErr
 		}
 	}
-	short := maps.Clone(e.short)
+	short, fixed := maps.Clone(e.short), maps.Clone(e.fixed)
 	e.mu.Unlock()
+	if hook != nil {
+		if err := hook(call); err != nil {
+			return nil, err
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -79,8 +104,108 @@ func (e *tallyEmbedder) Embed(ctx context.Context, role langai.Role, texts []str
 		if short[t] {
 			vs[i] = []float32{1, 0, 0}
 		}
+		if v, ok := fixed[t]; ok {
+			vs[i] = slices.Clone(v)
+		}
 	}
 	return vs, nil
+}
+
+// vecFor has Embed return v for text.
+func (e *tallyEmbedder) vecFor(text string, v []float32) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.fixed == nil {
+		e.fixed = map[string][]float32{}
+	}
+	e.fixed[text] = v
+}
+
+// atCall has hook run at the start of every Embed.
+func (e *tallyEmbedder) atCall(hook func(call int) error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.hook = hook
+}
+
+// logRecorder is a slog.Handler that keeps every record, so a test can assert
+// what the engine reported. It is safe for concurrent use.
+type logRecorder struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (l *logRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (l *logRecorder) Handle(_ context.Context, r slog.Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.records = append(l.records, r.Clone())
+	return nil
+}
+
+func (l *logRecorder) WithAttrs([]slog.Attr) slog.Handler { return l }
+
+func (l *logRecorder) WithGroup(string) slog.Handler { return l }
+
+// lines returns each record as "LEVEL message key=value ...", in order.
+func (l *logRecorder) lines() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, len(l.records))
+	for i, r := range l.records {
+		var b strings.Builder
+		b.WriteString(r.Level.String() + " " + r.Message)
+		r.Attrs(func(a slog.Attr) bool {
+			b.WriteString(" " + a.Key + "=" + a.Value.String())
+			return true
+		})
+		out[i] = b.String()
+	}
+	return out
+}
+
+// matching returns the lines that contain every one of parts.
+func (l *logRecorder) matching(parts ...string) []string {
+	var out []string
+	for _, line := range l.lines() {
+		ok := true
+		for _, p := range parts {
+			ok = ok && strings.Contains(line, p)
+		}
+		if ok {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// faultyCache is an EmbeddingCache whose writes can fail: Put with putErr, and
+// Get, after reading, with getErr next to the vectors it read.
+type faultyCache struct {
+	EmbeddingCache
+	mu             sync.Mutex
+	putErr, getErr error
+}
+
+func (c *faultyCache) Get(ctx context.Context, index string, keys []CacheKey) (map[CacheKey][]float32, error) {
+	got, err := c.EmbeddingCache.Get(ctx, index, keys)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return got, c.getErr
+}
+
+func (c *faultyCache) Put(ctx context.Context, index string, vecs map[CacheKey][]float32) error {
+	c.mu.Lock()
+	err := c.putErr
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return c.EmbeddingCache.Put(ctx, index, vecs)
 }
 
 // failRole makes every Embed of role fail with err; a nil err clears it.

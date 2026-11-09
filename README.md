@@ -322,7 +322,8 @@ pictures and clips, and an image finds the stretch of a video it appears in.
    1. The app calls `Suggest` with the text and the space's revision.
    2. The library embeds the text, using the cache with the text's hash as the key.
    3. The library keeps an in-memory index of tag vectors. When the revision changes, it
-      rebuilds the changed tags from the `Catalog` and the cached embeddings.
+      rebuilds the changed tags from the `Catalog` and the cached embeddings. A member
+      text that cannot be embedded is left out and logged.
    4. A tag vector is its name blended with the average of its members' vectors, and
       each tag has its own cutoff.
    5. The library compares the text's vector with every tag vector by cosine.
@@ -338,7 +339,8 @@ pictures and clips, and an image finds the stretch of a video it appears in.
    1. The app calls `Warm` with the revision and some texts, for example on item save or
       after a model switch.
    2. The library rebuilds the space if the revision changed.
-   3. It embeds and caches any texts the cache doesn't have yet.
+   3. It embeds and caches any texts the cache doesn't have yet, a batch at a time, so a
+      cancelled Warm keeps its progress.
 4. **Generate** (new tags)
    1. The app calls `Generate` with the text and a minimum score.
    2. The library cuts the text to `MaxBytes` (64 KB by default).
@@ -475,11 +477,28 @@ How a tag is judged:
   teach a tag.
 - **A new revision rebuilds only what moved.** The Tagger reads the catalog's tags,
   rebuilds from the cache the ones whose revision, name, model or settings changed, with
-  one `Members` call, and drops the ones gone; the callers that ask at one revision
-  together share one rebuild. So a bulk import costs one rebuild per changed tag, at the
-  next call. A catalog or embedder failure in a rebuild fails the call with no tags and an error
-  wrapping `tagging.ErrNotRebuilt`; the index stays as it was, so the next call tries
-  again, and what was embedded before the failure stays cached.
+  one `Members` call per 64 tags, and drops the ones gone; the callers that ask at one
+  revision together share one rebuild. So a bulk import costs one rebuild per changed
+  tag, at the next call.
+- **A failure keeps what was done.** Texts go to the embedder 32 at a time and each batch
+  is cached as it comes back, so a rebuild or a `Warm` that fails or is cancelled loses at
+  most one batch, and the next call embeds only what is missing. A catalog failure, or an
+  embedder failure on a tag's *name*, fails the call with no tags and an error wrapping
+  `tagging.ErrNotRebuilt` that names the tag; the index stays as it was, so the next call
+  tries again.
+- **One bad member does not block a space.** When a batch fails, its texts are embedded
+  again one at a time. A member's text the embedder still fails on, or answers with a
+  vector of NaN, infinite or all-zero values, is left out: its tag is built from its name
+  and its other members, nothing is cached for it, and the Tagger tries it again at the
+  space's next revision. `TaggerConfig.Logger` (a `*slog.Logger`, nil discards) gets a
+  warning for each one, with the index, the partition, the tag's id and the SHA-256 and
+  length of the text, so you can find the item; the text itself is not logged. `Warm`
+  returns an error naming the texts it could not embed by their position, after
+  embedding the rest; `Suggest` and `Scores` fail when their own text cannot be embedded.
+- **A cache that cannot be written still answers.** On a read-only replica or a locked
+  SQLite file the vectors are read but their last-used time cannot be refreshed, and new
+  embeddings cannot be stored. Neither fails a call: the Tagger uses the vectors it has
+  and logs a warning.
 - **One configuration per shared index:** Taggers that share a `TagIndex` (through
   `WithTagIndex`) must use the same `Model`, `NameMinScore`, `MemberMinScore`,
   `SmoothingK` and `ChunkBytes` (`AllPathLevels` may differ), or each takes the other's

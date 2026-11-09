@@ -39,7 +39,10 @@
 // the tags whose revision, name, model or settings changed, drops the ones
 // gone, and records the revision, once for every caller of that revision. A
 // rebuild that fails returns an error wrapping ErrNotRebuilt and leaves the
-// index as it was, so the next call tries again. Losing the cache or the
+// index as it was, so the next call tries again; texts are embedded and cached
+// a batch at a time, so it embeds only what is still missing. A member's text
+// the embedder cannot take is left out of its tag and reported to
+// TaggerConfig.Logger instead of failing the rebuild. Losing the cache or the
 // index costs time, never correctness.
 //
 // A Generator starts from nothing: a language model (a langai.Completer)

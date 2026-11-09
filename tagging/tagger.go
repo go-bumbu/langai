@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 
@@ -69,6 +70,13 @@ const longRule = "best"
 // returned, ancestors and descendants together.
 //
 // Taggers that share a cache may use different models: the model is part of every key.
+//
+// Logger receives, at Warn, what the Tagger worked around instead of failing
+// a call: a member text it left out of its tag because the embedder failed on
+// it or answered with a vector that is no use (with the index, the partition,
+// the tag's id, and the SHA-256 and length of the text, which is not logged
+// itself), and a cache it could read but not write. Nil discards them. It is
+// no scoring setting: Taggers that differ only in it share a TagIndex freely.
 type TaggerConfig struct {
 	Model          string
 	NameMinScore   float64
@@ -76,6 +84,7 @@ type TaggerConfig struct {
 	SmoothingK     float64
 	ChunkBytes     int
 	AllPathLevels  bool
+	Logger         *slog.Logger
 }
 
 // Tagger suggests tags for texts in every space of one application, choosing
@@ -170,11 +179,17 @@ func checkConfig(cfg TaggerConfig) (TaggerConfig, string, error) {
 
 // ErrNotRebuilt is wrapped, together with its cause, by the error of a
 // Suggest, Scores or Warm that could not bring its space up to the revision it
-// was given, because the Catalog or the embedder failed during the rebuild.
-// The call returns nothing. The index is left as it was and the revision
-// unrecorded, so the next call diffs again; what was embedded before the
-// failure stays cached, so it re-embeds only what was missing. Test for it
-// with errors.Is.
+// was given: the Catalog failed during the rebuild, or the embedder failed on
+// a tag's name, which the error then names by the tag's id. The call returns
+// nothing. The index is left as it was and the revision unrecorded, so the
+// next call diffs again; texts are embedded and cached in batches, so what
+// was embedded before the failure stays cached and the next call embeds only
+// what is missing. Test for it with errors.Is.
+//
+// The embedder failing on a member's text is not such a failure: the member
+// is left out of its tag, which is built from its name and its other members,
+// and reported to TaggerConfig.Logger; the tag is built again at the space's
+// next revision, when the member gets another try.
 var ErrNotRebuilt = errors.New("tagging: tag not rebuilt")
 
 // Scope is a handle on one space of tags: its index is the hard isolation
@@ -253,6 +268,12 @@ func (s *Scope) Scores(ctx context.Context, revision, text string) ([]TagScore, 
 // skipped, so no Suggest pays for them: an item's text when it is saved, say,
 // or the whole corpus after a switch of models. An empty index or revision is
 // an error, and one of the rebuild wraps ErrNotRebuilt.
+//
+// The texts are embedded and cached a batch at a time, so a Warm that fails or
+// is cancelled keeps what it had done and the next one embeds the rest. A text
+// the embedder fails on does not stop the others: Warm embeds them all the
+// same and then returns an error that names each text it could not embed by
+// its place among texts ("text 3 of 500") and wraps the cause.
 func (s *Scope) Warm(ctx context.Context, revision string, texts ...string) error {
 	return s.tg.e.warm(ctx, s.index, s.partition, revision, texts)
 }
@@ -286,26 +307,4 @@ func (s *Scope) Touch(ctx context.Context) error {
 // more recent cutoff would remove entries read minutes ago, and is refused.
 func (t *Tagger) Prune(ctx context.Context, unusedSince time.Time, spaces ...Space) (int64, error) {
 	return t.e.prune(ctx, unusedSince, spaces)
-}
-
-// embedOne embeds a single text, refusing an embedder that breaks its contract
-// by answering with no vector, or several, rather than panicking on the
-// missing one, and refusing a vector that is empty, or whose length is not the
-// embedder's Dimensions when it says them, rather than caching it for a
-// rebuild to blend with vectors of another length.
-func embedOne(ctx context.Context, emb langai.Embedder, role langai.Role, text string) ([]float32, error) {
-	vs, err := emb.Embed(ctx, role, []string{text})
-	if err != nil {
-		return nil, err
-	}
-	if len(vs) != 1 {
-		return nil, fmt.Errorf("tagging: embedder returned %d vectors for one %s", len(vs), role)
-	}
-	switch dims := emb.Dimensions(); {
-	case dims > 0 && len(vs[0]) != dims:
-		return nil, fmt.Errorf("tagging: embedder returned a vector of %d dimensions, want %d", len(vs[0]), dims)
-	case len(vs[0]) == 0:
-		return nil, errors.New("tagging: embedder returned an empty vector")
-	}
-	return vs[0], nil
 }

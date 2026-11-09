@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -17,6 +18,13 @@ var (
 	errEmptyRevision = errors.New("tagging: empty revision")
 	errBlankText     = errors.New("tagging: blank text")
 )
+
+// skippedMark ends the fingerprint of a tag built without one of its members,
+// because the member's text could not be embedded. No fingerprint the engine
+// computes ends this way (they are hex digests), so the tag is never taken
+// for up to date: it is built again whenever the space's revision changes,
+// and the member gets another try.
+const skippedMark = "+skipped"
 
 // engine scores texts against the tags of a space without keeping a copy of
 // the application's data. It reads the tags and hand-made links from the
@@ -35,6 +43,7 @@ type engine struct {
 	// params fingerprints cfg's scoring settings (see checkConfig)
 	params string
 	flight flight
+	log    *slog.Logger     // cfg.Logger, or one that discards
 	now    func() time.Time // time.Now, replaced by tests
 }
 
@@ -55,7 +64,11 @@ func newEngine(emb langai.Embedder, cat Catalog, cache EmbeddingCache, ix TagInd
 	if err != nil {
 		return nil, err
 	}
-	return &engine{emb: emb, cat: cat, cache: cache, ix: ix, cfg: cfg, params: params, now: time.Now}, nil
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &engine{emb: emb, cat: cat, cache: cache, ix: ix, cfg: cfg, params: params, log: logger, now: time.Now}, nil
 }
 
 // scores returns text's score against every tag of the space at revision,
@@ -70,9 +83,12 @@ func (e *engine) scores(ctx context.Context, index, partition, revision, text st
 	if strings.TrimSpace(text) == "" {
 		return nil, errBlankText
 	}
-	vecs, err := e.itemVectors(ctx, index, []string{text})
+	vecs, failed, err := e.itemVectors(ctx, index, []string{text})
 	if err != nil {
 		return nil, err
+	}
+	if err := failed[text]; err != nil {
+		return nil, fmt.Errorf("tagging: the text could not be embedded: %w", err)
 	}
 	pieces := vecs[text]
 	cands, err := e.candidates(ctx, index, partition, revision, queryVector(pieces))
@@ -106,7 +122,9 @@ func (e *engine) candidates(ctx context.Context, index, partition, revision stri
 }
 
 // warm brings the space up to revision (see refresh) and caches the vectors
-// of texts, the blank ones skipped, so no later scores pays for them.
+// of texts, the blank ones skipped, so no later scores pays for them. A text
+// the embedder fails on does not stop the others: they are embedded and
+// cached, and the error names each one that was not by its place in texts.
 func (e *engine) warm(ctx context.Context, index, partition, revision string, texts []string) error {
 	if err := checkSpace(index, revision); err != nil {
 		return err
@@ -114,8 +132,17 @@ func (e *engine) warm(ctx context.Context, index, partition, revision string, te
 	if err := e.refresh(ctx, index, partition, revision); err != nil {
 		return err
 	}
-	_, err := e.itemVectors(ctx, index, nonBlank(texts))
-	return err
+	_, failed, err := e.itemVectors(ctx, index, nonBlank(texts))
+	if err != nil || len(failed) == 0 {
+		return err
+	}
+	var errs []error
+	for i, t := range texts {
+		if cause := failed[t]; cause != nil {
+			errs = append(errs, fmt.Errorf("tagging: text %d of %d (%d bytes) could not be embedded: %w", i+1, len(texts), len(t), cause))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // checkSpace refuses an empty index, which a TagIndex and an EmbeddingCache
@@ -214,20 +241,27 @@ func (e *engine) diff(ctx context.Context, index, partition string, held map[str
 		}
 	}
 	slices.Sort(drop)
-	if len(put) == 0 {
-		return nil, drop, nil
-	}
-	if err := e.build(ctx, index, partition, put); err != nil {
-		return nil, nil, err
+	for start := 0; start < len(put); start += membersGroupSize {
+		if err := e.build(ctx, index, partition, put[start:min(start+membersGroupSize, len(put))]); err != nil {
+			return nil, nil, err
+		}
 	}
 	return put, drop, nil
 }
 
-// build fills in the Vec and Cutoff of tags from their names and members, in
-// one Members call. Members of ids not asked for are ignored, and blank texts
-// skipped. A member enters as one vector (see memberVector). A member with a
-// vector not as long as the tag's name vector is an error naming the tag:
-// blend and tagCutoff index one by the other.
+// build fills in the Vec and Cutoff of tags, at most membersGroupSize of
+// them, from their names and members, in one Members call. Members of ids not
+// asked for are ignored, and blank texts skipped. A member enters as one
+// vector (see memberVector).
+//
+// A member whose text could not be embedded is left out, reported to the
+// Logger, and marks its tag to be built again at the next revision (see
+// skippedMark): one text the embedder cannot take must not keep a whole space
+// from being built. A name that could not be embedded leaves its tag with
+// nothing to be built from, so it is an error naming the tag, and so is a
+// member with a vector not as long as the tag's name vector, which blend and
+// tagCutoff index one by the other. Everything else is embedded and cached
+// before either error is returned.
 func (e *engine) build(ctx context.Context, index, partition string, tags []TagVector) error {
 	ids, names := make([]string, len(tags)), make([]string, len(tags))
 	for i, t := range tags {
@@ -243,31 +277,60 @@ func (e *engine) build(ctx context.Context, index, partition string, tags []TagV
 		members[id] = nonBlank(got[id])
 		texts = append(texts, members[id]...)
 	}
-	items, err := e.itemVectors(ctx, index, texts)
+	items, skipped, err := e.itemVectors(ctx, index, texts)
 	if err != nil {
 		return err
 	}
-	nameVecs, err := e.nameVectors(ctx, index, names)
+	nameVecs, unnamed, err := e.vectors(ctx, index, langai.RoleDocument, names)
 	if err != nil {
 		return err
 	}
-	k := e.cfg.SmoothingK
+	var errs []error
 	for i := range tags {
 		t := &tags[i]
-		nameVec := nameVecs[t.Name]
-		vecs := make([][]float32, 0, len(members[t.ID]))
-		for _, m := range members[t.ID] {
-			pieces := items[m]
-			for _, v := range pieces {
-				if len(v) != len(nameVec) {
-					return fmt.Errorf("tagging: tag %q has a member with a vector of %d dimensions and a name vector of %d", t.ID, len(v), len(nameVec))
-				}
-			}
-			vecs = append(vecs, memberVector(pieces, nameVec))
+		if cause := unnamed[t.Name]; cause != nil {
+			errs = append(errs, fmt.Errorf("tagging: the name of tag %q could not be embedded: %w", t.ID, cause))
+			continue
 		}
-		t.Vec = blend(nameVec, vecs, k)
-		t.Cutoff = storedCutoff(tagCutoff(nameVec, vecs, k, e.cfg.NameMinScore, e.cfg.MemberMinScore))
+		if err := e.buildTag(index, partition, t, nameVecs[t.Name], members[t.ID], items, skipped); err != nil {
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...)
+}
+
+// buildTag fills in the Vec and Cutoff of t from its name's vector and the
+// vectors, in items, of its members, leaving out and reporting the members in
+// skipped (see build).
+func (e *engine) buildTag(index, partition string, t *TagVector, nameVec []float32, members []string,
+	items map[string][][]float32, skipped map[string]error) error {
+	vecs := make([][]float32, 0, len(members))
+	reported := map[string]bool{}
+	for _, m := range members {
+		if cause := skipped[m]; cause != nil {
+			if !reported[m] {
+				reported[m] = true
+				sum := sha256.Sum256([]byte(m))
+				e.log.Warn("tagging: member text skipped, it could not be embedded", logComponent,
+					slog.String("index", index), slog.String("partition", partition), slog.String("tag", t.ID),
+					slog.String("text_sha256", hex.EncodeToString(sum[:])), slog.Int("text_bytes", len(m)), slog.Any("err", cause))
+			}
+			continue
+		}
+		pieces := items[m]
+		for _, v := range pieces {
+			if len(v) != len(nameVec) {
+				return fmt.Errorf("tagging: tag %q has a member with a vector of %d dimensions and a name vector of %d", t.ID, len(v), len(nameVec))
+			}
+		}
+		vecs = append(vecs, memberVector(pieces, nameVec))
+	}
+	if len(reported) > 0 {
+		t.Fingerprint += skippedMark
+	}
+	k := e.cfg.SmoothingK
+	t.Vec = blend(nameVec, vecs, k)
+	t.Cutoff = storedCutoff(tagCutoff(nameVec, vecs, k, e.cfg.NameMinScore, e.cfg.MemberMinScore))
 	return nil
 }
 
@@ -280,185 +343,4 @@ func nonBlank(texts []string) []string {
 		}
 	}
 	return out
-}
-
-// itemVectors returns the query vectors of the pieces of each of texts (see
-// itemPieces), by text, as items and members are scored. Each piece is cached
-// on its own, under the Tagger's model, so a piece another text shares, or a
-// text that makes one piece, is embedded once whatever ChunkBytes is. The
-// texts that make one piece are embedded in one call, and each longer one's
-// missing pieces in one call of their own: when one fails, what was embedded
-// before it stays cached (see vectors), and a retry embeds only what is
-// missing.
-func (e *engine) itemVectors(ctx context.Context, index string, texts []string) (map[string][][]float32, error) {
-	pieces := make(map[string][]string, len(texts))
-	var all []string
-	whole := map[string]bool{}
-	var long [][]string // the pieces of each text of several, in order
-	for _, t := range texts {
-		if _, ok := pieces[t]; ok {
-			continue
-		}
-		ps := itemPieces(t, e.cfg.ChunkBytes)
-		pieces[t] = ps
-		all = append(all, ps...)
-		if len(ps) == 1 {
-			whole[ps[0]] = true
-		} else {
-			long = append(long, ps)
-		}
-	}
-	key := func(piece string) CacheKey { return KeyFor(e.cfg.Model, langai.RoleQuery, piece) }
-	embed := func(ctx context.Context, misses []string) ([][]float32, error) {
-		return e.embedPieces(ctx, misses, whole, long)
-	}
-	vecs, err := e.vectors(ctx, index, all, key, embed)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string][][]float32, len(pieces))
-	for t, ps := range pieces {
-		vs := make([][]float32, len(ps))
-		for i, p := range ps {
-			vs[i] = vecs[p]
-		}
-		out[t] = vs
-	}
-	return out, nil
-}
-
-// nameVectors returns the document vector of each of names, by name.
-func (e *engine) nameVectors(ctx context.Context, index string, names []string) (map[string][]float32, error) {
-	key := func(name string) CacheKey { return KeyFor(e.cfg.Model, langai.RoleDocument, name) }
-	embed := func(ctx context.Context, names []string) ([][]float32, error) {
-		return embedBatch(ctx, e.emb, langai.RoleDocument, names)
-	}
-	return e.vectors(ctx, index, names, key, embed)
-}
-
-// vectors returns the vector of each of texts, by text: the cache's, in one
-// Get, where it holds one under key(text), and embed's for the rest, which
-// are then cached in one Put. A text listed twice is looked up and embedded
-// once. When embed fails, the vectors it returned with its error (nil for the
-// texts it did not embed) are cached all the same, and the call fails: what
-// was embedded before a failure stays cached (see ErrNotRebuilt).
-func (e *engine) vectors(ctx context.Context, index string, texts []string, key func(string) CacheKey,
-	embed func(context.Context, []string) ([][]float32, error)) (map[string][]float32, error) {
-	var uniq []string
-	keys := map[string]CacheKey{}
-	for _, t := range texts {
-		if _, ok := keys[t]; !ok {
-			keys[t] = key(t)
-			uniq = append(uniq, t)
-		}
-	}
-	out := make(map[string][]float32, len(uniq))
-	if len(uniq) == 0 {
-		return out, nil
-	}
-	lookup := make([]CacheKey, len(uniq))
-	for i, t := range uniq {
-		lookup[i] = keys[t]
-	}
-	got, err := e.cache.Get(ctx, index, lookup)
-	if err != nil {
-		return nil, err
-	}
-	var misses []string
-	for _, t := range uniq {
-		if v, ok := got[keys[t]]; ok {
-			out[t] = v
-		} else {
-			misses = append(misses, t)
-		}
-	}
-	if len(misses) == 0 {
-		return out, nil
-	}
-	vs, embedErr := embed(ctx, misses)
-	put := make(map[CacheKey][]float32, len(misses))
-	for i, v := range vs {
-		if v != nil {
-			t := misses[i]
-			out[t], put[keys[t]] = v, v
-		}
-	}
-	var putErr error
-	if len(put) > 0 {
-		putErr = e.cache.Put(ctx, index, put)
-	}
-	if embedErr != nil || putErr != nil {
-		return nil, errors.Join(embedErr, putErr)
-	}
-	return out, nil
-}
-
-// embedPieces embeds the pieces in misses as queries: the ones that are a
-// text whole in one call, then the missing pieces of each text of several (in
-// long) one call per text. When one fails it returns the error together with
-// what it embedded before it, a nil vector for every piece it did not, so the
-// caller can keep those.
-func (e *engine) embedPieces(ctx context.Context, misses []string, whole map[string]bool, long [][]string) ([][]float32, error) {
-	out := make([][]float32, len(misses))
-	at := make(map[string]int, len(misses))
-	var single []string
-	var singleAt []int
-	for i, m := range misses {
-		at[m] = i
-		if whole[m] {
-			single, singleAt = append(single, m), append(singleAt, i)
-		}
-	}
-	if len(single) > 0 {
-		vs, err := embedBatch(ctx, e.emb, langai.RoleQuery, single)
-		if err != nil {
-			return out, err
-		}
-		for j, i := range singleAt {
-			out[i] = vs[j]
-		}
-	}
-	for _, ps := range long {
-		var need []string
-		var needAt []int
-		for _, p := range ps {
-			if i, ok := at[p]; ok && out[i] == nil && !slices.Contains(need, p) {
-				need, needAt = append(need, p), append(needAt, i)
-			}
-		}
-		if len(need) == 0 {
-			continue
-		}
-		vs, err := embedBatch(ctx, e.emb, langai.RoleQuery, need)
-		if err != nil {
-			return out, err
-		}
-		for j, i := range needAt {
-			out[i] = vs[j]
-		}
-	}
-	return out, nil
-}
-
-// embedBatch embeds texts in one call, checking the answer as embedOne does:
-// one vector per text, none empty, and each of the embedder's Dimensions when
-// it says them.
-func embedBatch(ctx context.Context, emb langai.Embedder, role langai.Role, texts []string) ([][]float32, error) {
-	vs, err := emb.Embed(ctx, role, texts)
-	if err != nil {
-		return nil, err
-	}
-	if len(vs) != len(texts) {
-		return nil, fmt.Errorf("tagging: embedder returned %d vectors for %d %s texts", len(vs), len(texts), role)
-	}
-	dims := emb.Dimensions()
-	for _, v := range vs {
-		switch {
-		case dims > 0 && len(v) != dims:
-			return nil, fmt.Errorf("tagging: embedder returned a vector of %d dimensions, want %d", len(v), dims)
-		case len(v) == 0:
-			return nil, errors.New("tagging: embedder returned an empty vector")
-		}
-	}
-	return vs, nil
 }

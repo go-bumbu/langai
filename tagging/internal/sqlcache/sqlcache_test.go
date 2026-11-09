@@ -2,7 +2,9 @@ package sqlcache
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -55,6 +57,52 @@ func TestKeyOrder_IsThePrimaryKeyOrder(t *testing.T) {
 		case string(a.Hash[:]) >= string(b.Hash[:]):
 			t.Fatalf("key %d: hash %x after %x", i, b.Hash[:4], a.Hash[:4])
 		}
+	}
+}
+
+// TestCache_GetOnAReadOnlyDatabaseStillReturnsTheVectors: on a read-only
+// replica, or a database another process holds locked, the vectors can be
+// read while the last-used time of a stale one cannot be rewritten. That
+// write is housekeeping: Get returns what it read together with an error
+// wrapping tagging.ErrCacheWrite, so its caller can use the vectors and report
+// the rest.
+func TestCache_GetOnAReadOnlyDatabaseStillReturnsTheVectors(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "c.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1) // the pragma below is per connection
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c, err := New(ctx, db, SQLite, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := tagging.KeyFor("m", langai.RoleQuery, "stale")
+	other := tagging.KeyFor("m2", langai.RoleDocument, "stale too")
+	want := map[tagging.CacheKey][]float32{stale: {1, 2}, other: {3}}
+	if err := c.Put(ctx, "i", want); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA query_only = ON`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.Get(ctx, "i", []tagging.CacheKey{stale, other})
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Get of fresh entries = %v, %v; want %v, nil: nothing needs writing", got, err, want)
+	}
+	now = now.Add(tagging.CacheRefreshAfter + time.Hour)
+	got, err = c.Get(ctx, "i", []tagging.CacheKey{stale, other})
+	if !errors.Is(err, tagging.ErrCacheWrite) {
+		t.Fatalf("Get of stale entries: err = %v, want one wrapping ErrCacheWrite", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Get of stale entries = %v, want %v next to the error", got, want)
+	}
+	if err := c.Touch(ctx, "i", []tagging.CacheKey{stale}); err == nil || errors.Is(err, tagging.ErrCacheWrite) {
+		t.Errorf("Touch on a read-only database: err = %v, want a plain failure", err)
 	}
 }
 

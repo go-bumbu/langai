@@ -158,7 +158,10 @@ type group struct {
 
 // Get implements tagging.EmbeddingCache. Keys are grouped by model and role and
 // matched 500 at a time; the entries found older than
-// tagging.CacheRefreshAfter get their last-used time rewritten.
+// tagging.CacheRefreshAfter get their last-used time rewritten. When that
+// write fails, on a read-only replica or a locked file, the vectors were read
+// all the same: Get returns all of them together with an error wrapping
+// tagging.ErrCacheWrite.
 func (c *Cache) Get(ctx context.Context, index string, keys []tagging.CacheKey) (map[tagging.CacheKey][]float32, error) {
 	if err := checkIndex(index); err != nil {
 		return nil, err
@@ -173,6 +176,7 @@ func (c *Cache) Get(ctx context.Context, index string, keys []tagging.CacheKey) 
 	}
 	now := c.now().Unix()
 	staleBefore := now - int64(tagging.CacheRefreshAfter/time.Second)
+	var notRefreshed error
 	for g, hashes := range groups {
 		for start := 0; start < len(hashes); start += chunk {
 			part := hashes[start:min(start+chunk, len(hashes))]
@@ -180,12 +184,19 @@ func (c *Cache) Get(ctx context.Context, index string, keys []tagging.CacheKey) 
 			if err != nil {
 				return nil, err
 			}
+			if notRefreshed != nil {
+				continue // the database takes no write: read the rest and say so once
+			}
 			// only the entries still stale: two readers do not rewrite a
 			// row one after the other for nothing
-			if err := c.touch(ctx, index, g, stale, now, &staleBefore); err != nil {
-				return nil, err
-			}
+			notRefreshed = c.touch(ctx, index, g, stale, now, &staleBefore)
 		}
+	}
+	if notRefreshed != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return out, fmt.Errorf("%w: refresh last-used times: %w", tagging.ErrCacheWrite, notRefreshed)
 	}
 	return out, nil
 }

@@ -58,7 +58,10 @@ func checkName(what, name string) error {
 type EmbeddingCache interface {
 	// Get returns the vectors of the keys it holds; missing keys are absent
 	// from the map, and a key listed twice counts once. It refreshes the
-	// last-used time of an entry older than CacheRefreshAfter.
+	// last-used time of an entry older than CacheRefreshAfter. A cache that
+	// read the vectors but could not write that refresh may return them
+	// together with an error wrapping ErrCacheWrite; with any other error it
+	// returns no vectors.
 	Get(ctx context.Context, index string, keys []CacheKey) (map[CacheKey][]float32, error)
 	// Put stores or replaces the vectors, last used now. An empty vector is an error.
 	Put(ctx context.Context, index string, vecs map[CacheKey][]float32) error

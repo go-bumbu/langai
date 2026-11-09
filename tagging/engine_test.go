@@ -275,38 +275,37 @@ func TestEngine_EmbedderErrorFailsAndRetries(t *testing.T) {
 	}
 }
 
-// TestEngine_FailureInAChunkedTextKeepsWhatWasEmbedded: a long member failing
-// loses neither the batch of short ones embedded before it nor a long one that
-// came first: the error wraps ErrNotRebuilt, and the retry embeds only the text
-// that failed.
-func TestEngine_FailureInAChunkedTextKeepsWhatWasEmbedded(t *testing.T) {
+// TestEngine_AMemberWithAPieceThatFailsIsSkippedWhole: one piece of a long
+// member failing leaves the whole member out of its tag, since the rest of it
+// is not the member, and loses none of the pieces that did embed, its own
+// among them: once the embedder takes the piece, the next revision embeds
+// that piece only.
+func TestEngine_AMemberWithAPieceThatFailsIsSkippedWhole(t *testing.T) {
 	const (
 		short   = "Short bread"
 		earlier = "A long pastry recipe that goes on past the chunk size"
 		failing = "A long croissant recipe that boom goes on past the chunk size"
 		item    = "bread at home"
 	)
-	boom := errors.New("embedder down")
-	cfg := engineCfg
+	cfg, rec := loggedCfg()
 	cfg.ChunkBytes = 20
 	cat := &fakeCatalog{tags: breadAndJapan("1"), members: map[string][]string{"bread": {short, earlier, failing}}}
 	r := newRig(t, cfg, cat, nil, nil)
-	r.emb.failContaining("boom", boom)
-	ss, err := r.e.scores(context.Background(), "1", "10", "1", item)
-	if !errors.Is(err, ErrNotRebuilt) || !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want one wrapping ErrNotRebuilt and the cause", err)
+	r.emb.failContaining("boom", errBoom)
+	got := r.scores(t, "1", item)
+
+	pair := &fakeCatalog{tags: breadAndJapan("1"), members: map[string][]string{"bread": {short, earlier}}}
+	if want := newRig(t, cfg, pair, nil, nil).scores(t, "1", item); !reflect.DeepEqual(got, want) {
+		t.Errorf("scores %+v, want those of the tag without the failing member, %+v", got, want)
 	}
-	if ss != nil {
-		t.Fatalf("scores = %+v, want none on an error", ss)
+	if n := len(rec.matching("WARN", "member", "tag=bread", "piece")); n != 1 {
+		t.Errorf("the member was reported %d times, want once, naming the piece; log:\n%s", n, strings.Join(rec.lines(), "\n"))
 	}
 	r.emb.failContaining("", nil)
-	calls := r.emb.callsOf(langai.RoleQuery)
-	r.scores(t, "1", item)
-	if n := r.emb.times(langai.RoleQuery, short); n != 1 {
-		t.Errorf("the short member was embedded %d times, want once: the failure must not lose it", n)
-	}
-	if n := r.emb.callsOf(langai.RoleQuery) - calls; n != 1 {
-		t.Errorf("the retry made %d Embed calls of items, want 1: only the text that failed", n)
+	embedded := r.emb.count(langai.RoleQuery)
+	r.scores(t, "2", item)
+	if n := r.emb.count(langai.RoleQuery) - embedded; n != 1 {
+		t.Errorf("the next revision embedded %d pieces, want 1: only the piece that had failed", n)
 	}
 }
 
@@ -651,10 +650,21 @@ func TestEngine_ChunkBytesChangeReembedsItemsOnly(t *testing.T) {
 	if n := b.emb.count(langai.RoleDocument); n != 0 {
 		t.Errorf("embedded %d names, want 0: names are not chunked", n)
 	}
-	// every member and the item is longer than 20 bytes: one Embed of its
-	// pieces each
-	if n := b.emb.callsOf(langai.RoleQuery); n != len(croissantRecipes)+1 {
-		t.Errorf("%d Embed calls of items, want %d: the item and each member", n, len(croissantRecipes)+1)
+	// every member and the item is longer than 20 bytes, so each is embedded
+	// again, as its pieces
+	var pieces []string
+	for _, text := range append(slices.Clone(croissantRecipes), croissantText) {
+		pieces = append(pieces, Chunk(text, cfg.ChunkBytes)...)
+	}
+	slices.Sort(pieces)
+	pieces = slices.Compact(pieces)
+	if n := b.emb.count(langai.RoleQuery); n != len(pieces) {
+		t.Errorf("embedded %d item texts, want the %d distinct pieces of the item and the members", n, len(pieces))
+	}
+	for _, p := range pieces {
+		if n := b.emb.times(langai.RoleQuery, p); n != 1 {
+			t.Errorf("piece %q embedded %d times, want once", p, n)
+		}
 	}
 }
 
