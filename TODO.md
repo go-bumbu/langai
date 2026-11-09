@@ -213,7 +213,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
 
 ## architecture
 
-- [ ] model identity so vector spaces cannot mix
+- [x] model identity so vector spaces cannot mix
   No port reports which model made a vector and the stores record only dims, so two 768-d models (SigLIP 2, EmbeddingGemma) can share a collection and return garbage with no error; TaggerConfig.Model is typed by hand. Add an optional langai.Identified{Model() string}, implement it in the providers and LazyEmbedder, keep a (model, dims) meta row per index in the stores and fail with vector.ErrModelMismatch.
 - [x] content hash covers the chunker and the model
   search.ContentHash(text) covers only the text, so a changed MaxChars, Chunker or embedder leaves stale chunks in place forever. Hash text + chunker fingerprint + model id.
@@ -223,7 +223,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
   sqlitevec and pgvec repeat the same tests by hand and MemStore has its own. Add vector/vectortest.Run for all three, plus langaitest.FakeCompleter (stub chat models are written three times), a map-backed Catalog and a fake VideoEmbedder.
 - [x] read paths must not create tables
   ensure() runs CREATE TABLE from Delete/ContentHash/Chunks/Search in both SQL stores, so a search for an unknown index creates a table set and a read-only Postgres role fails on a lookup. Only Upsert creates the schema; reads return empty when the tables are absent.
-- [ ] sentinel errors for errors.Is
+- [x] sentinel errors for errors.Is
   Closed-embedder, dimension-mismatch and empty-id errors are plain strings. Add langai.ErrClosed, vector.ErrDimensions, search.ErrEmptyID and wrap with %w.
 - [x] search API symmetry
   Index.Search returns the store's vector.Match (leaks Partition/Collection) while MediaIndex returns MediaMatch; Index has no SearchIndexed and MediaIndex.SearchIndexed returns the query item itself. Add search.Match, Index.SearchIndexed, and leave the query doc out of both.
@@ -233,7 +233,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
   vector.Normalize is imported by the providers although vector is the store port, and VideoEmbedder/Segment live in media while the other embedder ports are in the root. Move Normalize, VideoEmbedder and Segment to the root package.
 - [x] LazyEmbedder lifecycle
   No Close (the loaded model can never be released), load takes no ctx, and there is no lazy form of ImageEmbedder, Vision or Completer. load becomes func(ctx), add Close, add LazyImageEmbedder and LazyCompleter over one loader.
-- [ ] dedupe provider fetch code
+- [x] dedupe provider fetch code
   ensureModelFile, fetchFile and the staged library install are copied between provider/yzma/fetch.go and provider/onnx/fetch.go; yzma.Download is exported only for zarf/eval. Move the shared steps to internal/fetch.
 - [ ] consistent provider constructors
   yzma/onnx Config repeat Runtime's fields, OpenVision breaks the Open(ctx, spec, Runtime) pattern, lookup names differ (Spec, LookupCompleterSpec, LookupVisionSpec), yzma has no Models(), and the cache constructors return the interface.
@@ -314,36 +314,42 @@ and `todo list --json` cover the common actions — run `todo --help`.
 
 ## providers and fetch
 
-- [ ] Vision.Embed puts raw text through the chat template
+- [x] Vision.Embed puts raw text through the chat template
   A NUL byte empties the chat message so every such text gets the same vector with no error; a media marker in a text fails the batch and a control token is parsed as one. Tokenize template pieces and user text separately, as the Completer does.
-- [ ] library install is unsynchronized
+- [x] library install is unsynchronized
   Two goroutines or processes on a fresh managed dir both download and one can remove the directory under the other's load; an Open asking for another build replaces the files under the loaded library. Mutex plus file lock, re-check after acquiring, refuse replacement when loaded.
-- [ ] NewCompleter drops Config.Accel and GPULayers
+- [x] NewCompleter drops Config.Accel and GPULayers
   It builds a Runtime by hand instead of cfg.runtime(), so AccelCPU still offloads to a GPU.
-- [ ] ManagedLibDir deletes whatever LibDir points at
+- [x] ManagedLibDir deletes whatever LibDir points at
   RemoveAll(libDir) after the download wipes a directory that held other files. Replace only a missing, empty or package-owned directory.
-- [ ] EmbedVideo treats unknown duration as short
+- [x] EmbedVideo treats unknown duration as short
   ffprobe reports 0 for files without a container duration, and the whole file goes to libmtmd as one input; an extensionless path gives ffmpeg no muxer.
-- [ ] downloaded files are not durable and never re-checked
+- [x] downloaded files are not durable and never re-checked
   No Sync before rename, and any existing file is accepted, so a truncated file after a power loss fails every load. Sync, and compare the size when the spec has one.
-- [ ] interrupted downloads: fixed timeout, no resume, leaked temp files
+- [x] interrupted downloads: fixed timeout, no resume, leaked temp files
   Open overrides the caller's deadline with 15 min / 1 h, each retry starts from zero, and a killed process leaves multi-GB temp files.
-- [ ] ResizeCrop allocates gigabytes for thin images
+- [x] ResizeCrop allocates gigabytes for thin images
   A 1x20000 image allocates 664 MB. Scale only the central source rectangle.
-- [ ] hw reports CUDA from the driver alone
+- [x] hw reports CUDA from the driver alone
   A host without the CUDA runtime gets the CUDA build, falls to CPU and stays there although Vulkan would work.
-- [ ] Vision evaluation ignores ctx
+- [x] Vision evaluation ignores ctx
   A video segment or photo cannot be cancelled and Close blocks behind it. Use llama's abort callback.
-- [ ] Vision.Embed errors where Embedder truncates
+- [x] Vision.Embed errors where Embedder truncates
   A long text fails the whole batch instead of being truncated to the context.
-- [ ] embedding length taken from n_embd, not n_embd_out
+- [x] embedding length taken from n_embd, not n_embd_out
   A custom GGUF with a smaller output size reads past llama.cpp's buffer.
-- [ ] llama.cpp log routing fixed by the first opener
+- [x] llama.cpp log routing fixed by the first opener
   A nil Logger on the first Open silences llama.cpp errors for every later instance.
-- [ ] transparency handled differently per provider
+- [x] transparency handled differently per provider
   onnx premultiplies alpha (transparent becomes black), yzma composes on white. One shared flatten step.
-- [ ] digest comparison is case-sensitive
+- [x] digest comparison is case-sensitive
   An uppercase SHA256 in a spec fails after the full download.
+- [ ] model id before load for the lazy loaders
+  The README's lazy example passes spec.Name as the model id, but yzma's Model() returns name plus pooling and prefixes, so the load would fail with a mismatch. The providers need a way to compute the id from a spec and config without loading.
+- [ ] filter llama.cpp ERROR lines after a cancelled evaluation
+  A cancelled evaluation logs failed to decode at ERROR.
+- [ ] Makefile comment for test-vision is stale
+  The target now also loads the model a second time on the CPU.
 
 # change log
 
@@ -381,3 +387,15 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Commit 5b09557. Inputs and outputs are passed as file: URLs, so paths with a colon, a leading dash or a percent sign work. Frames are read one at a time from the pipe (PAM) into buffers of their own instead of one shared buffer of up to gigabytes; ffmpeg is killed and reaped on cancel, read error and at MaxFrames (WaitDelay 2 s); zero frames is an error. Not tested: an ffprobe older than 8 rejecting -pattern_type.
 - [x] internal/tablename: unused ForPrefix removed
   Commit e8e2809.
+- [x] downloads: shared in internal/fetch, resumable, durable, locked
+  Commits 300af05 f475dd2 374a08c. The model download and the staged library install moved from both providers into internal/fetch; yzma.Download is gone. A cut download keeps <file>.partial and resumes with a Range request (digest still verified), files are synced around the rename, a model file of the wrong pinned size is fetched again, the default timeout applies only when ctx has no deadline, and old temp files are swept after 2 h. Library installs run under an in-process lock plus a file lock (<LibDir>.lock now appears next to managed dirs, also in ~/.cache/semsearch-*); a loaded library dir is never replaced and ManagedLibDir only replaces a missing, empty or package-installed directory. Digests compare case-insensitively. Open: another process can still replace a directory a running process loaded from.
+- [x] yzma Vision: safe tokenization, truncation, cancellation, duration-less videos
+  Commits d6ab874 fc61c1d. Text goes through mtmd.TokenizeFromParts as plain-text parts outside the chat template, so NUL bytes, media markers and control tokens in a text are data (token ids identical to before for ordinary inputs, checked on the real model). Long texts are cut to the context instead of failing the batch. llama.cpp's abort callback stops Vision, Completer and Embedder when ctx ends (a 3 s CPU evaluation returned 25 ms after its deadline; a GPU backend finishes its batch). A video without a container duration is remuxed to .mkv and segmented, and extensionless files are cut into .mkv.
+- [x] yzma: Completer honours Accel, n_embd_out, log routing, CUDA detection
+  Commits 6aab3a7 e61fb4b fd44142 e1c41fa. NewCompleter passes Config.Accel and GPULayers; vectors are sized by the model's output embedding length; llama.cpp's log goes through a pointer later opens can set; CUDA is reported only when libcudart.so.13 and libcublas.so.13 are on the loader path, with a warning when a GPU build registers no GPU (library names inferred from the asset name, not run on NVIDIA hardware).
+- [x] onnx: thin images and transparency
+  Commit b27aa24. A 1x20000 picture is prepared in under 16 MiB instead of 664 MB (output byte-identical on ordinary pictures), and both providers compose transparency on white through internal/imageutil.ScaleOnWhite.
+- [x] langai.ErrClosed and Model() on the real providers
+  Commits 526ad13 537d7e9. Every provider's after-Close path wraps langai.ErrClosed. yzma.Embedder, yzma.Vision and onnx.Embedder report Model() ids that include what changes the vectors (pooling and prefixes; instruction, dims and video settings; preprocessing). Two quantizations of one model need two spec names, since the id leaves out the file digest.
+- [x] real-model runs after the provider changes
+  make test-models, make test-images (also with DINOv2) and make test-vision all pass with numbers identical to the baseline before the changes. The unit tests no longer reach the network (the fake runtime now pins the CPU build; yzma tests went from 9 s to 0.4 s).
