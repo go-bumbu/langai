@@ -325,7 +325,7 @@ type backend interface {
 	tokenize(text string) []int32
 	// embed runs one tokenized text through the model and returns the pooled,
 	// un-normalized vector as a fresh slice the caller may modify.
-	embed(tokens []int32) ([]float32, error)
+	embed(ctx context.Context, tokens []int32) ([]float32, error)
 	// close frees the model and its context; called at most once.
 	close()
 }
@@ -413,7 +413,7 @@ func (e *Embedder) Close() error {
 // and returns a unit-length vector. The text is clamped and the token
 // sequence truncated to the backend's limit here, before anything reaches
 // llama.cpp.
-func (e *Embedder) encode(_ context.Context, text string) ([]float32, error) {
+func (e *Embedder) encode(ctx context.Context, text string) ([]float32, error) {
 	text = clampText(text)
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -424,7 +424,7 @@ func (e *Embedder) encode(_ context.Context, text string) ([]float32, error) {
 	if len(toks) == 0 {
 		return nil, errors.New("tokenizer returned no tokens")
 	}
-	vec, err := e.b.embed(toks)
+	vec, err := e.b.embed(ctx, toks)
 	if err != nil {
 		return nil, err
 	}

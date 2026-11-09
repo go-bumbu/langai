@@ -169,6 +169,9 @@ type chatAPI interface {
 	// decodeAt runs tokens through the model as positions pos.., keeping the
 	// logits of the last one; ret is llama_decode's return value (0 = ok).
 	decodeAt(ctx uintptr, tokens []int32, pos int32) (ret int32, err error)
+	// setAbort makes the decodes of ctx ask stop as they compute and give up
+	// when it says so; nil takes the question away again.
+	setAbort(ctx uintptr, stop func() bool)
 	// sample draws the next token from the logits of the last decode.
 	sample(sampler, ctx uintptr) int32
 	// isEOG reports whether token ends a reply.
@@ -275,8 +278,10 @@ func (c *Completer) Close() error {
 // MaxNewTokens long. Decoding is greedy, so the same messages give the same
 // reply. Both messages are plain text to the model, even when they spell its
 // control tokens, and a message beyond 32 KiB is cut. A prompt that leaves no
-// room in the context to answer is an error, and so is a canceled ctx, which is
-// checked between tokens.
+// room in the context to answer is an error, and so is a canceled ctx: it is
+// checked between tokens, and llama.cpp asks it while it computes, so a
+// model running on the CPU stops in the middle of a batch (a GPU backend
+// finishes the batch it is in).
 func (c *Completer) Complete(ctx context.Context, system, user string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -285,6 +290,10 @@ func (c *Completer) Complete(ctx context.Context, system, user string) (string, 
 	defer c.mu.Unlock()
 	if c.closed {
 		return "", fmt.Errorf("yzma: completer: %w", langai.ErrClosed)
+	}
+	if ctx.Done() != nil {
+		c.api.setAbort(c.ctx, func() bool { return ctx.Err() != nil })
+		defer c.api.setAbort(c.ctx, nil)
 	}
 	prompt, err := c.promptTokens(system, user)
 	if err != nil {
@@ -316,29 +325,51 @@ func (c *Completer) Complete(ctx context.Context, system, user string) (string, 
 // role header with a newline, as ChatML does for Qwen; a SentencePiece
 // vocabulary that prefixes each piece with a space would see an extra one.
 func (c *Completer) promptTokens(system, user string) ([]int32, error) {
-	rendered, err := c.api.applyTemplate(c.template, systemMarker, userMarker)
+	layout, err := layoutTemplate(c.api.applyTemplate, c.template)
 	if err != nil {
-		return nil, fmt.Errorf("apply chat template %q: %w", c.template, err)
-	}
-	before, rest, hasSystem := strings.Cut(rendered, systemMarker)
-	between, after, hasUser := strings.Cut(rest, userMarker)
-	if !hasSystem || !hasUser || strings.Contains(after, systemMarker) || strings.Contains(after, userMarker) {
-		return nil, fmt.Errorf("chat template %q does not lay out a system message followed by a user message exactly once: %q", c.template, rendered)
+		return nil, err
 	}
 	var tokens []int32
 	for _, piece := range []struct {
 		text                     string
 		addSpecial, parseSpecial bool
 	}{
-		{before, true, true},
+		{layout.before, true, true},
 		{clampText(system), false, false},
-		{between, false, true},
+		{layout.between, false, true},
 		{clampText(user), false, false},
-		{after, false, true},
+		{layout.after, false, true},
 	} {
 		tokens = append(tokens, c.api.tokenizeWith(c.model, piece.text, piece.addSpecial, piece.parseSpecial)...)
 	}
 	return tokens, nil
+}
+
+// promptLayout is a chat template applied to nothing: the text it puts
+// before the system message, between it and the user message, and after
+// that, where the assistant's turn begins. The messages themselves never go
+// through the template. That keeps what came from outside apart from the
+// template's markup when the prompt is tokenized, and away from the
+// template engine, which loses a message that holds a NUL byte.
+type promptLayout struct {
+	before, between, after string
+}
+
+// layoutTemplate lays the template out around stand-ins (systemMarker,
+// userMarker) with apply, llama.cpp's template function, and cuts the
+// result apart where they stood. A template that does not place a system
+// message followed by a user message exactly once is an error.
+func layoutTemplate(apply func(template, system, user string) (string, error), template string) (promptLayout, error) {
+	rendered, err := apply(template, systemMarker, userMarker)
+	if err != nil {
+		return promptLayout{}, fmt.Errorf("apply chat template %q: %w", template, err)
+	}
+	before, rest, hasSystem := strings.Cut(rendered, systemMarker)
+	between, after, hasUser := strings.Cut(rest, userMarker)
+	if !hasSystem || !hasUser || strings.Contains(after, systemMarker) || strings.Contains(after, userMarker) {
+		return promptLayout{}, fmt.Errorf("chat template %q does not lay out a system message followed by a user message exactly once: %q", template, rendered)
+	}
+	return promptLayout{before: before, between: between, after: after}, nil
 }
 
 // feed runs the prompt through the model in batches, each where the last
@@ -348,7 +379,7 @@ func (c *Completer) feed(ctx context.Context, prompt []int32) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := c.decode(prompt[start:min(start+c.batch, len(prompt))], start); err != nil {
+		if err := c.decode(ctx, prompt[start:min(start+c.batch, len(prompt))], start); err != nil {
 			return err
 		}
 	}
@@ -373,22 +404,26 @@ func (c *Completer) draw(ctx context.Context, sampler uintptr, promptLen, limit 
 		if n+1 == limit {
 			break // nothing follows the last token, so it is not decoded
 		}
-		if err := c.decode([]int32{tok}, promptLen+n); err != nil {
+		if err := c.decode(ctx, []int32{tok}, promptLen+n); err != nil {
 			return "", err
 		}
 	}
 	return strings.ToValidUTF8(string(reply), "�"), nil
 }
 
-// decode runs tokens through the model as positions pos...
-func (c *Completer) decode(tokens []int32, pos int) error {
+// decode runs tokens through the model as positions pos... A decode that
+// failed because ctx ended (see setAbort) reports ctx's error.
+func (c *Completer) decode(ctx context.Context, tokens []int32, pos int) error {
 	// pos stays below the context size, an int32 llama.cpp granted
 	ret, err := c.api.decodeAt(c.ctx, tokens, int32(pos)) //nolint:gosec // see above
+	if err == nil && ret == 0 {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
-	if ret != 0 {
-		return fmt.Errorf("decode returned %d", ret)
-	}
-	return nil
+	return fmt.Errorf("decode returned %d", ret)
 }

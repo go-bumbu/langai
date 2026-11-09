@@ -145,6 +145,17 @@ func (ffiAPI) decode(ctx uintptr, tokens []int32) (int32, error) {
 	return llama.Decode(llama.Context(ctx), batch)
 }
 
+// setAbort installs llama.cpp's abort callback on ctx, or removes it. The
+// bindings keep one C callback for all contexts and look the Go function up
+// by context, so nothing is allocated per call that would never be freed.
+func (ffiAPI) setAbort(ctx uintptr, stop func() bool) {
+	if stop == nil {
+		llama.SetAbortCallback(llama.Context(ctx), nil)
+		return
+	}
+	llama.SetAbortCallback(llama.Context(ctx), llama.AbortFunc(stop))
+}
+
 func (ffiAPI) embeddings(ctx uintptr, n int32) ([]float32, error) {
 	return llama.GetEmbeddingsSeq(llama.Context(ctx), 0, n)
 }

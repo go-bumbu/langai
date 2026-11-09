@@ -103,8 +103,10 @@ type fakeChat struct {
 	pieces        map[int32][]byte // the bytes of a token; its rune when absent
 	decodeRet     int32
 	decodeErr     error
-	failDecode    int       // fail the nth decode (1-based); 0 = never
-	onSample      func(int) // called with the number of the sample about to be drawn
+	failDecode    int         // fail the nth decode (1-based); 0 = never
+	onSample      func(int)   // called with the number of the sample about to be drawn
+	onDecode      func(int)   // called with the number of the decode that starts
+	stop          func() bool // the abort callback setAbort installed
 
 	decodes   []decodeCall
 	tokenized []tokenizeCall
@@ -198,13 +200,26 @@ func (f *fakeChat) newSampler() uintptr {
 
 func (f *fakeChat) freeSampler(sampler uintptr) { f.record("freeSampler", sampler) }
 
+// decodeAt fails like llama.cpp does (return value 2) when the abort
+// callback says stop.
 func (f *fakeChat) decodeAt(ctx uintptr, tokens []int32, pos int32) (int32, error) {
 	f.record("decodeAt", ctx, len(tokens), pos)
 	f.decodes = append(f.decodes, decodeCall{slices.Clone(tokens), pos})
+	if f.onDecode != nil {
+		f.onDecode(len(f.decodes))
+	}
+	if f.stop != nil && f.stop() {
+		return 2, nil
+	}
 	if f.failDecode != 0 && len(f.decodes) == f.failDecode {
 		return 0, errors.New("decode failed")
 	}
 	return f.decodeRet, f.decodeErr
+}
+
+func (f *fakeChat) setAbort(ctx uintptr, stop func() bool) {
+	f.record("setAbort", ctx, stop != nil)
+	f.stop = stop
 }
 
 func (f *fakeChat) sample(sampler, ctx uintptr) int32 {
@@ -486,6 +501,46 @@ func TestComplete_StopsWhenTheContextIsCanceled(t *testing.T) {
 	}
 	if f.count("freeSampler") != 1 {
 		t.Errorf("freeSampler called %d times, want once", f.count("freeSampler"))
+	}
+}
+
+// TestComplete_StopsInsideADecodeWhenTheContextEnds: a prompt goes in 512
+// tokens at a time, and one batch can take seconds. llama.cpp is told how to
+// ask whether ctx ended while it computes, so a cancel stops the batch it is
+// in and comes back as ctx's error; the question is taken away afterwards.
+func TestComplete_StopsInsideADecodeWhenTheContextEnds(t *testing.T) {
+	f := newFakeChat()
+	f.script = []int32{'o', 'k'}
+	c := openFakeChat(t, f, testSpec())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.onDecode = func(n int) {
+		if n == 1 {
+			cancel() // the caller gives up while the first batch computes
+		}
+	}
+	if _, err := c.Complete(ctx, "s", "u"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if len(f.decodes) != 1 || f.samples != 0 {
+		t.Errorf("%d decodes and %d samples after the cancel, want the one decode it stopped", len(f.decodes), f.samples)
+	}
+	var sets []any
+	for _, call := range f.calls {
+		if call.name == "setAbort" {
+			sets = append(sets, call.args[1])
+		}
+	}
+	if len(sets) != 2 || sets[0] != true || sets[1] != false || f.stop != nil {
+		t.Errorf("setAbort calls = %v, want one installing the callback and one removing it", sets)
+	}
+	// a context that cannot end installs nothing
+	f.calls, f.onDecode = nil, nil
+	if _, err := c.Complete(context.Background(), "s", "u"); err != nil {
+		t.Fatal(err)
+	}
+	if f.count("setAbort") != 0 {
+		t.Error("an abort callback was installed for a context without Done")
 	}
 }
 

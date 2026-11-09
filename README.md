@@ -394,6 +394,18 @@ pictures and clips, and an image finds the stretch of a video it appears in.
   time. `MaxSegments` caps the work per video. A segment is one vector: the model sees
   the whole stretch, which is what makes a clip match a description, and what loses the
   "matched at 4.00 s" precision of the frame route.
+- **Texts are plain text.** The chat template is laid out once, around stand-ins, and
+  the instruction and every input are tokenized as parts of their own: a text that
+  spells one of the model's control tokens (`<|im_end|>`), libmtmd's media marker or a
+  NUL byte is read as those characters and nothing else. A text that does not fit the
+  context next to the instruction is cut at its end, as the text `Embedder` cuts,
+  instead of failing the batch it came in; a picture or a video segment that does not
+  fit is still an error (`ImageMaxTokens`, `SegmentLength`).
+- **Cancelling.** `ctx` is passed to llama.cpp as an abort callback in all three
+  (`Embedder`, `Completer`, `Vision`): on the CPU a cancelled call stops within one
+  step of the computation and returns the context's error, and the model stays usable.
+  A GPU backend does not ask the callback, so there the batch that is running (up to
+  2048 tokens for `Vision`, 512 for the `Completer`) finishes first.
 - **Scores.** Copies of a photo score 0.97 to 0.98, a pug against another pug about
   0.8, unrelated photos about 0.1, a short description against the photo it describes
   0.6 to 0.7: a floor of 0.4 keeps related things and drops the rest.

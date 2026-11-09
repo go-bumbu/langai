@@ -1,6 +1,7 @@
 package yzma
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,6 +52,11 @@ type llamaAPI interface {
 	memoryClear(mem uintptr) error
 	// decode runs one batch; ret is llama_decode's return value (0 = ok).
 	decode(ctx uintptr, tokens []int32) (ret int32, err error)
+	// setAbort makes the decodes of ctx ask stop as they compute and give up
+	// when it says so; nil takes the question away again. llama.cpp asks
+	// between the steps of a computation on the CPU; a GPU backend finishes
+	// the batch it is in.
+	setAbort(ctx uintptr, stop func() bool)
 	// embeddings returns the pooled vector of sequence 0 as a view into
 	// llama.cpp memory that the next decode overwrites; nil when absent.
 	embeddings(ctx uintptr, n int32) ([]float32, error)
@@ -213,7 +219,9 @@ func (l *llamaBackend) limit() int { return l.lim }
 
 func (l *llamaBackend) tokenize(text string) []int32 { return l.api.tokenize(l.model, text) }
 
-func (l *llamaBackend) embed(tokens []int32) ([]float32, error) {
+// embed runs one batch through the model. A ctx that ends while llama.cpp
+// computes stops the decode (see llamaAPI.setAbort) and is the error.
+func (l *llamaBackend) embed(ctx context.Context, tokens []int32) ([]float32, error) {
 	// llama.cpp asserts (and aborts the process) on a batch larger than
 	// n_ubatch; Embedder truncates, this is the last line of defense.
 	if len(tokens) == 0 || len(tokens) > l.lim {
@@ -224,7 +232,16 @@ func (l *llamaBackend) embed(tokens []int32) ([]float32, error) {
 			return nil, fmt.Errorf("clear kv cache: %w", err)
 		}
 	}
+	if ctx.Done() != nil {
+		l.api.setAbort(l.ctx, func() bool { return ctx.Err() != nil })
+		defer l.api.setAbort(l.ctx, nil)
+	}
 	ret, err := l.api.decode(l.ctx, tokens)
+	if err != nil || ret != 0 {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}

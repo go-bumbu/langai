@@ -65,7 +65,7 @@ func (s *stubBackend) tokenize(text string) []int32 {
 	return append(toks, stubSEP)
 }
 
-func (s *stubBackend) embed(tokens []int32) ([]float32, error) {
+func (s *stubBackend) embed(_ context.Context, tokens []int32) ([]float32, error) {
 	s.mu.Lock()
 	s.inFlight++
 	if s.inFlight > 1 {

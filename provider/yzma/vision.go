@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	xdraw "golang.org/x/image/draw"
 
@@ -253,12 +254,16 @@ type visionAPI interface {
 	// applyTemplate lays one system and one user message out with the
 	// template, ending where the assistant's turn begins.
 	applyTemplate(template, system, user string) (string, error)
+	// tokenizeWith converts text to tokens. addSpecial adds the model's
+	// beginning-of-sequence token, and parseSpecial reads special-token
+	// spellings in text as the control tokens they spell.
+	tokenizeWith(model uintptr, text string, addSpecial, parseSpecial bool) []int32
+	// tokenText is the bytes token spells, without control-token markup.
+	tokenText(model uintptr, token int32) []byte
 	// loadProjector loads the projector (the vision tower) for model into a
 	// libmtmd context, on the GPU when useGPU, with the image token bounds.
 	loadProjector(path string, model uintptr, threads int, useGPU bool, imageMinTokens, imageMaxTokens int) (proj uintptr, err error)
 	freeProjector(proj uintptr)
-	// marker is the text that stands for a bitmap in a prompt.
-	marker() string
 	// bitmapRGB wraps w×h RGB bytes; freed with freeBitmap.
 	bitmapRGB(w, h int, rgb []byte) (bitmap uintptr, err error)
 	// bitmapVideo reads the video at path at fps frames per second as one
@@ -267,19 +272,45 @@ type visionAPI interface {
 	bitmapVideo(proj uintptr, path string, fps float64) (bitmap, video uintptr, err error)
 	freeBitmap(bitmap uintptr)
 	freeVideo(video uintptr)
-	// tokenizeMedia turns the prompt, with one marker per bitmap, into chunks:
-	// text tokens and the bitmaps' tokens, nTokens in all. Freed with
-	// freeChunks.
-	tokenizeMedia(proj uintptr, prompt string, bitmaps []uintptr) (chunks uintptr, nTokens int, err error)
+	// tokenizeParts turns the parts of a prompt, in order, into chunks: the
+	// tokens of each text, read for control tokens only where the part says
+	// so, and the tokens of each bitmap, nTokens in all. No part is searched
+	// for media markers. Freed with freeChunks.
+	tokenizeParts(proj uintptr, parts []promptPart) (chunks uintptr, nTokens int, err error)
 	freeChunks(chunks uintptr)
 	// evalChunks runs the chunks through the projector and the model on
 	// sequence 0, batch tokens at a time, and marks the last token as
 	// output.
 	evalChunks(proj, ctx, chunks uintptr, batch int32) error
+	// setAbort makes the decodes of ctx ask stop as they compute and give up
+	// when it says so; nil takes the question away again. llama.cpp asks
+	// between the steps of a computation on the CPU; a GPU backend, and the
+	// projector's own encoding of a picture, run to the end of their batch.
+	setAbort(ctx uintptr, stop func() bool)
+}
+
+// promptPart is one piece of a prompt in the order the model reads it: a
+// bitmap, or a text.
+type promptPart struct {
+	// text is the piece's text when bitmap is 0.
+	text string
+	// special reads special-token spellings in text as the control tokens
+	// they spell. That is for the chat template's own text; an input from
+	// outside stays plain, so a text that spells "<|im_end|>" cannot end its
+	// turn.
+	special bool
+	// bitmap, when not 0, makes the part a picture or a video.
+	bitmap uintptr
 }
 
 // visionLib is the API OpenVision drives; tests swap in a fake.
 var visionLib visionAPI = ffiAPI{}
+
+// maxTruncations is how often a text is cut again when the cut before it
+// still left the input longer than the context. One cut is exact for a
+// byte-pair vocabulary; the rest is for a vocabulary whose tokens do not add
+// up to the text byte for byte.
+const maxTruncations = 8
 
 // Vision embeds texts, images and videos into one space with a vision
 // language model trained for embedding: the model's chat template lays out
@@ -297,8 +328,8 @@ type Vision struct {
 	mem         uintptr
 	proj        uintptr
 	template    string
+	layout      promptLayout // the template around the instruction and the input
 	instruction string
-	marker      string
 	nCtx        int // tokens the context holds
 	batch       int // most tokens one decode takes
 	dims        int
@@ -356,6 +387,12 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 	if v.fps == 0 {
 		v.fps = DefaultFPS
 	}
+	// the template is laid out once, around stand-ins: no instruction and no
+	// input ever goes through it (see promptLayout)
+	if v.layout, err = layoutTemplate(api.applyTemplate, v.template); err != nil {
+		api.freeModel(model)
+		return nil, fmt.Errorf("vision model %q: %w", spec.Name, err)
+	}
 	nCtxTrain := api.nCtxTrain(model)
 	if nCtxTrain <= 0 {
 		api.freeModel(model)
@@ -383,8 +420,7 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 		return nil, fmt.Errorf("load projector %s: %w", spec.Projector, err)
 	}
 	v.proj = proj
-	v.marker = api.marker() // libmtmd is loaded now
-	probe, err := v.embedPrompt(context.Background(), "dimension probe", nil)
+	probe, err := v.embedText(context.Background(), "dimension probe")
 	if err != nil {
 		v.release()
 		return nil, fmt.Errorf("probe vision model %q: %w", spec.Name, err)
@@ -439,14 +475,19 @@ func (v *Vision) Close() error {
 
 // Embed implements langai.Embedder: each text is one input under the
 // instruction. The role makes no difference: the model is symmetric and the
-// instruction says what the vectors are for.
+// instruction says what the vectors are for. A text is plain text to the
+// model whatever it spells (a control token, libmtmd's media marker, a NUL
+// byte), a text beyond 32 KiB is cut, and so is one that does not fit the
+// context next to the instruction: the model then sees its beginning, as
+// with the text Embedder. A ctx that ends stops the evaluation (see
+// visionAPI.setAbort) and is the error.
 func (v *Vision) Embed(ctx context.Context, _ langai.Role, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i, text := range texts {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		vec, err := v.embedPrompt(ctx, clampText(text), nil)
+		vec, err := v.embedText(ctx, clampText(text))
 		if err != nil {
 			return nil, fmt.Errorf("embed text %d: %w", i, err)
 		}
@@ -555,29 +596,86 @@ func (v *Vision) embedBitmap(ctx context.Context, open func() (uintptr, func(), 
 		return nil, err
 	}
 	defer free()
-	return v.embedLocked(ctx, v.marker, []uintptr{bitmap})
+	return v.embedLocked(ctx, "", []uintptr{bitmap})
 }
 
-// embedPrompt embeds one input: the user text, with one marker per bitmap
-// in front of it.
-func (v *Vision) embedPrompt(ctx context.Context, text string, bitmaps []uintptr) ([]float32, error) {
+// embedText embeds one text under the instruction.
+func (v *Vision) embedText(ctx context.Context, text string) ([]float32, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
 		return nil, fmt.Errorf("yzma: vision embedder: %w", langai.ErrClosed)
 	}
-	return v.embedLocked(ctx, strings.Repeat(v.marker, len(bitmaps))+text, bitmaps)
+	return v.embedLocked(ctx, text, nil)
 }
 
-// embedLocked lays the prompt out with the chat template, tokenizes it with
-// the bitmaps, runs it through the model and reads the pooled vector,
-// normalized. The caller holds the mutex.
-func (v *Vision) embedLocked(_ context.Context, user string, bitmaps []uintptr) ([]float32, error) {
-	prompt, err := v.api.applyTemplate(v.template, v.instruction, user)
-	if err != nil {
-		return nil, fmt.Errorf("lay out the prompt: %w", err)
+// parts lays one input out the way the chat template places a system and a
+// user message: the instruction as the system message, then the bitmaps and
+// the text as the user message. Only the template's own pieces are read for
+// control tokens.
+func (v *Vision) parts(text string, bitmaps []uintptr) []promptPart {
+	parts := make([]promptPart, 0, 5+len(bitmaps))
+	parts = append(parts,
+		promptPart{text: v.layout.before, special: true},
+		promptPart{text: v.instruction},
+		promptPart{text: v.layout.between, special: true})
+	for _, b := range bitmaps {
+		parts = append(parts, promptPart{bitmap: b})
 	}
-	chunks, n, err := v.api.tokenizeMedia(v.proj, prompt, bitmaps)
+	if text != "" {
+		parts = append(parts, promptPart{text: text})
+	}
+	return append(parts, promptPart{text: v.layout.after, special: true})
+}
+
+// tokenize turns one input into chunks of at most the context's tokens
+// where a text can make it so: a text that pushes the input past the
+// context is cut from its end, as the text Embedder truncates, instead of
+// failing the batch it came in. Pictures and videos are not cut, so n can
+// still come back larger than the context; the caller refuses that. The
+// chunks are freed by the caller.
+func (v *Vision) tokenize(text string, bitmaps []uintptr) (chunks uintptr, n int, err error) {
+	for cuts := 0; ; cuts++ {
+		chunks, n, err = v.api.tokenizeParts(v.proj, v.parts(text, bitmaps))
+		if err != nil || n <= v.nCtx || text == "" || cuts == maxTruncations {
+			return chunks, n, err
+		}
+		v.api.freeChunks(chunks)
+		text = v.shorten(text, n-v.nCtx)
+	}
+}
+
+// shorten returns the beginning of text that tokenizes to about over tokens
+// fewer, "" when it has no more than that. The cut is where the token that
+// has to go begins, found by adding up the bytes of the tokens kept, and
+// moved back to a character boundary.
+func (v *Vision) shorten(text string, over int) string {
+	tokens := v.api.tokenizeWith(v.model, text, false, false)
+	keep := len(tokens) - over
+	if keep <= 0 {
+		return ""
+	}
+	cut := 0
+	for _, tok := range tokens[:keep] {
+		cut += len(v.api.tokenText(v.model, tok))
+	}
+	if cut >= len(text) {
+		// the tokens do not spell the text byte for byte (another kind of
+		// vocabulary): cut in proportion, and let tokenize check
+		cut = len(text) * keep / len(tokens)
+	}
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
+}
+
+// embedLocked tokenizes one input (a text, bitmaps, or both) as the parts
+// of a prompt, runs it through the model and reads the pooled vector,
+// normalized. A ctx that ends while the model computes stops it and is the
+// error. The caller holds the mutex.
+func (v *Vision) embedLocked(ctx context.Context, text string, bitmaps []uintptr) ([]float32, error) {
+	chunks, n, err := v.tokenize(text, bitmaps)
 	if err != nil {
 		return nil, fmt.Errorf("tokenize: %w", err)
 	}
@@ -593,8 +691,8 @@ func (v *Vision) embedLocked(_ context.Context, user string, bitmaps []uintptr) 
 			return nil, fmt.Errorf("clear kv cache: %w", err)
 		}
 	}
-	if err := v.api.evalChunks(v.proj, v.ctx, chunks, int32(v.batch)); err != nil { //nolint:gosec // batch is at most visionBatch
-		return nil, fmt.Errorf("evaluate: %w", err)
+	if err := v.eval(ctx, chunks); err != nil {
+		return nil, err
 	}
 	dims := v.dims
 	if dims == 0 { // the probe: the model says
@@ -611,6 +709,26 @@ func (v *Vision) embedLocked(_ context.Context, user string, bitmaps []uintptr) 
 	copy(out, view)
 	langai.Normalize(out)
 	return out, nil
+}
+
+// eval runs the chunks through the projector and the model. While it does,
+// llama.cpp asks whether ctx has ended and gives up when it has; that is
+// reported as ctx's error, whatever the evaluation itself returned.
+func (v *Vision) eval(ctx context.Context, chunks uintptr) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if ctx.Done() != nil {
+		v.api.setAbort(v.ctx, func() bool { return ctx.Err() != nil })
+		defer v.api.setAbort(v.ctx, nil)
+	}
+	if err := v.api.evalChunks(v.proj, v.ctx, chunks, int32(v.batch)); err != nil { //nolint:gosec // batch is at most visionBatch
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return fmt.Errorf("evaluate: %w", err)
+	}
+	return nil
 }
 
 // rgbBytes returns img as packed RGB, scaled down so that its longer side
