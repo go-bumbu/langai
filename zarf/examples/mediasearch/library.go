@@ -86,6 +86,12 @@ type Config struct {
 	// collection (vector.Store.Model), to name it when it is not the one
 	// Index writes with; nil leaves the name out.
 	Stored func(ctx context.Context) (string, error)
+	// DropIndex drops the index's tables in the store
+	// (vector.Store.DeleteIndex). Reset calls it when the store refuses
+	// the collection with vector.ErrLegacySchema, since emptying a
+	// collection of the old schema is refused too; nil leaves such an index
+	// as it is.
+	DropIndex func(ctx context.Context) error
 	// Logger receives the scan's progress; nil discards it.
 	Logger *slog.Logger
 }
@@ -139,8 +145,11 @@ type ScanStats struct {
 	Removed int `json:"removed"`
 	// Mismatch says the scan stopped at its first file because the index's
 	// collection holds another model's vectors (vector.ErrModelMismatch),
-	// with Error saying so: nothing can be indexed or searched until Reset.
+	// Legacy because the store holds the index in the tables of the schema
+	// before this version (vector.ErrLegacySchema); Error says which.
+	// Nothing can be indexed or searched until Reset.
 	Mismatch bool          `json:"mismatch,omitempty"`
+	Legacy   bool          `json:"legacy,omitempty"`
 	Error    string        `json:"error,omitempty"`
 	Elapsed  time.Duration `json:"-"`
 	// ElapsedMs is Elapsed for the page.
@@ -319,10 +328,11 @@ func walk(dir string) ([]Item, error) {
 // can show it meanwhile. Only one scan runs at a time: a second one gets
 // ErrScanning.
 //
-// When the index's collection holds another model's vectors, every write
-// would fail alike with vector.ErrModelMismatch: the scan stops at the first
-// file, lists the others without indexing them, and returns that error with
-// the stats saying so. Reset is the way out.
+// When the index's collection holds another model's vectors, or the store
+// holds the index in the tables of the old schema, every write would fail
+// alike (vector.ErrModelMismatch, vector.ErrLegacySchema): the scan stops at
+// the first file, lists the others without indexing them, and returns that
+// error with the stats saying so. Reset is the way out.
 func (l *Library) Scan(ctx context.Context) (ScanStats, error) {
 	if !l.scanning.CompareAndSwap(false, true) {
 		return ScanStats{}, ErrScanning
@@ -345,7 +355,7 @@ func (l *Library) Scan(ctx context.Context) (ScanStats, error) {
 		l.mu.Lock()
 		l.items[it.ID] = &it
 		l.mu.Unlock()
-		if errors.Is(err, vector.ErrModelMismatch) {
+		if errors.Is(err, vector.ErrModelMismatch) || errors.Is(err, vector.ErrLegacySchema) {
 			return l.mismatched(it.ID, found[i+1:], stats, start, err)
 		}
 	}
@@ -358,17 +368,18 @@ func (l *Library) Scan(ctx context.Context) (ScanStats, error) {
 	if err := l.saveCatalog(); err != nil {
 		return stats, err
 	}
-	l.logger.Info("scan done", "indexed", stats.Indexed, "skipped", stats.Skipped, "failed", stats.Failed, "removed", stats.Removed, "elapsed", stats.Elapsed)
+	l.logger.Info("scan done", "indexed", stats.Indexed, "skipped", stats.Skipped, "failed", stats.Failed, "removed", stats.Removed, "elapsed", stats.Elapsed.Round(time.Millisecond))
 	return stats, nil
 }
 
-// mismatched ends a scan that met another model's vectors at the file
-// tried: the files it did not reach are listed as they are, so the page
-// still shows them, and the stats keep the error for the page to offer the
-// reset.
+// mismatched ends a scan that met another model's vectors, or the old
+// schema's tables, at the file tried: the files it did not reach are listed
+// as they are, so the page still shows them, and the stats keep the error
+// for the page to offer the reset.
 func (l *Library) mismatched(tried string, rest []Item, stats ScanStats, start time.Time, err error) (ScanStats, error) {
 	stats.Failed-- // the file tried failed for the collection's reason, not its own
-	stats.Mismatch, stats.Error = true, err.Error()
+	stats.Legacy = errors.Is(err, vector.ErrLegacySchema)
+	stats.Mismatch, stats.Error = !stats.Legacy, err.Error()
 	stats.Elapsed = time.Since(start)
 	stats.ElapsedMs = stats.Elapsed.Milliseconds()
 	l.mu.Lock()
@@ -380,7 +391,11 @@ func (l *Library) mismatched(tried string, rest []Item, stats ScanStats, start t
 	}
 	l.last = stats
 	l.mu.Unlock()
-	l.logger.Warn("scan stopped: the index holds another model's vectors, reset it to index with this one", "err", err)
+	if stats.Legacy {
+		l.logger.Warn("scan stopped: the index is in the tables of an older version, reset it to index again", "err", err)
+	} else {
+		l.logger.Warn("scan stopped: the index holds another model's vectors, reset it to index with this one", "err", err)
+	}
 	return stats, fmt.Errorf("mediasearch: scan: %w", err)
 }
 
@@ -408,7 +423,8 @@ func (l *Library) indexOne(ctx context.Context, it *Item, stats *ScanStats, rema
 	l.hashes[it.ID] = hash
 	if it.Skipped {
 		stats.Skipped++
-		l.logger.Info("unchanged", "id", it.ID, "remaining", remaining)
+		// a restart over an unchanged directory would log every file
+		l.logger.Debug("unchanged", "id", it.ID, "remaining", remaining)
 		return nil
 	}
 	stats.Indexed++
@@ -463,14 +479,20 @@ func (l *Library) removeGone(ctx context.Context, seen map[string]bool) int {
 // forgets the content hashes, so that the next Scan embeds every file
 // again. It is the way to another model: the store refuses a model's
 // vectors while the collection holds another's. The catalog keeps its
-// items, which have nothing to be found by until that scan. It fails with
-// ErrScanning while a scan runs.
+// items, which have nothing to be found by until that scan. An index in the
+// tables of the old schema is dropped instead (Config.DropIndex). It fails
+// with ErrScanning while a scan runs.
 func (l *Library) Reset(ctx context.Context) error {
 	if !l.scanning.CompareAndSwap(false, true) {
 		return ErrScanning
 	}
 	defer l.scanning.Store(false)
-	if err := l.cfg.Index.Reset(ctx); err != nil {
+	err := l.cfg.Index.Reset(ctx)
+	if errors.Is(err, vector.ErrLegacySchema) && l.cfg.DropIndex != nil {
+		l.logger.Info("dropping the index's tables of the old schema")
+		err = l.cfg.DropIndex(ctx)
+	}
+	if err != nil {
 		return err
 	}
 	l.mu.Lock()

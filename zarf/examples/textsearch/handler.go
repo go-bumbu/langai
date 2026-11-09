@@ -60,6 +60,9 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, vector.ErrModelMismatch):
 		status = http.StatusConflict
 		body["mismatch"] = true
+	case errors.Is(err, vector.ErrLegacySchema):
+		status = http.StatusConflict
+		body["legacy"] = true
 	}
 	writeJSON(w, status, body)
 }

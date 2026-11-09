@@ -62,11 +62,12 @@
   // until the collection is emptied
   function banner(d) {
     const b = $('#banner');
-    b.hidden = !(d.lastScan && d.lastScan.mismatch);
+    const legacy = d.lastScan && d.lastScan.legacy;
+    b.hidden = !(d.lastScan && (d.lastScan.mismatch || legacy));
     if (b.hidden) return;
     const btn = el('button', { class: 'button danger' }, 'reset the index and rescan');
     btn.addEventListener('click', async () => {
-      if (!confirm('Empty the index and embed every file again with the model that runs now?')) return;
+      if (!confirm(legacy ? 'Drop the index\'s old tables and embed every file again?' : 'Empty the index and embed every file again with the model that runs now?')) return;
       btn.disabled = true;
       try {
         await api('api/reset', { method: 'POST' });
@@ -78,6 +79,11 @@
       }
       await Promise.all([loadInfo(), loadItems()]).catch(() => {});
     });
+    if (legacy) {
+      b.replaceChildren(el('div', { class: 'what' }, el('b', {}, 'The index is in the tables of an older version. '),
+        'The store refuses every read and write of it (vector.ErrLegacySchema). The reset drops those tables (Store.DeleteIndex), and the rescan embeds every file again.'), btn);
+      return;
+    }
     b.replaceChildren(el('div', { class: 'what' }, el('b', {}, 'The index was built by another model. '),
       d.storedModel ? `The database holds this collection's vectors under ${d.storedModel}; ` : 'The database holds this collection under another model; ',
       `the page runs ${info.id || info.model}. Vectors of two models never mix, so nothing is indexed or searched until the collection is emptied (MediaIndex.Reset).`), btn);

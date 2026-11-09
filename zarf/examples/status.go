@@ -53,10 +53,36 @@ func openStatus(o options, s service) (*status.Service, error) {
 	}
 	return status.New(status.Config{
 		Pages: []status.Page{
-			{Path: "mediasearch/", Name: "Media search", Shows: "Images and videos that look like an image, a video or, with the vision model, a text: search.MediaIndex, with the score, the matching frame and the timing of every hit."},
-			{Path: "textsearch/", Name: "Text search", Shows: "Documents that answer a question, in any language: search.Index, with the chunk that matched, the chunks that were embedded, and what the last batch did."},
-			{Path: "duplicates/", Name: "Duplicates", Shows: "Exact and near-exact copies of pictures by perceptual hash, no model: provider/phash, as raw hashes with their Hamming distances and as a MediaIndex."},
-			{Path: "autotag/", Name: "Auto tagging", Shows: "Tags for notes, picked among your own (tagging.Tagger) or written new by a chat model (tagging.Generator), with every score and cutoff."},
+			{Path: "mediasearch/", Name: "Media search", Uses: []string{"search.MediaIndex"}, Choices: []status.Choice{mediaChoice(o, s.media)},
+				Shows: "Find images and videos that look like an image, a video or, with the vision model, a text. Every hit shows its score, the matching frame and its timing.",
+				Try: []string{
+					"Click a thumbnail to see the pictures and videos that look like it",
+					"Search with a picture or a video of your own",
+					"Open a video to see the frames that were embedded, and which one matched",
+					"With MODEL=qwen3vl, describe what you look for in words: \"a dog on a beach\"",
+				}},
+			{Path: "textsearch/", Name: "Text search", Uses: []string{"search.Index", "search.MarkdownChunker"}, Choices: []status.Choice{textChoice(s.text)},
+				Shows: "Find the documents that answer a question, in any language. Shows the chunk that matched, the chunks that were embedded and what the last batch did.",
+				Try: []string{
+					"Ask a question: \"my sourdough starter is not rising\"",
+					"Ask in another language than the documents: \"centrar elementos horizontal y verticalmente con css\"",
+					"Click a document to see its chunks and the documents most like it",
+				}},
+			{Path: "duplicates/", Name: "Duplicates", Uses: []string{"provider/phash", "search.MediaIndex"}, Choices: []status.Choice{hashChoice(s.dups)},
+				Shows: "Find exact and near-exact copies of pictures, without a model: raw perceptual hashes with their Hamming distances, and the same hashes in an index.",
+				Try: []string{
+					"Browse the groups of copies the scan found",
+					"Raise or lower the threshold and watch the groups merge or split",
+					"Switch between pHash and dHash, 64 and 256 bits",
+					"Find the copies of a picture of your own",
+				}},
+			{Path: "autotag/", Name: "Auto tagging", Uses: []string{"tagging.Tagger", "tagging.Generator"}, Choices: []status.Choice{textChoice(s.text), chatChoice(s.chat)},
+				Shows: "Tag notes with your own tags, or have a chat model write new ones, with every score and cutoff.",
+				Try: []string{
+					"Load the samples, then see which of your tags fit a note",
+					"Have the chat model recommend new tags for a note",
+					"Load the samples partly tagged, and find the tags built without one of their notes",
+				}},
 		},
 		Setup: []status.Fact{
 			{Name: "stores", Value: s.stores.backend},

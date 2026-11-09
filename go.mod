@@ -8,8 +8,10 @@ require (
 	github.com/go-bumbu/testdbs v0.3.0
 	github.com/hybridgroup/yzma v1.29.1
 	github.com/jackc/pgx/v5 v5.7.2
+	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/pgvector/pgvector-go v0.4.1
+	github.com/phsym/console-slog v0.3.1
 	github.com/yalue/onnxruntime_go v1.38.0
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/image v0.47.0
@@ -51,7 +53,6 @@ require (
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/lufia/plan9stats v0.0.0-20250303091104-876f3ea5145d // indirect
 	github.com/magiconair/properties v1.8.9 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/patternmatcher v0.6.0 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect

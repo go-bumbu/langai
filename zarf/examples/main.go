@@ -62,6 +62,9 @@ type options struct {
 	// there and exit.
 	longSamples string
 	writeDocs   string
+	// logLevel is the least a record needs to be logged: debug also logs
+	// every unchanged file of a scan and llama.cpp's own chatter.
+	logLevel string
 }
 
 func parseFlags() options {
@@ -85,6 +88,7 @@ func parseFlags() options {
 	flag.Int64Var(&o.maxImageBytes, "max-image-bytes", 0, "the most the media index reads of an image; a longer one is listed as too large (0: the library's 64 MiB)")
 	flag.Float64Var(&o.tagScore, "tag-min-score", tagging.DefaultGeneratorMinScore, "the cutoff of the recommended tags; the page shows the ones under it greyed")
 	flag.StringVar(&o.postgres, "postgres", os.Getenv("POSTGRES"), "keep the vectors and the tagging cache in this Postgres database (with pgvector) instead of SQLite files, e.g. postgres://user:pass@localhost:5432/langai (default: $POSTGRES)")
+	flag.StringVar(&o.logLevel, "log-level", "info", "the least a record needs to be logged: debug, info, warn or error")
 	flag.Parse()
 	return o
 }
@@ -102,7 +106,11 @@ func run(o options) error {
 		fmt.Printf("wrote %d sample documents into %s\n", n, o.writeDocs)
 		return err
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	level, err := parseLevel(o.logLevel)
+	if err != nil {
+		return err
+	}
+	logger := newLogger(level)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -188,6 +196,14 @@ func run(o options) error {
 	// closed.
 	scans := firstScans(ctx, o, dups, notebook, docs, lib, logger)
 	defer func() { stop(); scans.Wait() }()
+	// the scans' records bury the "serving" one: say again where the pages
+	// are once the last scan is through
+	go func() {
+		scans.Wait()
+		if ctx.Err() == nil {
+			logger.Info("first scans done, serving", "url", "http://"+o.addr+"/")
+		}
+	}()
 	return serve(ctx, o.addr, mux, logger)
 }
 
@@ -256,6 +272,7 @@ func openMedia(ctx context.Context, o options, m *mediaModel, sampler *ffmpeg.Sa
 		Info:        m.info,
 		ModelState:  m.state,
 		Stored:      func(ctx context.Context) (string, error) { return store.Model(ctx, coord) },
+		DropIndex:   func(ctx context.Context) error { return store.DeleteIndex(ctx, coord.Index) },
 		Logger:      logger,
 	})
 	return lib, indexed{store: store, coord: coord, where: where}, err
@@ -284,6 +301,7 @@ func openText(ctx context.Context, o options, text *textModel, st *stores, logge
 		Info:       textsearch.Info{Model: text.Model(), Dimensions: text.Dimensions(), MinScore: o.textMinScore, Store: where},
 		ModelState: func() string { return state(text) },
 		Stored:     func(ctx context.Context) (string, error) { return store.Model(ctx, coord) },
+		DropIndex:  func(ctx context.Context) error { return store.DeleteIndex(ctx, coord.Index) },
 		Examples:   textsearch.SampleQueries(o.samples, 4),
 		Logger:     logger,
 	})

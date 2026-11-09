@@ -74,6 +74,12 @@ type Config struct {
 	// (vector.Store.Model), to name it when it is not the one Index writes
 	// with; nil leaves the name out.
 	Stored func(ctx context.Context) (string, error)
+	// DropIndex drops the index's tables in the store
+	// (vector.Store.DeleteIndex). Reset calls it when the store refuses
+	// the collection with vector.ErrLegacySchema, since emptying a
+	// collection of the old schema is refused too; nil leaves such an index
+	// as it is.
+	DropIndex func(ctx context.Context) error
 	// Examples are queries the page offers to try.
 	Examples []string
 	// Logger receives the scan's progress; nil discards it.
@@ -128,11 +134,14 @@ type ScanStats struct {
 	Removed int `json:"removed"`
 	// Failures gives the reason of every failed document, by id.
 	Failures map[string]string `json:"failures,omitempty"`
-	// Error is the embedder or store error that stopped the batch, and
-	// Mismatch says it was vector.ErrModelMismatch: the collection holds
-	// another model's vectors and has to be reset.
+	// Error is the embedder or store error that stopped the batch.
+	// Mismatch says it was vector.ErrModelMismatch, the collection holds
+	// another model's vectors, and Legacy vector.ErrLegacySchema, the store
+	// holds the index in the tables of the schema before this version:
+	// either way it has to be reset.
 	Error    string `json:"error,omitempty"`
 	Mismatch bool   `json:"mismatch,omitempty"`
+	Legacy   bool   `json:"legacy,omitempty"`
 	// IndexMs is what the IndexBatch call took, ElapsedMs the whole scan.
 	IndexMs   int64     `json:"indexMs"`
 	ElapsedMs int64     `json:"elapsedMs"`
@@ -406,6 +415,7 @@ func (l *Library) Scan(ctx context.Context) (ScanStats, error) {
 	stats.Pending = len(files) - stats.Indexed - stats.Unchanged - stats.Failed
 	if err != nil {
 		stats.Error, stats.Mismatch = err.Error(), errors.Is(err, vector.ErrModelMismatch)
+		stats.Legacy = errors.Is(err, vector.ErrLegacySchema)
 		l.logger.Warn("indexing stopped", "err", err, "indexed", stats.Indexed, "pending", stats.Pending)
 	}
 	if ctx.Err() == nil {
@@ -449,14 +459,20 @@ func (l *Library) removeGone(ctx context.Context, keep map[string]bool) int {
 // Reset empties the index's collection (search.Index.Reset), which is the
 // way to another embedding model: the store refuses a model's vectors while
 // the collection holds another's. Every document is pending afterwards and
-// the next Scan embeds them all. It fails with ErrScanning while a scan
-// runs.
+// the next Scan embeds them all. An index in the tables of the old schema
+// is dropped instead (Config.DropIndex). It fails with ErrScanning while a
+// scan runs.
 func (l *Library) Reset(ctx context.Context) error {
 	if !l.scanning.CompareAndSwap(false, true) {
 		return ErrScanning
 	}
 	defer l.scanning.Store(false)
-	if err := l.cfg.Index.Reset(ctx); err != nil {
+	err := l.cfg.Index.Reset(ctx)
+	if errors.Is(err, vector.ErrLegacySchema) && l.cfg.DropIndex != nil {
+		l.logger.Info("dropping the index's tables of the old schema")
+		err = l.cfg.DropIndex(ctx)
+	}
+	if err != nil {
 		return err
 	}
 	l.mu.Lock()

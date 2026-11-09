@@ -112,6 +112,21 @@ func TestNew_RefusesEmptyAndRepeatedKeys(t *testing.T) {
 	if _, err := New(Config{Models: []Model{{Key: "a"}, {Key: "a"}}}); err == nil {
 		t.Error("a repeated model key was accepted")
 	}
+	// a page names the model it runs by key: an unknown one is a wiring
+	// mistake, and a known one passes through to the page
+	runs := func(key string) []Page {
+		return []Page{{Name: "p", Choices: []Choice{{Role: "r", Options: []Option{{Name: "m", Key: key}, {Name: "other"}}}}}}
+	}
+	if _, err := New(Config{Models: []Model{{Key: "a"}}, Pages: runs("b")}); err == nil {
+		t.Error("a page running an unknown model was accepted")
+	}
+	known, err := New(Config{Models: []Model{{Key: "a"}}, Pages: runs("a")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap := known.Snapshot(context.Background()); len(snap.Pages) != 1 || len(snap.Pages[0].Choices) != 1 || snap.Pages[0].Choices[0].Options[0].Key != "a" {
+		t.Errorf("the page's choices: %+v", snap.Pages)
+	}
 	svc, err := New(Config{})
 	if err != nil {
 		t.Fatal(err)

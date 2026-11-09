@@ -33,8 +33,15 @@ header {
   flex-wrap: wrap;
 }
 header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-.home { color: var(--muted); text-decoration: none; }
-.home:hover { color: var(--text); }
+/* the home button, first in every header */
+nav a.home {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); color: var(--text); font-weight: 500; padding: 3px 10px 3px 8px;
+}
+nav a.home:hover { border-color: var(--accent); background: #2a2f37; }
+nav a.home.here { border-color: var(--accent); }
+nav a.home svg { flex: none; }
+nav .sep { width: 1px; height: 16px; background: var(--line); margin: 0 6px; }
 nav { display: flex; gap: 2px; align-items: center; font-size: 12px; }
 nav a { color: var(--muted); text-decoration: none; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
 nav a:hover { color: var(--text); background: #2a2f37; }

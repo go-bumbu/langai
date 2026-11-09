@@ -45,7 +45,7 @@ func decode(t *testing.T, body []byte, v any) {
 func TestHandler_PageAndStatus(t *testing.T) {
 	_, srv := serve(t)
 	status, body, ct := do(t, "GET", srv.URL+"/")
-	if status != 200 || !strings.Contains(ct, "text/html") || !bytes.Contains(body, []byte("Status")) {
+	if status != 200 || !strings.Contains(ct, "text/html") || !bytes.Contains(body, []byte("Overview")) || !bytes.Contains(body, []byte(`role="tablist"`)) {
 		t.Errorf("page: %d %s", status, ct)
 	}
 	for _, file := range []string{"app.js", "style.css"} {

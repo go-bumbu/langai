@@ -122,11 +122,45 @@ type Cache struct {
 	PruneNow func(ctx context.Context) (Prune, error)
 }
 
-// Page is one page of the service, for the list of links.
+// Page is one feature of the service, a page of its own, for the list of
+// links: Shows says in plain words what it does, Uses names the parts of the
+// library it exercises, Choices the models it can run, and Try lists things
+// to do on it.
 type Page struct {
-	Path  string `json:"path"`
-	Name  string `json:"name"`
-	Shows string `json:"shows"`
+	Path    string   `json:"path"`
+	Name    string   `json:"name"`
+	Shows   string   `json:"shows"`
+	Uses    []string `json:"uses,omitempty"`
+	Choices []Choice `json:"choices,omitempty"`
+	Try     []string `json:"try,omitempty"`
+}
+
+// Choice is one model a feature needs, as a role ("media model"), with
+// every model that can fill it: the one the service runs and the ones it
+// could. Note says how to switch, or why there is nothing to switch.
+type Choice struct {
+	Role    string   `json:"role"`
+	Note    string   `json:"note,omitempty"`
+	Options []Option `json:"options"`
+}
+
+// Option is one model a Choice can run.
+type Option struct {
+	Name string `json:"name"`
+	// Engine names what runs it: llama.cpp, ONNX Runtime, pure Go.
+	Engine string `json:"engine"`
+	// Dims is the size of its vectors; 0 for a model that makes none.
+	Dims int `json:"dims,omitempty"`
+	// Bytes is its download size; 0 when the pin does not record one.
+	Bytes int64 `json:"bytes,omitempty"`
+	// Does says what it embeds or does, and how it differs from the others.
+	Does string `json:"does,omitempty"`
+	// Select is how to run it, e.g. "MODEL=facebook/dinov2-base"; empty when
+	// the example cannot switch to it.
+	Select string `json:"select,omitempty"`
+	// Key is, for the option the service runs now, the key of that model
+	// (Model.Key), so the page shows its state; empty for the others.
+	Key string `json:"key,omitempty"`
 }
 
 // Fact is one line of the setup: a setting and its value.
@@ -166,6 +200,15 @@ func New(cfg Config) (*Service, error) {
 			return nil, fmt.Errorf("status: model key %q is empty or used twice", m.Key)
 		}
 		seen[m.Key] = true
+	}
+	for _, p := range cfg.Pages {
+		for _, c := range p.Choices {
+			for _, o := range c.Options {
+				if o.Key != "" && !seen[o.Key] {
+					return nil, fmt.Errorf("status: page %q runs model %q, which is not among the models", p.Name, o.Key)
+				}
+			}
+		}
 	}
 	return &Service{cfg: cfg, started: time.Now(), loads: map[string]time.Duration{}}, nil
 }
@@ -210,6 +253,9 @@ type CollectionStatus struct {
 	// Mismatch says the two differ: the index refuses to write or search
 	// until the collection is reset.
 	Mismatch bool `json:"mismatch"`
+	// Legacy says the store holds the index in the tables of the schema
+	// before this version (vector.ErrLegacySchema): the reset drops them.
+	Legacy   bool `json:"legacy,omitempty"`
 	Docs     int  `json:"docs"`
 	CanReset bool `json:"canReset"`
 	// Error is why the store could not be asked.
@@ -377,7 +423,7 @@ func collectionStatus(ctx context.Context, c Collection) CollectionStatus {
 	}
 	recorded, err := c.Store.Model(ctx, c.Coord)
 	if err != nil {
-		st.Error = err.Error()
+		st.Error, st.Legacy = err.Error(), errors.Is(err, vector.ErrLegacySchema)
 		return st
 	}
 	st.Recorded = recorded

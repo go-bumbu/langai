@@ -62,7 +62,7 @@
   // the slashes stay slashes
   const encPath = (id) => id.split('/').map(encodeURIComponent).join('/');
   const secs = (ms) => (ms / 1000).toFixed(2) + ' s';
-  const bytes = (n) => n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B';
+  const bytes = (n) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(1) + ' GB' : n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B';
   // bar draws a score from 0 to 1, with a mark at cut when one is given
   const bar = (score, cut) => el('div', { class: 'scorebar' },
     el('i', { style: `width:${Math.max(0, Math.min(1, score)) * 100}%` }),
@@ -84,6 +84,10 @@
   // every page but the home page lives one level under the root
   const root = nav.dataset.root || '../';
   const here = nav.dataset.page || '';
-  nav.replaceChildren(el('a', { class: 'home' + (here === '' ? ' here' : ''), href: root }, 'langai examples'),
+  // the home button: a house and the word, back to the overview
+  const home = el('a', { class: 'home' + (here === '' ? ' here' : ''), href: root, title: 'langai examples: the overview' });
+  home.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M2 7.5 8 2.5l6 5M3.5 6.5V13.5h3.25V10h2.5v3.5h3.25V6.5"/></svg>';
+  home.append('Home');
+  nav.replaceChildren(home, el('span', { class: 'sep', 'aria-hidden': 'true' }),
     ...pages.map(([path, name]) => el('a', { href: root + path, class: path === here ? 'here' : '' }, name)));
 })();

@@ -64,16 +64,28 @@ Settings, as environment variables or `make run MODEL=facebook/dinov2-base`:
 | `LIMIT` | `12` | hits per search |
 | `POSTGRES` | empty | the DSN of a Postgres database with pgvector: the vectors and the tagging cache go there instead of into SQLite files, see [Postgres](#postgres) |
 | `ADDR` | `127.0.0.1:8085` | listen address |
+| `LOG_LEVEL` | `info` | `debug` also logs every unchanged file of a scan and llama.cpp's own messages; `warn` or `error` keep only the trouble. On a terminal the log is one coloured line a record, piped or redirected it is JSON |
 
 `make clean` removes the SQLite databases, the catalogs and the thumbnails;
 the media, the documents, the notebook of the auto tagging page and the models
 stay.
 
-## Status: what to click
+## Overview: what to click
 
-`http://127.0.0.1:8085/` is the home page, and says what is loaded and how.
+`http://127.0.0.1:8085/` is the home page, the overview: what is loaded and
+how. Under the setup line (the store backend and the directories), it has a
+tab per part, and the open tab is the URL's hash, so `/#collections` links
+straight to one. The Models tab counts the lazy models loaded, and the
+Collections tab says how many collections need fixing.
 
-- **Pages** links to the four feature pages with a line on what each shows.
+- **Features** has a row per feature page: what it does, the parts of the
+  library it exercises, the models it can run, and a few things to try on
+  it. The row opens the page. For every model a feature needs, the Models
+  column shows the one in use (engine, dimensions, download size, what it
+  runs on, the state of its loader) and the others that could take its place,
+  with what each is good at and the `MODEL=` that switches to it. The lists
+  come from the providers' pinned catalogues (`onnx.Models`,
+  `yzma.VisionModels`, `yzma.Models`, `yzma.CompleterModels`).
 - **Models** has a row per model: its name and what uses it, the identity the
   stores record with its vectors (`ModelID()` of its spec, e.g.
   `google/embeddinggemma-300m;pooling=mean;prefixes=…;max_tokens=512`), its
@@ -97,7 +109,11 @@ stay.
   the page runs. When the two differ the row turns amber: the index refuses to
   write or search (`vector.ErrModelMismatch`) until **reset** empties the
   collection (`Index.Reset`, `MediaIndex.Reset`), after a confirmation; the
-  page's next scan builds it again. The duplicates page's collections appear
+  page's next scan builds it again. A database built by v0.1.1 shows *old
+  schema* instead: the store refuses the index (`vector.ErrLegacySchema`), the
+  page's scan stops at its first file, and **reset** drops the old tables
+  (`Store.DeleteIndex`) for the next scan to build the index again. The
+  duplicates page's collections appear
   once a search has opened them: one per hash, in a `vector.MemStore`.
 - **Embedding cache** is the Tagger's `tagging.EmbeddingCache`: where it
   lives, the size of the database that holds it (a cache has no count of its
