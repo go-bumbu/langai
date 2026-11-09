@@ -22,8 +22,8 @@ func (ix *Index) Docs(ctx context.Context) iter.Seq2[vector.DocInfo, error] {
 }
 
 // Delete removes the documents of the given ids from the index in one store
-// call. Unknown ids are no error; an empty one is ErrEmptyID, and then
-// nothing is deleted.
+// call. Unknown ids are no error; an empty one is ErrEmptyID, one no store
+// can keep is vector.ErrInvalidID, and then nothing is deleted.
 func (ix *Index) Delete(ctx context.Context, ids ...string) error {
 	return deleteDocs(ctx, ix.store, ix.coord, ids)
 }
@@ -65,8 +65,8 @@ func listDocs(ctx context.Context, store vector.Store, c vector.Coord) iter.Seq2
 // deleteDocs checks ids and deletes them from c in one call.
 func deleteDocs(ctx context.Context, store vector.Store, c vector.Coord, ids []string) error {
 	for _, id := range ids {
-		if id == "" {
-			return ErrEmptyID
+		if err := checkID(id); err != nil {
+			return err
 		}
 	}
 	if len(ids) == 0 {

@@ -90,11 +90,23 @@ func aboveFloor(raw []vector.Match, min float64) []vector.Match {
 	return raw
 }
 
+// checkID refuses an id before any work is done for it: ErrEmptyID for an
+// empty one, vector.ErrInvalidID for one no store can keep.
+func checkID(id string) error {
+	if id == "" {
+		return ErrEmptyID
+	}
+	if err := vector.CheckID(id); err != nil {
+		return fmt.Errorf("search: %w", err)
+	}
+	return nil
+}
+
 // storedVectors returns the vectors stored for docID, for a "more like this"
 // search: ErrEmptyID for an empty id, ErrNotIndexed when there are none.
 func storedVectors(ctx context.Context, store vector.Store, c vector.Coord, docID string) ([]vector.Chunk, error) {
-	if docID == "" {
-		return nil, ErrEmptyID
+	if err := checkID(docID); err != nil {
+		return nil, err
 	}
 	chunks, err := store.Chunks(ctx, c, docID)
 	if err != nil {

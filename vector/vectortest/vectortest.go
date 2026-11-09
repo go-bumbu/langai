@@ -61,6 +61,7 @@ func Run(t *testing.T, newStore func(t *testing.T) vector.Store) {
 		{"ConcurrentDocs", concurrentDocs},
 		{"UnknownIndexReads", unknownIndexReads},
 		{"EmptyIndexIsAnError", emptyIndexIsAnError},
+		{"OddIDs", oddIDs},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.run(t, newStore(t)) })
@@ -678,19 +679,133 @@ func unknownIndexReads(t *testing.T, s vector.Store) {
 	}
 }
 
+// emptyIndexIsAnError: every method refuses an empty index with
+// ErrEmptyIndex, whether the store has written anything or not.
 func emptyIndexIsAnError(t *testing.T, s vector.Store) {
 	ctx := context.Background()
 	c := vector.Coord{Partition: "p", Collection: "c"}
-	if err := s.Upsert(ctx, c, "", doc("a", axis(0))); err == nil {
-		t.Error("Upsert accepted an empty index")
+	for _, written := range []bool{false, true} {
+		if written {
+			upsert(t, s, coord, "", doc("a", axis(0)))
+		}
+		for name, call := range calls(ctx, s, c, "a", "") {
+			if err := call(); !errors.Is(err, vector.ErrEmptyIndex) {
+				t.Errorf("%s with an empty index (store written %v): %v, want ErrEmptyIndex", name, written, err)
+			}
+		}
+		if err := s.DeleteIndex(ctx, ""); !errors.Is(err, vector.ErrEmptyIndex) {
+			t.Errorf("DeleteIndex of an empty index: %v, want ErrEmptyIndex", err)
+		}
 	}
-	if _, err := s.Search(ctx, c, vector.Query{Vector: axis(0), Limit: 10}); err == nil {
-		t.Error("Search accepted an empty index")
+}
+
+// calls is every method of s that takes a coordinate, called at c with id
+// wherever it takes a document id and model wherever it takes a model.
+func calls(ctx context.Context, s vector.Store, c vector.Coord, id, model string) map[string]func() error {
+	return map[string]func() error{
+		"Upsert": func() error { return s.Upsert(ctx, c, model, doc(id, axis(0))) },
+		"Delete": func() error { return s.Delete(ctx, c, id) },
+		"Hashes": func() error { _, err := s.Hashes(ctx, c, id); return err },
+		"Docs":   func() error { _, err := s.Docs(ctx, c, id, 0); return err },
+		"Chunks": func() error { _, err := s.Chunks(ctx, c, id); return err },
+		"Search": func() error {
+			_, err := s.Search(ctx, c, vector.Query{Vector: axis(0), Limit: 10, Model: model, Only: []string{id}})
+			return err
+		},
+		"Search exclude": func() error {
+			_, err := s.Search(ctx, c, vector.Query{Vector: axis(0), Limit: 10, Model: model, Exclude: []string{id}})
+			return err
+		},
 	}
-	if _, err := s.Hashes(ctx, c, "a"); err == nil {
-		t.Error("Hashes accepted an empty index")
+}
+
+// oddIDs: a document id, a partition, a collection or a model that is not
+// valid UTF-8 or holds a NUL byte is refused by every method with
+// ErrInvalidID, on every backend alike, before anything is read or
+// written; Postgres refuses such text and SQLite's JSON id lists turn it
+// into U+FFFD, so neither could keep it. Every other string, however odd,
+// round-trips.
+func oddIDs(t *testing.T, s vector.Store) {
+	upsert(t, s, coord, "m", doc("kept", axis(0)))
+	badIDsAreRefused(t, s)
+	oddIDsRoundTrip(t, s)
+}
+
+// badIDsAreRefused is oddIDs' half that refuses.
+func badIDsAreRefused(t *testing.T, s vector.Store) {
+	ctx := context.Background()
+	for _, bad := range []string{"caf\xe9.txt", "a\x00b", "\xff"} {
+		for name, call := range calls(ctx, s, coord, bad, "m") {
+			if err := call(); !errors.Is(err, vector.ErrInvalidID) {
+				t.Errorf("%s of id %q: %v, want ErrInvalidID", name, bad, err)
+			}
+		}
+		for _, c := range []vector.Coord{
+			{Index: coord.Index, Partition: bad, Collection: coord.Collection},
+			{Index: coord.Index, Partition: coord.Partition, Collection: bad},
+		} {
+			for name, call := range calls(ctx, s, c, "kept", "m") {
+				if err := call(); !errors.Is(err, vector.ErrInvalidID) {
+					t.Errorf("%s at %v: %v, want ErrInvalidID", name, c, err)
+				}
+			}
+		}
+		if err := s.Upsert(ctx, coord, bad, doc("x", axis(0))); !errors.Is(err, vector.ErrInvalidID) {
+			t.Errorf("Upsert with model %q: %v, want ErrInvalidID", bad, err)
+		}
+		if _, err := s.Search(ctx, coord, vector.Query{Vector: axis(0), Limit: 10, Model: bad}); !errors.Is(err, vector.ErrInvalidID) {
+			t.Errorf("Search with model %q: %v, want ErrInvalidID", bad, err)
+		}
+		// one bad id fails the whole batch: nothing of it is stored
+		if err := s.Upsert(ctx, coord, "m", doc("good", axis(1)), doc(bad, axis(1))); !errors.Is(err, vector.ErrInvalidID) {
+			t.Errorf("batch with id %q: %v, want ErrInvalidID", bad, err)
+		}
 	}
-	if err := s.DeleteIndex(ctx, ""); err == nil {
-		t.Error("DeleteIndex accepted an empty index")
+	if got := hashes(t, s, coord, "good"); len(got) != 0 {
+		t.Errorf("a refused batch stored %v", got)
+	}
+	if err := s.Upsert(ctx, coord, "m", doc("", axis(0))); !errors.Is(err, vector.ErrInvalidID) {
+		t.Errorf("Upsert of an empty id: %v, want ErrInvalidID", err)
+	}
+}
+
+// oddIDsRoundTrip is oddIDs' half that keeps: odd but valid strings, which
+// every operation finds.
+func oddIDsRoundTrip(t *testing.T, s vector.Store) {
+	ctx := context.Background()
+	odd := []string{"café.txt", "日本語", `quote"d`, `back\slash`, "tab\tid", "line\nbreak", " ", "😀", "%_like*", " "}
+	for _, id := range odd {
+		upsert(t, s, coord, "m", doc(id, axis(1)))
+	}
+	got := hashes(t, s, coord, odd...)
+	for _, id := range odd {
+		if got[id] != "h-"+id {
+			t.Errorf("Hashes[%q] = %q, want %q", id, got[id], "h-"+id)
+		}
+	}
+	q := vector.Query{Vector: axis(1), Limit: 100, Model: "m", Exclude: odd[1:]}
+	if found := ids(search(t, s, coord, q)); !slices.Equal(found, []string{odd[0], "kept"}) {
+		t.Errorf("search excluding all odd ids but %q = %q", odd[0], found)
+	}
+	q = vector.Query{Vector: axis(1), Limit: 100, Only: odd[:3]}
+	if found := ids(search(t, s, coord, q)); len(found) != 3 {
+		t.Errorf("search of only %q = %q", odd[:3], found)
+	}
+	for _, id := range odd {
+		if chunks, err := s.Chunks(ctx, coord, id); err != nil || len(chunks) != 1 {
+			t.Errorf("Chunks(%q) = %v, %v", id, chunks, err)
+		}
+	}
+	if err := s.Delete(ctx, coord, odd...); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got := hashes(t, s, coord, odd...); len(got) != 0 {
+		t.Errorf("Delete left %v", got)
+	}
+	// an odd partition and collection are values like any other
+	at := vector.Coord{Index: coord.Index, Partition: "pä\"rt", Collection: `co\ll`}
+	upsert(t, s, at, "m", doc("x", axis(0)))
+	if got := hashes(t, s, at, "x"); got["x"] != "h-x" {
+		t.Errorf("Hashes at %v = %v", at, got)
 	}
 }

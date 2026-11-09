@@ -126,7 +126,8 @@ func WithMaxImageBytes(n int64) MediaOption {
 
 // NewMediaIndex returns a MediaIndex using the given embedder and store, over
 // the collection at index, partition and collection, which match exactly as
-// for New. When the image embedder names its model (langai.Identified), the
+// for New and are checked as New checks them. When the image embedder names
+// its model (langai.Identified), the
 // store records it with the first vectors written to the collection and
 // refuses another model's afterwards.
 func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, partition, collection string, opts ...MediaOption) (*MediaIndex, error) {
@@ -136,9 +137,13 @@ func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, par
 	if store == nil {
 		return nil, errors.New("search: nil store")
 	}
+	coord := vector.Coord{Index: index, Partition: partition, Collection: collection}
+	if err := vector.CheckCoord(coord); err != nil {
+		return nil, fmt.Errorf("search: %w", err)
+	}
 	ix := &MediaIndex{
 		embedder: embedder, store: store, minScore: math.Inf(-1), maxBytes: defaultMaxImageBytes,
-		coord: vector.Coord{Index: index, Partition: partition, Collection: collection},
+		coord: coord,
 		model: modelOf(embedder),
 	}
 	for _, opt := range opts {
@@ -183,8 +188,8 @@ type MediaMatch struct {
 // to call eagerly. A stream longer than the limit (WithMaxImageBytes) is
 // ErrTooLarge, read no further than just past the limit.
 func (ix *MediaIndex) IndexImage(ctx context.Context, docID string, r io.Reader) error {
-	if docID == "" {
-		return ErrEmptyID
+	if err := checkID(docID); err != nil {
+		return err
 	}
 	data, err := ix.readImage(r, fmt.Sprintf("image %q", docID))
 	if err != nil {
@@ -209,8 +214,8 @@ func (ix *MediaIndex) IndexImage(ctx context.Context, docID string, r io.Reader)
 // hashing the file is far cheaper than decoding it. A video with no frames
 // or segments to embed is ErrNoFrames, and nothing is stored.
 func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error {
-	if docID == "" {
-		return ErrEmptyID
+	if err := checkID(docID); err != nil {
+		return err
 	}
 	if ix.sampler == nil && ix.video == nil {
 		return errors.New("search: no sampler: pass WithSampler or WithVideoEmbedder to NewMediaIndex to index videos")
@@ -250,8 +255,8 @@ func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error 
 // equals the stored one (under the same model) the call is a no-op, and an
 // empty one always indexes. No frames is ErrNoFrames, and nothing is stored.
 func (ix *MediaIndex) IndexFrames(ctx context.Context, docID, contentHash string, frames []media.Frame) error {
-	if docID == "" {
-		return ErrEmptyID
+	if err := checkID(docID); err != nil {
+		return err
 	}
 	var hash string
 	if contentHash != "" {

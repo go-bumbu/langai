@@ -111,6 +111,46 @@ func TestConcurrentUpserts_BusyTimeoutIsEnough(t *testing.T) {
 	}
 }
 
+// TestDriverErrorsAreWrapped: an error of the driver or of database/sql
+// comes back prefixed with "vector: sqlite" and the operation, and still
+// matches what it wraps.
+func TestDriverErrorsAreWrapped(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, recommendedDSN)
+	s, err := New(ctx, db, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := vector.Coord{Index: "idx", Partition: "p", Collection: "c"}
+	if err := s.Upsert(ctx, c, "", vector.Doc{ID: "a", Chunks: []vector.Chunk{{Vector: []float32{1, 0, 0}}}}); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	for _, tc := range []struct {
+		op   string
+		call func() error
+	}{
+		{"upsert", func() error {
+			return s.Upsert(cancelled, c, "", vector.Doc{ID: "b", Chunks: []vector.Chunk{{Vector: []float32{1, 0, 0}}}})
+		}},
+		{"delete", func() error { return s.Delete(cancelled, c, "a") }},
+		{"delete index", func() error { return s.DeleteIndex(cancelled, "idx") }},
+		{"hashes", func() error { _, err := s.Hashes(cancelled, c, "a"); return err }},
+		{"docs", func() error { _, err := s.Docs(cancelled, c, "", 0); return err }},
+		{"chunks", func() error { _, err := s.Chunks(cancelled, c, "a"); return err }},
+		{"search", func() error {
+			_, err := s.Search(cancelled, c, vector.Query{Vector: []float32{1, 0, 0}, Limit: 1})
+			return err
+		}},
+	} {
+		err := tc.call()
+		if !errors.Is(err, context.Canceled) || !strings.HasPrefix(err.Error(), "vector: sqlite "+tc.op+": ") {
+			t.Errorf("%s with a cancelled context: %v, want context.Canceled prefixed with vector: sqlite %s", tc.op, err, tc.op)
+		}
+	}
+}
+
 // TestReadsCreateNoTables: searching, listing and deleting in an index that
 // was never written leave the database as it was.
 func TestReadsCreateNoTables(t *testing.T) {

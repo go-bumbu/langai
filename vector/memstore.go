@@ -53,7 +53,7 @@ func (s *MemStore) Upsert(_ context.Context, c Coord, model string, docs ...Doc)
 	} else if first := firstVector(docs); first != nil {
 		dims = len(first)
 	}
-	if err := CheckWrite(c, dims, docs); err != nil {
+	if err := CheckWrite(c, model, dims, docs); err != nil {
 		return err
 	}
 	if ix == nil {
@@ -113,8 +113,8 @@ func (ix *memIndex) checkModel(collection, model string, all bool) error {
 
 // Delete implements Store.
 func (s *MemStore) Delete(_ context.Context, c Coord, ids ...string) error {
-	if c.Index == "" {
-		return errEmptyIndex
+	if err := CheckRead(c, ids...); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -130,7 +130,7 @@ func (s *MemStore) Delete(_ context.Context, c Coord, ids ...string) error {
 // DeleteIndex implements Store.
 func (s *MemStore) DeleteIndex(_ context.Context, index string) error {
 	if index == "" {
-		return errEmptyIndex
+		return ErrEmptyIndex
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -148,8 +148,8 @@ func (s *MemStore) coll(c Coord) map[string]memDoc {
 
 // Hashes implements Store.
 func (s *MemStore) Hashes(_ context.Context, c Coord, ids ...string) (map[string]string, error) {
-	if c.Index == "" {
-		return nil, errEmptyIndex
+	if err := CheckRead(c, ids...); err != nil {
+		return nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -165,8 +165,8 @@ func (s *MemStore) Hashes(_ context.Context, c Coord, ids ...string) (map[string
 
 // Docs implements Store.
 func (s *MemStore) Docs(_ context.Context, c Coord, after string, limit int) ([]DocInfo, error) {
-	if c.Index == "" {
-		return nil, errEmptyIndex
+	if err := CheckDocs(c, after); err != nil {
+		return nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -185,8 +185,8 @@ func (s *MemStore) Docs(_ context.Context, c Coord, after string, limit int) ([]
 
 // Chunks implements Store; the vectors are copies.
 func (s *MemStore) Chunks(_ context.Context, c Coord, id string) ([]Chunk, error) {
-	if c.Index == "" {
-		return nil, errEmptyIndex
+	if err := CheckRead(c, id); err != nil {
+		return nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -203,6 +203,9 @@ func (s *MemStore) Chunks(_ context.Context, c Coord, id string) ([]Chunk, error
 
 // Search implements Store, scoring every chunk in scope.
 func (s *MemStore) Search(_ context.Context, c Coord, q Query) ([]Match, error) {
+	if err := CheckCoord(c); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	ix := s.indexes[c.Index]

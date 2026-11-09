@@ -29,9 +29,10 @@ type BatchResult struct {
 	// Unchanged are the documents already stored with the same text and
 	// settings: nothing was done for them.
 	Unchanged []string
-	// Failed are the documents refused for a reason of their own, such as a
-	// chunk that embeds to the zero vector, with the error naming each;
-	// whatever was stored for them before is kept.
+	// Failed are the documents refused for a reason of their own, such as
+	// an id no store can keep (vector.ErrInvalidID) or a chunk that embeds
+	// to the zero vector, with the error naming each; whatever was stored
+	// for them before is kept.
 	Failed map[string]error
 }
 
@@ -49,12 +50,14 @@ type BatchResult struct {
 // documents in Indexed were stored before it, the group it happened in and
 // those after it were not touched, and calling again with the same docs
 // picks up where it stopped. An empty id (ErrEmptyID) or one repeated fails
-// the call before anything is read or written.
+// the call before anything is read or written; an id that is not valid
+// UTF-8 or holds a NUL byte (a Latin-1 file path, say) fails only its
+// document, with vector.ErrInvalidID, before any model time is spent on it.
 func (ix *Index) IndexBatch(ctx context.Context, docs []Doc) (BatchResult, error) {
 	var res BatchResult
-	ids := make([]string, len(docs))
+	ids := make([]string, 0, len(docs))
 	seen := make(map[string]bool, len(docs))
-	for i, d := range docs {
+	for _, d := range docs {
 		if d.ID == "" {
 			return res, ErrEmptyID
 		}
@@ -62,9 +65,13 @@ func (ix *Index) IndexBatch(ctx context.Context, docs []Doc) (BatchResult, error
 			return res, fmt.Errorf("search: document %q appears twice in the batch", d.ID)
 		}
 		seen[d.ID] = true
-		ids[i] = d.ID
+		if err := vector.CheckID(d.ID); err != nil {
+			res.fail(d.ID, fmt.Errorf("search: %w", err))
+			continue
+		}
+		ids = append(ids, d.ID)
 	}
-	if len(docs) == 0 {
+	if len(ids) == 0 {
 		return res, nil
 	}
 	stored, err := ix.store.Hashes(ctx, ix.coord, ids...)
@@ -74,6 +81,9 @@ func (ix *Index) IndexBatch(ctx context.Context, docs []Doc) (BatchResult, error
 	var group []pendingDoc
 	size := 0
 	for _, d := range docs {
+		if res.Failed[d.ID] != nil {
+			continue
+		}
 		text := sanitize(d.Text)
 		hash := ix.hash(text)
 		if h, ok := stored[d.ID]; ok && h == hash {
@@ -94,6 +104,14 @@ func (ix *Index) IndexBatch(ctx context.Context, docs []Doc) (BatchResult, error
 		return res, err
 	}
 	return res, nil
+}
+
+// fail records a document refused for a reason of its own.
+func (r *BatchResult) fail(id string, err error) {
+	if r.Failed == nil {
+		r.Failed = make(map[string]error)
+	}
+	r.Failed[id] = err
 }
 
 // pendingDoc is a changed document on its way to the store: its id, the
@@ -133,10 +151,7 @@ func (ix *Index) writeGroup(ctx context.Context, group []pendingDoc, res *BatchR
 		doc, err := ix.vectorDoc(p, vectors[:len(p.parts)])
 		vectors = vectors[len(p.parts):]
 		if err != nil {
-			if res.Failed == nil {
-				res.Failed = make(map[string]error)
-			}
-			res.Failed[p.id] = err
+			res.fail(p.id, err)
 			continue
 		}
 		docs = append(docs, doc)

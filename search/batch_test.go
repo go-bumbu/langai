@@ -140,6 +140,39 @@ func TestIndexBatch_DocumentFailuresDoNotStopTheBatch(t *testing.T) {
 	}
 }
 
+// TestIndexBatch_InvalidIDFailsAlone: a document whose id no store can keep
+// (a Latin-1 file path, a NUL byte) goes to Failed with vector.ErrInvalidID,
+// costs no model time, and the rest of the batch is stored.
+func TestIndexBatch_InvalidIDFailsAlone(t *testing.T) {
+	ix, store, emb := newBatchIndex(t)
+	ctx := context.Background()
+	docs := corpus(100)
+	docs[17].ID = "caf\xe9.txt"
+	docs[60].ID = "a\x00b"
+	res, err := ix.IndexBatch(ctx, docs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Indexed) != 98 {
+		t.Errorf("indexed %d, want the 98 others", len(res.Indexed))
+	}
+	for _, bad := range []string{docs[17].ID, docs[60].ID} {
+		if fe := res.Failed[bad]; !errors.Is(fe, vector.ErrInvalidID) || !strings.HasPrefix(fe.Error(), "search: ") {
+			t.Errorf("Failed[%q] = %v, want a search: error wrapping vector.ErrInvalidID", bad, fe)
+		}
+	}
+	embedded := 0
+	for _, n := range emb.sizes {
+		embedded += n
+	}
+	if embedded != 98 {
+		t.Errorf("embedded %d texts, want only the 98 valid documents'", embedded)
+	}
+	if list, err := store.Docs(ctx, ix.coord, "", 0); err != nil || len(list) != 98 {
+		t.Errorf("stored %d documents, %v; want 98", len(list), err)
+	}
+}
+
 // TestIndexBatch_StopsAtABatchWideError: an embedder or store failure stops
 // the batch; Indexed is exactly what was stored before it, and running the
 // batch again finishes the rest.

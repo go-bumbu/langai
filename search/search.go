@@ -22,8 +22,10 @@ import (
 
 var (
 	// ErrEmptyID is returned by every call that takes a document id when the
-	// id is empty, before any model or store is asked anything.
-	ErrEmptyID = errors.New("search: empty document id")
+	// id is empty, before any model or store is asked anything. It wraps
+	// vector.ErrInvalidID, which an id no store can keep (not valid UTF-8,
+	// or holding a NUL byte) is refused with in the same way.
+	ErrEmptyID = fmt.Errorf("search: empty document id: %w", vector.ErrInvalidID)
 	// ErrNotIndexed is returned by SearchIndexed for an id with no stored
 	// vectors: never indexed, deleted, or indexed with nothing to embed.
 	ErrNotIndexed = errors.New("search: no stored vectors")
@@ -66,7 +68,9 @@ func WithMinScore(min float64) Option {
 
 // New returns an Index using the given embedder and store, over the
 // collection at index, partition and collection; an empty partition or
-// collection is a value like any other, never a wildcard. When the embedder
+// collection is a value like any other, never a wildcard. An empty index is
+// vector.ErrEmptyIndex, and a partition or collection that is not valid
+// UTF-8 or holds a NUL byte vector.ErrInvalidID. When the embedder
 // names its model (langai.Identified), the store records it with the first
 // vectors written to the collection and refuses another model's afterwards.
 func New(embedder langai.Embedder, store vector.Store, index, partition, collection string, opts ...Option) (*Index, error) {
@@ -76,12 +80,15 @@ func New(embedder langai.Embedder, store vector.Store, index, partition, collect
 	if store == nil {
 		return nil, errors.New("search: nil store")
 	}
+	coord := vector.Coord{Index: index, Partition: partition, Collection: collection}
+	if err := vector.CheckCoord(coord); err != nil {
+		return nil, fmt.Errorf("search: %w", err)
+	}
 	// no floor by default: math.Inf(-1) rather than 0, because 0 is a
 	// meaningful cutoff on cosine backends and would silently become policy
 	ix := &Index{
 		embedder: embedder, store: store, chunker: &MarkdownChunker{}, minScore: math.Inf(-1),
-		coord: vector.Coord{Index: index, Partition: partition, Collection: collection},
-		model: modelOf(embedder),
+		coord: coord, model: modelOf(embedder),
 	}
 	for _, opt := range opts {
 		opt(ix)

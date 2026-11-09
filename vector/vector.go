@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -28,9 +30,18 @@ var (
 	// ErrModelMismatch reports a write or a search naming another model than
 	// the one a collection's vectors were made with.
 	ErrModelMismatch = errors.New("vector: collection holds another model's vectors")
+	// ErrEmptyIndex reports a Coord, or an index handed to DeleteIndex,
+	// whose index is empty: the index is the isolation boundary and must be
+	// named. Every method of every Store checks it first.
+	ErrEmptyIndex = errors.New("vector: empty index")
+	// ErrInvalidID reports a document id, a partition, a collection or a
+	// model that no Store can keep alike: one that is not valid UTF-8 or
+	// holds a NUL byte (a Postgres TEXT column refuses both, and SQLite's
+	// JSON id lists turn invalid bytes into U+FFFD), and an empty document
+	// id. Every method of every Store checks the strings it is handed
+	// before it reads or writes anything (see CheckCoord and CheckID).
+	ErrInvalidID = errors.New("vector: invalid id")
 )
-
-var errEmptyIndex = errors.New("vector: empty index")
 
 // Coord locates one collection: Index is the hard isolation boundary and must
 // not be empty; Partition and Collection place the collection within it. An
@@ -122,6 +133,13 @@ type Match struct {
 // must pass Validate for the store's dimensions, or the call fails with
 // ErrDimensions or ErrInvalidVector. Reads of an index never written return
 // nothing and create nothing.
+//
+// Every method checks its arguments before it reads or writes anything, the
+// same way in every implementation (CheckCoord, CheckID, CheckRead,
+// CheckDocs, CheckWrite, CheckSearch): an empty index is ErrEmptyIndex, and
+// a document id, partition, collection or model no backend can keep alike
+// is ErrInvalidID. An error of the database underneath comes back wrapped
+// with "vector:", the backend's name and the operation.
 type Store interface {
 	Upsert(ctx context.Context, c Coord, model string, docs ...Doc) error
 	Delete(ctx context.Context, c Coord, ids ...string) error
@@ -162,17 +180,96 @@ func Validate(vec []float32, dims int) error {
 	return nil
 }
 
-// CheckWrite checks what every Store's Upsert is handed, the same way in
-// each: a non-empty index, non-empty and distinct document ids, and chunk
-// vectors that pass Validate for dims. It is for implementations of Store.
-func CheckWrite(c Coord, dims int, docs []Doc) error {
+// storable reports whether every Store keeps s as it is: valid UTF-8
+// without NUL bytes.
+func storable(s string) bool {
+	return utf8.ValidString(s) && strings.IndexByte(s, 0) < 0
+}
+
+// CheckCoord checks the Coord every method of a Store is handed, the same
+// way in each: a non-empty index (ErrEmptyIndex), and a partition and a
+// collection that are valid UTF-8 without NUL bytes (ErrInvalidID). The
+// index itself may hold any bytes: the SQL stores hash it into their table
+// names and never store it. It is for implementations of Store.
+func CheckCoord(c Coord) error {
 	if c.Index == "" {
-		return errEmptyIndex
+		return ErrEmptyIndex
+	}
+	if !storable(c.Partition) {
+		return fmt.Errorf("%w: partition %q is not valid UTF-8 or holds a NUL byte", ErrInvalidID, c.Partition)
+	}
+	if !storable(c.Collection) {
+		return fmt.Errorf("%w: collection %q is not valid UTF-8 or holds a NUL byte", ErrInvalidID, c.Collection)
+	}
+	return nil
+}
+
+// CheckID checks a document id a Store is handed: not empty, valid UTF-8
+// and without NUL bytes (ErrInvalidID). It is for implementations of Store
+// and for callers that want to refuse such an id before they do any work
+// for it.
+func CheckID(id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: empty document id", ErrInvalidID)
+	}
+	if !storable(id) {
+		return fmt.Errorf("%w: document id %q is not valid UTF-8 or holds a NUL byte", ErrInvalidID, id)
+	}
+	return nil
+}
+
+// CheckRead checks what a Store's reads and deletes are handed: c passes
+// CheckCoord and every id passes CheckID. It is for implementations of
+// Store.
+func CheckRead(c Coord, ids ...string) error {
+	if err := CheckCoord(c); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := CheckID(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CheckDocs checks what a Store's Docs is handed: c passes CheckCoord and
+// after is empty (the first page) or passes CheckID. It is for
+// implementations of Store.
+func CheckDocs(c Coord, after string) error {
+	if err := CheckCoord(c); err != nil {
+		return err
+	}
+	if after == "" {
+		return nil
+	}
+	return CheckID(after)
+}
+
+// checkModel checks a model name: valid UTF-8 without NUL bytes, empty
+// allowed (no model).
+func checkModel(model string) error {
+	if !storable(model) {
+		return fmt.Errorf("%w: model %q is not valid UTF-8 or holds a NUL byte", ErrInvalidID, model)
+	}
+	return nil
+}
+
+// CheckWrite checks what every Store's Upsert is handed, the same way in
+// each: a Coord that passes CheckCoord, a model that is valid UTF-8 without
+// NUL bytes, distinct document ids that pass CheckID, and chunk vectors
+// that pass Validate for dims. It is for implementations of Store.
+func CheckWrite(c Coord, model string, dims int, docs []Doc) error {
+	if err := CheckCoord(c); err != nil {
+		return err
+	}
+	if err := checkModel(model); err != nil {
+		return err
 	}
 	seen := make(map[string]bool, len(docs))
 	for _, d := range docs {
-		if d.ID == "" {
-			return errors.New("vector: empty document id")
+		if err := CheckID(d.ID); err != nil {
+			return err
 		}
 		if seen[d.ID] {
 			return fmt.Errorf("vector: document %q appears twice", d.ID)
@@ -188,11 +285,18 @@ func CheckWrite(c Coord, dims int, docs []Doc) error {
 }
 
 // CheckSearch checks what every Store's Search is handed, the same way in
-// each: a non-empty index and a query vector that passes Validate for dims.
-// It is for implementations of Store.
+// each: a Coord that passes CheckCoord, a model and Only and Exclude ids
+// as CheckWrite and CheckID take them, and a query vector that passes
+// Validate for dims. It is for implementations of Store.
 func CheckSearch(c Coord, dims int, q Query) error {
-	if c.Index == "" {
-		return errEmptyIndex
+	if err := CheckRead(c, q.Only...); err != nil {
+		return err
+	}
+	if err := CheckRead(c, q.Exclude...); err != nil {
+		return err
+	}
+	if err := checkModel(q.Model); err != nil {
+		return err
 	}
 	if err := Validate(q.Vector, dims); err != nil {
 		return fmt.Errorf("query: %w", err)

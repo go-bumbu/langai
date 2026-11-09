@@ -167,13 +167,13 @@ func (s *Store) open(ctx context.Context, index string, create bool) (tables, bo
 			return tables{}, false, err
 		}
 		if legacy {
-			return tables{}, false, fmt.Errorf("vector: index %q has %s tables of the schema before this version: delete them (DeleteIndex) or open the store WithGeneration and index again", index, s.d.Name)
+			return tables{}, false, ownf("vector: index %q has %s tables of the schema before this version: delete them (DeleteIndex) or open the store WithGeneration and index again", index, s.d.Name)
 		}
 		if !create {
 			return t, false, nil
 		}
 		if err := s.create(ctx, t); err != nil {
-			return tables{}, false, fmt.Errorf("create %s schema for index %q: %w", s.d.Name, index, err)
+			return tables{}, false, fmt.Errorf("create schema for index %q: %w", index, err)
 		}
 	}
 	known, err := s.checkDims(ctx, index, t.meta)
@@ -251,12 +251,16 @@ func (s *Store) checkDims(ctx context.Context, index, meta string) (bool, error)
 // first statement of the transaction is a write, so SQLite takes its write
 // lock as the transaction begins and a busy timeout covers the wait for it.
 func (s *Store) Upsert(ctx context.Context, c vector.Coord, model string, docs ...vector.Doc) error {
-	if err := vector.CheckWrite(c, s.dims, docs); err != nil {
+	if err := vector.CheckWrite(c, model, s.dims, docs); err != nil {
 		return err
 	}
 	if len(docs) == 0 {
 		return nil
 	}
+	return s.wrap("upsert", s.upsert(ctx, c, model, docs))
+}
+
+func (s *Store) upsert(ctx context.Context, c vector.Coord, model string, docs []vector.Doc) error {
 	t, _, err := s.open(ctx, c.Index, true)
 	if err != nil {
 		return err
@@ -319,6 +323,13 @@ func (s *Store) claimModel(ctx context.Context, tx *sql.Tx, meta, collection, mo
 // Delete implements vector.Store, removing the docs rows first, as Upsert
 // writes them first.
 func (s *Store) Delete(ctx context.Context, c vector.Coord, ids ...string) error {
+	if err := vector.CheckRead(c, ids...); err != nil {
+		return err
+	}
+	return s.wrap("delete", s.delete(ctx, c, ids))
+}
+
+func (s *Store) delete(ctx context.Context, c vector.Coord, ids []string) error {
 	t, ok, err := s.open(ctx, c.Index, false)
 	if err != nil || !ok || len(ids) == 0 {
 		return err
@@ -344,16 +355,19 @@ func (s *Store) Delete(ctx context.Context, c vector.Coord, ids ...string) error
 // DeleteIndex implements vector.Store by dropping the index's tables, those
 // of the schema before the meta table included.
 func (s *Store) DeleteIndex(ctx context.Context, index string) error {
+	if index == "" {
+		return vector.ErrEmptyIndex
+	}
 	t, err := s.tables(index)
 	if err != nil {
-		return err
+		return s.wrap("delete index", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.ready, index)
 	for _, table := range []string{t.meta, t.docs, t.chunks, t.legacy} {
 		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS `+table); err != nil {
-			return fmt.Errorf("delete index %q: %w", index, err)
+			return s.wrap("delete index", err)
 		}
 	}
 	return nil
@@ -361,6 +375,14 @@ func (s *Store) DeleteIndex(ctx context.Context, index string) error {
 
 // Hashes implements vector.Store.
 func (s *Store) Hashes(ctx context.Context, c vector.Coord, ids ...string) (map[string]string, error) {
+	if err := vector.CheckRead(c, ids...); err != nil {
+		return nil, err
+	}
+	out, err := s.hashes(ctx, c, ids)
+	return out, s.wrap("hashes", err)
+}
+
+func (s *Store) hashes(ctx context.Context, c vector.Coord, ids []string) (map[string]string, error) {
 	t, ok, err := s.open(ctx, c.Index, false)
 	if err != nil {
 		return nil, err
@@ -391,6 +413,14 @@ func (s *Store) Hashes(ctx context.Context, c vector.Coord, ids ...string) (map[
 
 // Docs implements vector.Store.
 func (s *Store) Docs(ctx context.Context, c vector.Coord, after string, limit int) ([]vector.DocInfo, error) {
+	if err := vector.CheckDocs(c, after); err != nil {
+		return nil, err
+	}
+	out, err := s.docs(ctx, c, after, limit)
+	return out, s.wrap("docs", err)
+}
+
+func (s *Store) docs(ctx context.Context, c vector.Coord, after string, limit int) ([]vector.DocInfo, error) {
 	t, ok, err := s.open(ctx, c.Index, false)
 	if err != nil || !ok {
 		return nil, err
@@ -419,6 +449,14 @@ func (s *Store) Docs(ctx context.Context, c vector.Coord, after string, limit in
 
 // Chunks implements vector.Store.
 func (s *Store) Chunks(ctx context.Context, c vector.Coord, id string) ([]vector.Chunk, error) {
+	if err := vector.CheckRead(c, id); err != nil {
+		return nil, err
+	}
+	out, err := s.chunks(ctx, c, id)
+	return out, s.wrap("chunks", err)
+}
+
+func (s *Store) chunks(ctx context.Context, c vector.Coord, id string) ([]vector.Chunk, error) {
 	t, ok, err := s.open(ctx, c.Index, false)
 	if err != nil || !ok {
 		return nil, err
@@ -453,6 +491,11 @@ func (s *Store) Search(ctx context.Context, c vector.Coord, q vector.Query) ([]v
 	if err := vector.CheckSearch(c, s.dims, q); err != nil {
 		return nil, err
 	}
+	out, err := s.search(ctx, c, q)
+	return out, s.wrap("search", err)
+}
+
+func (s *Store) search(ctx context.Context, c vector.Coord, q vector.Query) ([]vector.Match, error) {
 	t, ok, err := s.open(ctx, c.Index, false)
 	if err != nil || !ok || q.Limit <= 0 {
 		return nil, err
@@ -547,6 +590,29 @@ func (s *Store) checkModel(ctx context.Context, meta, collection string, q vecto
 		return err
 	}
 	return fmt.Errorf("%w: collection %q holds %q, not %q", vector.ErrModelMismatch, strings.TrimPrefix(name, modelKey), have, q.Model)
+}
+
+// storeError is an error this package words itself, prefixed already, that
+// wrap passes on as it is.
+type storeError struct{ error }
+
+func (e storeError) Unwrap() error { return e.error }
+
+// ownf formats a storeError.
+func ownf(format string, a ...any) error { return storeError{fmt.Errorf(format, a...)} }
+
+// wrap prefixes err, a driver's or one of database/sql's, with "vector:",
+// the backend's name and the operation, so the caller can tell where it
+// comes from; the package's own errors and the vector sentinels pass as
+// they are, and %w keeps every one of them matchable.
+func (s *Store) wrap(op string, err error) error {
+	var own storeError
+	switch {
+	case err == nil, errors.As(err, &own),
+		errors.Is(err, vector.ErrDimensions), errors.Is(err, vector.ErrModelMismatch):
+		return err
+	}
+	return fmt.Errorf("vector: %s %s: %w", s.d.Name, op, err)
 }
 
 // jsonIDs encodes ids as the JSON array the Dialect's IDs subquery reads.

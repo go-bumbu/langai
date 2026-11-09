@@ -14,7 +14,7 @@ models run in-process through llama.cpp and ONNX Runtime.
 | `media` | The ports for decoding video: `Sampler` turns a video file into the `Frame`s that stand for it, `Cutter` measures and cuts it (for a `VideoEmbedder` that embeds in segments). |
 | `media/ffmpeg` | `Sampler` and `Cutter` over the ffmpeg and ffprobe binaries: the first frame, every scene cut and one frame per interval, scaled down, capped per video, or the keyframes only, for long videos; stream-copy cuts for the segment embedder. |
 | `tagging` | Tags for a text. `Tagger` suggests tags among the ones an application already has and learns from the tags people put on items by hand: each tag's vector blends its name with the items tagged with it, and each tag is judged against its own cutoff. The application provides its tags and hand-made links through a `Catalog`; the Tagger keeps only an embedding cache (`MemCache`, `tagging/sqlitecache`, `tagging/pgcache`) and an in-memory index of tag vectors. `Generator` writes tags with no list to start from: a chat model proposes them and the embedding model scores each against the text, so one cutoff means the same on every text. |
-| `vector` | The `Store` interface for search vectors: documents in collections located by a `Coord` (index, partition, collection), batch writes, listing, and one exact `Search` that returns the best chunk of each of the best documents. `Validate` and the sentinel errors (`ErrDimensions`, `ErrInvalidVector`, `ErrModelMismatch`), and `MemStore` (exact, in memory, for tests and evaluation). |
+| `vector` | The `Store` interface for search vectors: documents in collections located by a `Coord` (index, partition, collection), batch writes, listing, and one exact `Search` that returns the best chunk of each of the best documents. `Validate`, the argument checks every backend shares (`CheckCoord`, `CheckID`, `CheckWrite`, `CheckSearch`…) and the sentinel errors (`ErrDimensions`, `ErrInvalidVector`, `ErrModelMismatch`, `ErrEmptyIndex`, `ErrInvalidID`), and `MemStore` (exact, in memory, for tests and evaluation). |
 | `vector/vectortest` | The conformance suite every `Store` passes. |
 | `vector/sqlitevec` | `Store` on SQLite with the sqlite-vec extension (CGO). |
 | `vector/pgvec` | `Store` on Postgres with pgvector. |
@@ -224,7 +224,12 @@ chunk of the document and scores each other document by its best chunk against a
 them; the document itself is never among the hits, and an id with nothing stored is
 `search.ErrNotIndexed`. Every error the package returns starts with `search:`, and an
 empty document id anywhere is `search.ErrEmptyID`, refused before a model or the store
-is asked anything.
+is asked anything. An id that is not valid UTF-8 or holds a NUL byte (a Latin-1 file
+path, say) is refused the same way with `vector.ErrInvalidID`, which `ErrEmptyID`
+wraps: no backend can keep such an id alike (Postgres refuses it, SQLite's JSON id
+lists mangle it), so the stores refuse it everywhere it enters, and in `IndexBatch` it
+fails only its own document. `search.New` and `search.NewMediaIndex` refuse an empty
+index (`vector.ErrEmptyIndex`) and a partition or collection of such bytes up front.
 
 `IndexBatch` indexes many documents (`[]search.Doc{ID, Text}`) the way `Index` does
 one, in bounded batches: one hash read for all of them, at most 32 chunk texts per
@@ -272,7 +277,10 @@ like any other, not a wildcard. A `vector.Query` opens a coordinate only when as
 `Store.Search` ranks documents, not chunks: it returns the best chunk of each of the
 best documents, so one long document or one many-framed video never crowds out the
 rest, in score order, then by document id, then by chunk. `DeleteIndex` removes an
-index with everything in it, e.g. when a tenant leaves.
+index with everything in it, e.g. when a tenant leaves. Every method checks its
+arguments first, alike in every backend, and an error of the database underneath comes
+back wrapped with `vector:`, the backend and the operation (`vector: postgres upsert:
+…`).
 
 Vectors of different models never mix. A store refuses a vector of the wrong length
 (`vector.ErrDimensions`) and a zero, NaN or infinite one, or one whose norm underflows or
