@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"image"
+	"sync/atomic"
 
 	"github.com/go-bumbu/langai"
 )
@@ -18,7 +19,17 @@ const fakeImageCells = 4
 // it and a different picture further away. It understands nothing about what
 // a picture shows — it only makes "looks alike" measurable, which is what a
 // test needs.
-type FakeImageEmbedder struct{}
+//
+// The zero value embeds every picture and never fails. It is used as a value
+// or through a pointer, and may be copied: copies share Calls. Set the fields
+// before the first call; EmbedImages is safe for concurrent use.
+type FakeImageEmbedder struct {
+	// Err, when set, fails every EmbedImages with it: an embedder that is
+	// down.
+	Err error
+	// Calls, when set, counts the EmbedImages calls, the failed ones included.
+	Calls *atomic.Int64
+}
 
 // FakeImageEmbedderModel is the model name FakeImageEmbedder reports.
 const FakeImageEmbedderModel = "langaitest/fake-image-embedder"
@@ -35,9 +46,20 @@ func (FakeImageEmbedder) Model() string { return FakeImageEmbedderModel }
 // Dimensions implements ImageEmbedder: 4×4 cells of 3 channels.
 func (FakeImageEmbedder) Dimensions() int { return fakeImageCells * fakeImageCells * 3 }
 
-// EmbedImages implements ImageEmbedder. A nil image or one without pixels is
-// an error, as a real embedder would refuse it.
-func (f FakeImageEmbedder) EmbedImages(_ context.Context, images []image.Image) ([][]float32, error) {
+// EmbedImages implements ImageEmbedder. It counts the call in Calls, then
+// fails with ctx's error when ctx is done and with Err when that is set. A
+// nil image or one without pixels is an error, as a real embedder would
+// refuse it.
+func (f FakeImageEmbedder) EmbedImages(ctx context.Context, images []image.Image) ([][]float32, error) {
+	if f.Calls != nil {
+		f.Calls.Add(1)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if f.Err != nil {
+		return nil, f.Err
+	}
 	out := make([][]float32, len(images))
 	for i, img := range images {
 		if img == nil {
