@@ -99,11 +99,11 @@ func TestArgs(t *testing.T) {
 	}
 	s, _ = New(Config{KeyframesOnly: true, MaxSide: -1})
 	args = strings.Join(s.args("clip.mp4", probed{}), " ")
-	if !strings.Contains(args, "-skip_frame nokey -i file:clip.mp4") {
+	if !strings.Contains(args, "-skip_frame nokey -protocol_whitelist file -i file:clip.mp4") {
 		t.Errorf("keyframes only: args %q lack the decoder option before the input", args)
 	}
 	// the image demuxer is told to read the file named, not a sequence
-	if args := strings.Join(s.args("shot%d.png", probed{image2: true}), " "); !strings.Contains(args, "-pattern_type none -i file:shot%d.png") {
+	if args := strings.Join(s.args("shot%d.png", probed{image2: true}), " "); !strings.Contains(args, "-pattern_type none -protocol_whitelist file -i file:shot%d.png") {
 		t.Errorf("image: args %q lack the literal-name option before the input", args)
 	}
 	if strings.Contains(args, "scale=") {
@@ -292,5 +292,53 @@ func TestTailWriter(t *testing.T) {
 		if cap(w.buf) > 4*maxLog {
 			t.Errorf("%s: the writer holds %d bytes", name, cap(w.buf))
 		}
+	}
+}
+
+// the Sampler is a search.Fingerprinter, without this package importing search
+var _ interface{ Fingerprint() string } = (*Sampler)(nil)
+
+// TestFingerprint_ChangesWithWhatChangesTheFrames: two configurations that
+// take other frames have other fingerprints, so a MediaIndex re-indexes its
+// videos after the change; two that take the same frames (a default and its
+// spelling, a scene threshold that scene detection never reads, the binary's
+// path) share one.
+func TestFingerprint_ChangesWithWhatChangesTheFrames(t *testing.T) {
+	fp := func(cfg Config) string {
+		t.Helper()
+		s, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.Fingerprint()
+	}
+	for name, pair := range map[string][2]Config{
+		"the defaults spelled out": {{}, {SceneThreshold: DefaultSceneThreshold, MinInterval: DefaultMinInterval, MaxInterval: DefaultMaxInterval, MaxFrames: DefaultMaxFrames, MaxSide: DefaultMaxSide}},
+		"another binary":           {{}, {FFmpeg: "/opt/ffmpeg/bin/ffmpeg", FFprobe: "/opt/ffmpeg/bin/ffprobe"}},
+		"scene detection off":      {{SceneThreshold: 1}, {SceneThreshold: 3}},
+		"keyframes ignore scenes":  {{KeyframesOnly: true}, {KeyframesOnly: true, SceneThreshold: 0.9}},
+		"any size kept":            {{MaxSide: -1}, {MaxSide: -7}},
+	} {
+		if a, b := fp(pair[0]), fp(pair[1]); a != b {
+			t.Errorf("%s: %q and %q, want one fingerprint", name, a, b)
+		}
+	}
+	seen := map[string]string{fp(Config{}): "the defaults"}
+	for name, cfg := range map[string]Config{
+		"scene threshold":    {SceneThreshold: 0.3},
+		"scenes off":         {SceneThreshold: 1},
+		"min interval":       {MinInterval: 2 * time.Second},
+		"max interval":       {MaxInterval: 10 * time.Second},
+		"max frames":         {MaxFrames: 16},
+		"max side":           {MaxSide: 256},
+		"original size":      {MaxSide: -1},
+		"keyframes only":     {KeyframesOnly: true},
+		"keyframes, min gap": {KeyframesOnly: true, MinInterval: 3 * time.Second},
+	} {
+		got := fp(cfg)
+		if other, dup := seen[got]; dup {
+			t.Errorf("%s and %s share the fingerprint %q", name, other, got)
+		}
+		seen[got] = name
 	}
 }

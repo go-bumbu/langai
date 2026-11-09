@@ -372,8 +372,12 @@ stored, so the next run tries it again rather than keep an item that is never fo
   many) and the size frames are scaled to (512 px). Scene detection decodes every frame;
   `KeyframesOnly` decodes only the encoder's keyframes, which sit at cuts and at a fixed
   interval anyway, and makes hours of video cheap at the price of a coarser sample.
-  A path is always a local file, relative or absolute: a colon, a leading dash or a `%d`
-  in a name is never read as a protocol, an option or an image sequence. Frames are read
+  The `Sampler`'s `Fingerprint` covers every one of these settings, so changing one
+  indexes the videos again. A path is always a local file, relative or absolute: a colon,
+  a leading dash or a `%d` in a name is never read as a protocol, an option or an image
+  sequence, and ffmpeg and ffprobe open their input with only the `file` protocol on
+  their whitelist, so a crafted playlist or concat list that names an `http://` (or
+  `rtp://`) input fails at once instead of reaching the network. Frames are read
   from ffmpeg one at a time, each with pixels of its own, so memory holds the frames
   taken (at most 64 × 512 × 512 × 4 bytes, 67 MB, with the defaults) and a frame you
   keep does not keep the others alive. A video no frame comes out of is an error, and
@@ -464,7 +468,7 @@ pictures and clips, and an image finds the stretch of a video it appears in.
   tokens per second of video, so a segment is a few thousand tokens and a feature film
   never overflows the context (`ContextTokens`, 16384). The `Cutter` (the ffmpeg
   `Sampler`) cuts by stream copy, so a segment starts at the last keyframe before its
-  time. `MaxSegments` caps the work per video. A segment is one vector: the model sees
+  time; a cut that fails or is cancelled removes its partial output. `MaxSegments` caps the work per video. A segment is one vector: the model sees
   the whole stretch, which is what makes a clip match a description, and what loses the
   "matched at 4.00 s" precision of the frame route. A file whose container states no
   length (a recording that was never finalized, a stream dump) is first copied into a

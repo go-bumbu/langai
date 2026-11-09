@@ -16,7 +16,12 @@
 // A path is always a local file, whatever it looks like: it reaches the
 // programs behind ffmpeg's file: protocol, which takes the rest of the
 // argument as the name, byte for byte. Bare, "clip:final.mkv" would be read
-// as the protocol "clip" and "-out.mp4" as an option.
+// as the protocol "clip" and "-out.mp4" as an option. And a file is only
+// ever read through that protocol: a playlist, a concat list or a session
+// description names other inputs, and ffmpeg would open those through
+// whatever protocol they spell (http, rtp, ...), so every input is opened
+// with the file protocol alone on its whitelist, and such a file fails
+// instead of reaching the network.
 //
 // Frames are read from ffmpeg one at a time, each into an allocation of its
 // own, so memory holds the frames taken and nothing else, and a frame the
@@ -153,6 +158,35 @@ func New(cfg Config) (*Sampler, error) {
 	return &Sampler{cfg: cfg.withDefaults(), waitDelay: defaultWaitDelay}, nil
 }
 
+// samplerVersion numbers how this package picks and prepares frames, beyond
+// what a Config says; it goes up when a release would take other frames, or
+// other pixels, from the same video and Config.
+const samplerVersion = 1
+
+// Fingerprint describes every setting that changes which frames come out
+// and how they look, the same string for two Samplers that take the same
+// frames: what search.MediaIndex folds into the hash of every video it
+// indexes (it is a search.Fingerprinter), so that a change of setting
+// indexes the videos again. The binaries' paths are not part of it, and
+// neither is a setting the configuration makes moot: the scene threshold
+// with scene detection off or with KeyframesOnly, the longest interval with
+// KeyframesOnly.
+func (s *Sampler) Fingerprint() string {
+	scene, maxI := "off", "-"
+	if !s.cfg.KeyframesOnly {
+		maxI = s.cfg.MaxInterval.String()
+		if s.cfg.SceneThreshold < 1 {
+			scene = strconv.FormatFloat(s.cfg.SceneThreshold, 'f', 3, 64)
+		}
+	}
+	side := "orig"
+	if s.cfg.MaxSide > 0 {
+		side = strconv.Itoa(s.cfg.MaxSide)
+	}
+	return fmt.Sprintf("ffmpeg/%d scene=%s min=%s max=%s frames=%d side=%s keyframes=%t",
+		samplerVersion, scene, s.cfg.MinInterval, maxI, s.cfg.MaxFrames, side, s.cfg.KeyframesOnly)
+}
+
 // Sample implements media.Sampler: it probes the video's duration, decodes
 // it once and returns the frames taken, in time order, as *image.RGBA, each
 // with pixels of its own. A file no frame comes out of is an error. ctx
@@ -259,20 +293,26 @@ func (s *Sampler) Duration(ctx context.Context, path string) (time.Duration, err
 // re-encoding, so a cut starts at the last keyframe before start and the
 // segment's own timestamps start at zero. Audio, subtitles and data are
 // dropped; an MP4 or MOV gets its index at the front, so it plays from a
-// pipe. A file at out is overwritten, and a failed or cancelled cut may
-// leave a partial one there. ctx bounds ffmpeg; cancelling it kills the
-// program.
+// pipe. A file at out is overwritten, and a failed or cancelled cut removes
+// it, so no partial segment is left there. ctx bounds ffmpeg; cancelling it
+// kills the program.
 func (s *Sampler) Cut(ctx context.Context, path string, start, length time.Duration, out string) error {
 	if path == "" || out == "" {
 		return errors.New("ffmpeg: empty path")
 	}
-	args := []string{"-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", seconds(start), "-i", local(path)}
+	args := slices.Concat([]string{"-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", seconds(start)}, input(path))
 	if length > 0 {
 		args = append(args, "-t", seconds(length))
 	}
 	args = append(args, "-map", "0:v:0", "-an", "-sn", "-dn", "-c", "copy", "-movflags", "+faststart", local(out))
-	_, err := s.run(ctx, "ffmpeg", s.cfg.FFmpeg, args)
-	return err
+	if _, err := s.run(ctx, "ffmpeg", s.cfg.FFmpeg, args); err != nil {
+		// whatever ffmpeg wrote is not the segment
+		if rmErr := os.Remove(out); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return errors.Join(err, fmt.Errorf("ffmpeg: remove the partial cut: %w", rmErr))
+		}
+		return err
+	}
+	return nil
 }
 
 // local writes a file path the way ffmpeg and ffprobe take it for a local
@@ -280,6 +320,13 @@ func (s *Sampler) Cut(ctx context.Context, path string, start, length time.Durat
 // protocol, which reads the rest as the name without unescaping anything.
 func local(path string) string {
 	return "file:" + path
+}
+
+// input is the "-i" of a local file, with the input option that keeps
+// ffmpeg from opening anything but local files on its behalf: the inputs a
+// playlist or a concat list names are opened under the same whitelist.
+func input(path string) []string {
+	return []string{"-protocol_whitelist", "file", "-i", local(path)}
 }
 
 // run runs one of the two programs to its end and returns what it wrote to
@@ -328,7 +375,7 @@ func (s *Sampler) probe(ctx context.Context, path string) (probed, error) {
 	if path == "" {
 		return probed{}, errors.New("ffprobe: empty path")
 	}
-	args := []string{"-v", "error", "-show_entries", "format=format_name,duration", "-of", "default=noprint_wrappers=1", "-i", local(path)}
+	args := slices.Concat([]string{"-v", "error", "-show_entries", "format=format_name,duration", "-of", "default=noprint_wrappers=1"}, input(path))
 	if !strings.Contains(path, "%") {
 		out, err := s.run(ctx, "ffprobe", s.cfg.FFprobe, args)
 		return parseProbe(out), err
@@ -435,8 +482,8 @@ func (s *Sampler) args(path string, in probed) []string {
 	if in.image2 {
 		args = append(args, literalName...)
 	}
-	args = append(args, "-i", local(path), "-map", "0:v:0", "-an", "-sn", "-dn",
-		"-vf", strings.Join(filters, ","), "-fps_mode", "vfr")
+	args = append(args, input(path)...)
+	args = append(args, "-map", "0:v:0", "-an", "-sn", "-dn", "-vf", strings.Join(filters, ","), "-fps_mode", "vfr")
 	if s.cfg.MaxFrames > 0 {
 		args = append(args, "-frames:v", strconv.Itoa(s.cfg.MaxFrames))
 	}
