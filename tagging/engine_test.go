@@ -477,38 +477,45 @@ func TestEngine_ConcurrentCallsRebuildOnce(t *testing.T) {
 	})
 }
 
+// TestEngine_CancelledLeaderDoesNotFailWaiters: the caller that started a
+// rebuild gives up while ten others wait for it. They are provably waiting
+// before it does (synctest.Wait), so the rebuild has callers left and carries
+// on for them.
 func TestEngine_CancelledLeaderDoesNotFailWaiters(t *testing.T) {
-	cat := breadWithRecipes("1")
-	cat.release, cat.entered = make(chan struct{}), make(chan struct{}, 1)
-	r := newRig(t, engineCfg, cat, nil, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	leader := make(chan error, 1)
-	go func() {
-		_, err := r.e.scores(ctx, "1", "10", "1", croissantText)
-		leader <- err
-	}()
-	<-cat.entered
-	const n = 10
-	errs := make([]error, n)
-	got := make([][]TagScore, n)
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Go(func() { got[i], errs[i] = r.e.scores(context.Background(), "1", "10", "1", croissantText) })
-	}
-	cancel()
-	if err := <-leader; !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled leader: err = %v, want context.Canceled", err)
-	}
-	close(cat.release)
-	wg.Wait()
-	for i := range n {
-		if errs[i] != nil || got[i] == nil {
-			t.Fatalf("waiter %d: %+v, %v; want scores", i, got[i], errs[i])
+	synctest.Test(t, func(t *testing.T) {
+		cat := breadWithRecipes("1")
+		cat.release = make(chan struct{})
+		r := newRig(t, engineCfg, cat, nil, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		leader := make(chan error, 1)
+		go func() {
+			_, err := r.e.scores(ctx, "1", "10", "1", croissantText)
+			leader <- err
+		}()
+		synctest.Wait()
+		const n = 10
+		errs := make([]error, n)
+		got := make([][]TagScore, n)
+		var wg sync.WaitGroup
+		for i := range n {
+			wg.Go(func() { got[i], errs[i] = r.e.scores(context.Background(), "1", "10", "1", croissantText) })
 		}
-	}
-	if tags, _ := cat.counts(); tags != 1 {
-		t.Fatalf("Tags called %d times, want once: the leader's cancel must not end the rebuild", tags)
-	}
+		synctest.Wait()
+		cancel()
+		if err := <-leader; !errors.Is(err, context.Canceled) {
+			t.Errorf("cancelled leader: err = %v, want context.Canceled", err)
+		}
+		close(cat.release)
+		wg.Wait()
+		for i := range n {
+			if errs[i] != nil || got[i] == nil {
+				t.Fatalf("waiter %d: %+v, %v; want scores", i, got[i], errs[i])
+			}
+		}
+		if tags, _ := cat.counts(); tags != 1 {
+			t.Fatalf("Tags called %d times, want once: the leader's cancel must not end the rebuild", tags)
+		}
+	})
 }
 
 // evictOther fills another space of a tiny MemIndex, which evicts every other
@@ -766,90 +773,5 @@ func TestEngine_OnePathUnlessAllPathLevels(t *testing.T) {
 				t.Errorf("AllPathLevels %v: Scores has dev %+v, want ShadowedBy %q", tc.all, s, wantShadow)
 			}
 		}
-	}
-}
-
-// TestFlight_RunsOncePerKey holds the run until all ten callers are provably
-// blocked, one in fn and nine on its run, so none can arrive after it ended
-// and start a second one.
-func TestFlight_RunsOncePerKey(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		var f flight
-		var runs, finished, others atomic.Int32
-		release := make(chan struct{})
-		fn := func(context.Context) error {
-			runs.Add(1)
-			<-release
-			return nil
-		}
-		var wg sync.WaitGroup
-		for range 10 {
-			wg.Go(func() {
-				_ = f.do(context.Background(), "k", fn)
-				finished.Add(1)
-			})
-		}
-		synctest.Wait()
-		// not Fatalf: the callers must get to finish for the bubble to end
-		if n := runs.Load(); n != 1 {
-			t.Errorf("with every caller blocked, fn ran %d times, want once", n)
-		}
-		if n := finished.Load(); n != 0 {
-			t.Errorf("%d callers finished before the run did", n)
-		}
-		// another key runs on its own, while "k" is in flight
-		if err := f.do(context.Background(), "other", func(context.Context) error { others.Add(1); return nil }); err != nil {
-			t.Error(err)
-		}
-		if others.Load() != 1 {
-			t.Error("the other key did not run")
-		}
-		close(release)
-		wg.Wait()
-		if n := runs.Load(); n != 1 {
-			t.Fatalf("fn ran %d times for one key, want once", n)
-		}
-	})
-}
-
-func TestFlight_SharesTheErrorAndRunsAgainAfter(t *testing.T) {
-	var f flight
-	boom := errors.New("boom")
-	if err := f.do(context.Background(), "k", func(context.Context) error { return boom }); !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want boom", err)
-	}
-	ran := false
-	if err := f.do(context.Background(), "k", func(context.Context) error { ran = true; return nil }); err != nil || !ran {
-		t.Fatalf("second do: ran %v, err %v; want a fresh run", ran, err)
-	}
-}
-
-func TestFlight_CallerLeavesOnItsOwnCancelAndFnCarriesOn(t *testing.T) {
-	var f flight
-	release, started, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	leader := make(chan error, 1)
-	go func() {
-		leader <- f.do(ctx, "k", func(ctx context.Context) error {
-			close(started)
-			<-release
-			done <- ctx.Err()
-			return nil
-		})
-	}()
-	<-started
-	waiter := make(chan error, 1)
-	// the waiter may arrive after the flight ended and run fn of its own
-	go func() { waiter <- f.do(context.Background(), "k", func(context.Context) error { return nil }) }()
-	cancel()
-	if err := <-leader; !errors.Is(err, context.Canceled) {
-		t.Fatalf("leader: err = %v, want context.Canceled", err)
-	}
-	close(release)
-	if err := <-done; err != nil {
-		t.Fatalf("fn saw its ctx end (%v): it must outlive its caller's", err)
-	}
-	if err := <-waiter; err != nil {
-		t.Fatalf("waiter: %v", err)
 	}
 }

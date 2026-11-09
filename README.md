@@ -374,7 +374,8 @@ There's no "learn" call. The Tagger learns only when the app changes the revisio
 // catalog is your tagging.Catalog: Tags lists a space's tags (id, name, revision),
 // Members the texts of the items tagged with some of them by hand
 cache, err := sqlitecache.New(ctx, db)
-tagger, err := tagging.NewTagger(emb, catalog, cache, tagging.TaggerConfig{Model: yzma.DefaultModel})
+tagger, err := tagging.NewTagger(emb, catalog, cache, tagging.TaggerConfig{Model: yzma.DefaultModel, Logger: logger})
+defer tagger.Close() // cancels and waits for what is in flight; later calls return tagging.ErrClosed
 space := tagger.Scope("tenant-1", "space-7")
 ids, err := space.Suggest(ctx, rev, essence)    // auto tags, best first; never stored as links
 scores, err := space.Scores(ctx, rev, essence)  // every tag's score and cutoff: why a tag was or was not picked
@@ -479,7 +480,19 @@ How a tag is judged:
   rebuilds from the cache the ones whose revision, name, model or settings changed, with
   one `Members` call per 64 tags, and drops the ones gone; the callers that ask at one
   revision together share one rebuild. So a bulk import costs one rebuild per changed
-  tag, at the next call.
+  tag, at the next call. The rebuilds of one space run one after the other: a caller at
+  another revision (a second instance of your application that has not seen the latest
+  change yet) waits, then rebuilds only if the space is still not at its revision. While
+  two instances disagree on the revision, each call of one re-reads the catalog's tags
+  after a call of the other, so let them converge.
+- **A rebuild belongs to its callers.** It runs on a goroutine of the Tagger's that the
+  waiting callers share. A caller whose context ends returns at once and the rebuild goes
+  on for the others; when the last one has gone, the rebuild's context is cancelled, so a
+  hung embedder is not left running. A panic of your `Catalog` or `Embedder` in a rebuild
+  does not end the process: the callers get an error wrapping `ErrNotRebuilt` with the
+  panic's value, and the stack goes to the `Logger`. `tagger.Close()` cancels the calls
+  and rebuilds in flight, waits for them, and makes every later call return
+  `tagging.ErrClosed`.
 - **A failure keeps what was done.** Texts go to the embedder 32 at a time and each batch
   is cached as it comes back, so a rebuild or a `Warm` that fails or is cancelled loses at
   most one batch, and the next call embeds only what is missing. A catalog failure, or an

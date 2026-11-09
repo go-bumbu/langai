@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-bumbu/langai"
@@ -45,6 +46,14 @@ type engine struct {
 	flight flight
 	log    *slog.Logger     // cfg.Logger, or one that discards
 	now    func() time.Time // time.Now, replaced by tests
+
+	// closing ends, by stop, when the engine is closed (see enter and close);
+	// mu guards closed, and calls counts the calls in flight
+	closing context.Context
+	stop    context.CancelFunc
+	mu      sync.Mutex
+	closed  bool
+	calls   sync.WaitGroup
 }
 
 // newEngine returns an engine over its four parts. It fails on a missing
@@ -68,7 +77,12 @@ func newEngine(emb langai.Embedder, cat Catalog, cache EmbeddingCache, ix TagInd
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	return &engine{emb: emb, cat: cat, cache: cache, ix: ix, cfg: cfg, params: params, log: logger, now: time.Now}, nil
+	e := &engine{emb: emb, cat: cat, cache: cache, ix: ix, cfg: cfg, params: params, log: logger, now: time.Now}
+	e.closing, e.stop = context.WithCancel(context.Background())
+	e.flight.onPanic = func(value any, stack []byte) {
+		e.log.Error("tagging: panic in a rebuild", logComponent, slog.Any("panic", value), slog.String("stack", string(stack)))
+	}
+	return e, nil
 }
 
 // scores returns text's score against every tag of the space at revision,
@@ -182,35 +196,109 @@ func (e *engine) fingerprint(t CatalogTag) string {
 
 // refresh brings the space up to revision unless the index records that
 // state already. The rebuild runs once for every caller of one space and
-// state at a time (see flight), and re-reads the state first, since another
-// caller may just have applied it. It hands Apply the state it diffed against,
-// so an Apply over a space that changed in the meantime records nothing and
-// the next call diffs again (see TagIndex.Apply).
+// state at a time, and the rebuilds of one space run one after the other
+// whatever state each is for (see flight): two instances of an application
+// that are a revision apart would otherwise rebuild the space side by side,
+// and the second Apply would find the space moved under it and leave it
+// recorded as nobody's. A caller that waited for a rebuild to another state
+// looks at the index again, and rebuilds only if that left the space at
+// neither.
 func (e *engine) refresh(ctx context.Context, index, partition, revision string) error {
 	state := e.state(revision)
-	cur, _, ok, err := e.ix.State(ctx, index, partition)
-	switch {
-	case err != nil:
-		return err
-	case ok && cur == state:
-		return nil
-	}
-	return e.flight.do(ctx, index+"\x00"+partition+"\x00"+state, func(ctx context.Context) error {
-		cur, held, ok, err := e.ix.State(ctx, index, partition)
+	for {
+		cur, _, ok, err := e.ix.State(ctx, index, partition)
 		switch {
 		case err != nil:
 			return err
 		case ok && cur == state:
 			return nil
 		}
-		put, drop, err := e.diff(ctx, index, partition, held)
-		if err != nil {
-			// the index is left as it was and the state unrecorded, so the
-			// next call diffs again; what was embedded stays cached
+		again, err := e.flight.do(ctx, spaceKey{index, partition}, state, func(ctx context.Context) error {
+			return e.rebuild(ctx, index, partition, state)
+		})
+		if again {
+			continue
+		}
+		var panicked *panicError
+		if errors.As(err, &panicked) {
 			return fmt.Errorf("%w: %w", ErrNotRebuilt, err)
 		}
-		return e.ix.Apply(ctx, index, partition, cur, state, put, drop)
-	})
+		return err
+	}
+}
+
+// rebuild brings the space to state, as one run of the flight. It re-reads
+// the index first, since another caller may just have applied that state, and
+// hands Apply the state it diffed against, so an Apply over a space that
+// changed in the meantime records nothing and the next call diffs again (see
+// TagIndex.Apply).
+func (e *engine) rebuild(ctx context.Context, index, partition, state string) error {
+	cur, held, ok, err := e.ix.State(ctx, index, partition)
+	switch {
+	case err != nil:
+		return err
+	case ok && cur == state:
+		return nil
+	}
+	put, drop, err := e.diff(ctx, index, partition, held)
+	if err != nil {
+		// the index is left as it was and the state unrecorded, so the
+		// next call diffs again; what was embedded stays cached
+		return fmt.Errorf("%w: %w", ErrNotRebuilt, err)
+	}
+	return e.ix.Apply(ctx, index, partition, cur, state, put, drop)
+}
+
+// enter begins a call on the engine: it fails with ErrClosed once the engine
+// is closed, and else returns a context that ends with ctx or with close, and
+// the function that ends the call, which the caller must run.
+func (e *engine) enter(ctx context.Context) (context.Context, func(), error) {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return nil, nil, ErrClosed
+	}
+	e.calls.Add(1)
+	e.mu.Unlock()
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(e.closing, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+		e.calls.Done()
+	}, nil
+}
+
+// call runs fn as one call on the engine (see enter), and returns its error
+// as closedErr gives it.
+func (e *engine) call(ctx context.Context, fn func(context.Context) error) error {
+	ctx, done, err := e.enter(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return e.closedErr(fn(ctx))
+}
+
+// closedErr is the error of a call that ended with err: err itself, or, when
+// the engine was closed while the call ran and so cut it short, one wrapping
+// ErrClosed too.
+func (e *engine) closedErr(err error) error {
+	if err == nil || errors.Is(err, ErrClosed) || e.closing.Err() == nil {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrClosed, err)
+}
+
+// close is Tagger.Close: no call starts after it, the contexts of the calls
+// and rebuilds in flight are cancelled, and it returns when they have ended.
+func (e *engine) close() {
+	e.mu.Lock()
+	e.closed = true
+	e.mu.Unlock()
+	e.stop()
+	e.flight.close()
+	e.calls.Wait()
 }
 
 // diff reads the catalog's tags and returns the vectors of the ones whose

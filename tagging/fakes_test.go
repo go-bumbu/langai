@@ -42,6 +42,29 @@ type tallyEmbedder struct {
 	nCalls int
 	// largest is the most texts one Embed was asked for
 	largest int
+	// hang holds the roles whose Embed never answers: it blocks until its ctx
+	// ends, as a model that hangs does, and gave is how many such calls gave
+	// up when their ctx ended
+	hang map[langai.Role]bool
+	gave int
+}
+
+// hangOn has every Embed of role block until its ctx ends; false clears it.
+func (e *tallyEmbedder) hangOn(role langai.Role, on bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.hang == nil {
+		e.hang = map[langai.Role]bool{}
+	}
+	e.hang[role] = on
+}
+
+// gaveUp returns how many hanging Embed calls returned because their ctx
+// ended.
+func (e *tallyEmbedder) gaveUp() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.gave
 }
 
 // largestBatch returns the most texts one Embed call was asked for.
@@ -79,7 +102,7 @@ func (e *tallyEmbedder) Embed(ctx context.Context, role langai.Role, texts []str
 	e.calls[role]++
 	e.nCalls++
 	e.largest = max(e.largest, len(texts))
-	call, hook := e.nCalls, e.hook
+	call, hook, hangs := e.nCalls, e.hook, e.hang[role]
 	err := e.fail[role]
 	for _, t := range texts {
 		if e.failOn != "" && strings.Contains(t, e.failOn) {
@@ -95,6 +118,13 @@ func (e *tallyEmbedder) Embed(ctx context.Context, role langai.Role, texts []str
 	}
 	if err != nil {
 		return nil, err
+	}
+	if hangs {
+		<-ctx.Done()
+		e.mu.Lock()
+		e.gave++
+		e.mu.Unlock()
+		return nil, ctx.Err()
 	}
 	vs, err := e.embedder().Embed(ctx, role, texts)
 	if err != nil {
@@ -344,13 +374,42 @@ type fakeCatalog struct {
 	tagsCalls int
 	memCalls  int
 	memIDs    [][]string
+	// panicWith, when not nil, is what Tags panics with
+	panicWith any
+	// inTags is how many Tags calls are running, maxInTags the most that
+	// ever ran together
+	inTags, maxInTags int
+}
+
+// setPanic has every later Tags call panic with v; nil clears it.
+func (c *fakeCatalog) setPanic(v any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.panicWith = v
+}
+
+// overlap returns the most Tags calls that ever ran together.
+func (c *fakeCatalog) overlap() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.maxInTags
 }
 
 func (c *fakeCatalog) Tags(ctx context.Context, _, _ string) ([]CatalogTag, error) {
 	c.mu.Lock()
 	c.tagsCalls++
-	release, entered := c.release, c.entered
+	c.inTags++
+	c.maxInTags = max(c.maxInTags, c.inTags)
+	release, entered, panicWith := c.release, c.entered, c.panicWith
 	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.inTags--
+		c.mu.Unlock()
+	}()
+	if panicWith != nil {
+		panic(panicWith)
+	}
 	if entered != nil {
 		select {
 		case entered <- struct{}{}:

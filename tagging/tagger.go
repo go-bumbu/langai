@@ -93,8 +93,26 @@ type TaggerConfig struct {
 // and each space's tag vectors to its TagIndex, derived data it can always
 // rebuild. It is safe for concurrent use when its Embedder, Catalog, cache and
 // index are.
+//
+// A rebuild runs on a goroutine of the Tagger's, shared by the callers that
+// wait for it. It is cancelled when the last of them has gone, a panic of the
+// Catalog or the Embedder in it becomes the error of those callers (wrapping
+// ErrNotRebuilt and holding the value panicked with) instead of ending the
+// process, and Close stops it.
 type Tagger struct {
 	e *engine
+}
+
+// Close stops the Tagger: every later call on it, or on one of its Scopes,
+// returns ErrClosed. The calls and rebuilds in flight have their contexts
+// cancelled, and Close returns when they have ended, so nothing of the Tagger
+// runs after it; their callers get an error wrapping ErrClosed. An Embedder or
+// a Catalog that does not return when its context ends holds Close up for as
+// long. It does not close the Embedder, the cache or the index, which the
+// application made. Closing twice is fine, and the error is always nil.
+func (t *Tagger) Close() error {
+	t.e.close()
+	return nil
 }
 
 // taggerOptions are what TaggerOptions set.
@@ -218,7 +236,9 @@ func (t *Tagger) Scope(index, partition string) *Scope {
 // tag, a link or a tagged item of the space does (see Catalog). When the
 // index was not built at it, Suggest first reads the catalog's tags and
 // rebuilds the ones that changed, once for all the callers that ask at that
-// revision together. text is the document's own text: it is embedded as a
+// revision together; a caller at another revision waits for that rebuild and
+// then looks again, so the rebuilds of one space never overlap. text is the
+// document's own text: it is embedded as a
 // query, unless the cache holds it already, and cached. An empty index or
 // revision, or a blank text, is an error. Any error returns no ids; one of
 // the rebuild wraps ErrNotRebuilt.
@@ -260,7 +280,12 @@ func (t TagScore) Picked() bool { return t.Score >= t.Cutoff && t.ShadowedBy == 
 // picked. It brings the space up to revision and handles errors as Suggest
 // does.
 func (s *Scope) Scores(ctx context.Context, revision, text string) ([]TagScore, error) {
-	return s.tg.e.scores(ctx, s.index, s.partition, revision, text)
+	var scores []TagScore
+	err := s.tg.e.call(ctx, func(ctx context.Context) (err error) {
+		scores, err = s.tg.e.scores(ctx, s.index, s.partition, revision, text)
+		return err
+	})
+	return scores, err
 }
 
 // Warm brings the space up to revision, as the next Suggest at it would, and
@@ -275,7 +300,9 @@ func (s *Scope) Scores(ctx context.Context, revision, text string) ([]TagScore, 
 // same and then returns an error that names each text it could not embed by
 // its place among texts ("text 3 of 500") and wraps the cause.
 func (s *Scope) Warm(ctx context.Context, revision string, texts ...string) error {
-	return s.tg.e.warm(ctx, s.index, s.partition, revision, texts)
+	return s.tg.e.call(ctx, func(ctx context.Context) error {
+		return s.tg.e.warm(ctx, s.index, s.partition, revision, texts)
+	})
 }
 
 // Touch marks every embedding the space's tags are built from as used now:
@@ -285,7 +312,9 @@ func (s *Scope) Warm(ctx context.Context, revision string, texts ...string) erro
 // shares the cache (one of another Model, say), which that Tagger's Prune
 // would otherwise take for unused. An empty index is an error.
 func (s *Scope) Touch(ctx context.Context) error {
-	return s.tg.e.touch(ctx, s.index, s.partition)
+	return s.tg.e.call(ctx, func(ctx context.Context) error {
+		return s.tg.e.touch(ctx, s.index, s.partition)
+	})
 }
 
 // Prune removes from the cache, across every index, the embeddings last used
@@ -306,5 +335,10 @@ func (s *Scope) Touch(ctx context.Context) error {
 // read rewrites an entry's last-used time only once it is that stale, so a
 // more recent cutoff would remove entries read minutes ago, and is refused.
 func (t *Tagger) Prune(ctx context.Context, unusedSince time.Time, spaces ...Space) (int64, error) {
-	return t.e.prune(ctx, unusedSince, spaces)
+	var removed int64
+	err := t.e.call(ctx, func(ctx context.Context) (err error) {
+		removed, err = t.e.prune(ctx, unusedSince, spaces)
+		return err
+	})
+	return removed, err
 }
