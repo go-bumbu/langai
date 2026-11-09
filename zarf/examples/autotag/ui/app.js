@@ -173,7 +173,10 @@
     });
     const kept = r.tags.filter((t) => t.above).length;
     const how = `${r.options.language ? 'in ' + r.options.language : "in the note's language"}${tree ? ', as a tree (grey levels are your tags already)' : ''}`;
+    // a long note the model read only in part: its tags are good, some may be missing
+    const partial = r.error ? el('div', { class: 'error', title: 'recommend again to retry the windows that failed' }, r.error) : null;
     return el('div', { class: 'recs' }, ...(rows.length ? rows : [el('div', { class: 'none' }, 'the model wrote no usable tag')]),
+      partial,
       el('div', { class: 'meta' }, `${r.tags.length} written ${how}, ${kept} clear the cutoff ${r.minScore} · ${s(r.ms)}`));
   }
 

@@ -80,7 +80,8 @@ func openTagging(ctx context.Context, cfg yzma.Config, dataDir, samples string, 
 	if err != nil {
 		return fail(err)
 	}
-	return nb, func() { _ = db.Close(); closeAll() }, nil
+	// the Tagger first: it ends its rebuilds before the cache and the model go
+	return nb, func() { _ = nb.Close(); _ = db.Close(); closeAll() }, nil
 }
 
 // lazyCompleter loads the chat model on the first Complete: it is a 2.5 GB

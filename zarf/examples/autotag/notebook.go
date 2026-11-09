@@ -109,6 +109,7 @@ const (
 type Notebook struct {
 	cfg    Config
 	logger *slog.Logger
+	tagger *tagging.Tagger
 	scope  *tagging.Scope
 	mu     sync.RWMutex
 	cat    catalog
@@ -153,7 +154,7 @@ func New(ctx context.Context, cfg Config) (*Notebook, error) {
 	if err != nil {
 		return nil, fmt.Errorf("autotag: %w", err)
 	}
-	nb.scope = tg.Scope(scopeIndex, scopePartition)
+	nb.tagger, nb.scope = tg, tg.Scope(scopeIndex, scopePartition)
 
 	start := time.Now()
 	texts := make([]string, len(nb.cat.Notes))
@@ -161,11 +162,19 @@ func New(ctx context.Context, cfg Config) (*Notebook, error) {
 		texts[i] = itemText(n)
 	}
 	if err := nb.scope.Warm(ctx, revision(nb.rev), texts...); err != nil {
+		_ = tg.Close()
 		return nil, fmt.Errorf("autotag: warm the tagger: %w", err)
 	}
 	nb.logger.Info("notebook loaded", "tags", len(nb.cat.Tags), "notes", len(nb.cat.Notes), "elapsed", time.Since(start).Round(time.Millisecond))
 	return nb, nil
 }
+
+// Close stops the notebook's Tagger and waits for what it has running (a
+// rebuild after a change, a View in flight) to end, so nothing reads the
+// embedder or the cache after it: call it before closing those. Every later
+// View and LoadSamples fails with tagging.ErrClosed. It does not close the
+// Embedder, the Chat model or the Cache, which the caller made.
+func (nb *Notebook) Close() error { return nb.tagger.Close() }
 
 // revision formats a revision counter as the Tagger reads it.
 func revision(r int64) string { return strconv.FormatInt(r, 10) }
@@ -513,13 +522,20 @@ type Recommendation struct {
 	MinScore float64          `json:"minScore"`
 	Ms       int64            `json:"ms"`
 	Options  RecommendOptions `json:"options"`
+	// Error is set when the model failed on a part of a long note: Tags are
+	// those of the rest, so topics of that part may be missing (see
+	// tagging.ErrPartial).
+	Error string `json:"error,omitempty"`
 }
 
 // Recommend has a Generator write new tags for a note, as opts say. Every tag
 // the model wrote comes back, best first, those under the cutoff marked: a
 // debug view wants to see what was dropped. The first call loads the chat
 // model. A Generator keeps no state, so each call builds its own: in tree mode
-// the notebook's tags as they are now are the tree it extends.
+// the notebook's tags as they are now are the tree it extends. When the model
+// fails on some windows of a long note and not on others, the tags of the
+// windows it read come back with Recommendation.Error saying so, as a note's
+// scores do in a View; any other failure is the error of Recommend.
 func (nb *Notebook) Recommend(ctx context.Context, noteID string, opts RecommendOptions) (Recommendation, error) {
 	nb.mu.RLock()
 	i := nb.noteIndex(noteID)
@@ -548,10 +564,17 @@ func (nb *Notebook) Recommend(ctx context.Context, noteID string, opts Recommend
 	}
 	start := time.Now()
 	tags, err := gen.Generate(ctx, text, -1)
-	if err != nil {
+	partial := ""
+	switch {
+	case errors.Is(err, tagging.ErrPartial):
+		// the model failed on some windows of a long note: the tags of the
+		// others are good, so they are shown, with what went wrong
+		nb.logger.Warn("recommended tags cover a part of the note only", "note", noteID, "err", err)
+		partial = err.Error()
+	case err != nil:
 		return Recommendation{}, err
 	}
-	res := Recommendation{Tags: make([]Recommended, 0, len(tags)), MinScore: nb.cfg.Info.MinScore, Ms: time.Since(start).Milliseconds(), Options: opts}
+	res := Recommendation{Tags: make([]Recommended, 0, len(tags)), MinScore: nb.cfg.Info.MinScore, Ms: time.Since(start).Milliseconds(), Options: opts, Error: partial}
 	nb.mu.RLock()
 	defer nb.mu.RUnlock()
 	for _, t := range tags {
