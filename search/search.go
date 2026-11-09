@@ -126,9 +126,10 @@ type Match struct {
 // most limit (10 when <= 0) and one Match per document (its best-scoring
 // chunk). Hits below the WithMinScore floor are dropped, so a query with
 // nothing relevant to find can legitimately return fewer results than limit
-// — or none. An empty query returns no results.
+// — or none. An empty or blank query returns no results, and so does one
+// that embeds to the zero vector, which has no direction to rank by.
 func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Match, error) {
-	query = strings.TrimSpace(query)
+	query = strings.TrimSpace(sanitize(query))
 	if query == "" {
 		return nil, nil
 	}
@@ -138,9 +139,6 @@ func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Match, 
 	}
 	if len(vectors) != 1 {
 		return nil, fmt.Errorf("search: embedder returned %d vectors for 1 query", len(vectors))
-	}
-	if err := vector.Validate(vectors[0], ix.embedder.Dimensions()); err != nil {
-		return nil, fmt.Errorf("search: embed query: %w", err)
 	}
 	return ix.rank(ctx, vector.Query{Limit: limit, Model: ix.model}, vectors)
 }
@@ -166,7 +164,7 @@ func (ix *Index) SearchIndexed(ctx context.Context, docID string, limit int) ([]
 
 // rank runs the shared ranking over the index's collection and floor.
 func (ix *Index) rank(ctx context.Context, q vector.Query, vectors [][]float32) ([]Match, error) {
-	hits, err := rank(ctx, ix.store, ix.coord, q, vectors, ix.minScore)
+	hits, err := rank(ctx, ix.store, ix.coord, q, vectors, ix.embedder.Dimensions(), ix.minScore)
 	if err != nil {
 		return nil, err
 	}

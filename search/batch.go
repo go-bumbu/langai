@@ -74,12 +74,13 @@ func (ix *Index) IndexBatch(ctx context.Context, docs []Doc) (BatchResult, error
 	var group []pendingDoc
 	size := 0
 	for _, d := range docs {
-		hash := ix.hash(d.Text)
+		text := sanitize(d.Text)
+		hash := ix.hash(text)
 		if h, ok := stored[d.ID]; ok && h == hash {
 			res.Unchanged = append(res.Unchanged, d.ID)
 			continue
 		}
-		parts := ix.chunker.Chunk(d.Text)
+		parts := ix.chunker.Chunk(text)
 		group = append(group, pendingDoc{id: d.ID, hash: hash, parts: parts})
 		size += max(1, len(parts))
 		if size >= embedBatch {

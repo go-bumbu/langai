@@ -48,6 +48,13 @@ func settings(parts ...any) string {
 	return strings.Join(s, "\x00")
 }
 
+// sanitize makes text storable alike in every backend: invalid UTF-8 becomes
+// U+FFFD and NUL bytes are dropped, both of which a Postgres TEXT column
+// refuses while SQLite takes them.
+func sanitize(text string) string {
+	return strings.ReplaceAll(strings.ToValidUTF8(text, "�"), "\x00", "")
+}
+
 // stamp is the hash an index stores for an item: the SHA-256, hex, of the
 // settings that shaped its vectors and of its content.
 func stamp(settings string, content []byte) string {

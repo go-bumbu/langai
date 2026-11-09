@@ -26,12 +26,23 @@ type hit struct {
 // minScore left out. Each search asks for base.Limit documents and the store
 // answers one match per document, so the many chunks of one document never
 // crowd the others out. On a tie the earlier query vector wins.
-func rank(ctx context.Context, store vector.Store, c vector.Coord, base vector.Query, vectors [][]float32, minScore float64) ([]hit, error) {
+//
+// A zero vector, which has no direction to rank by, is skipped, so a query
+// that embeds to nothing but zeros finds nothing, as an empty one does; any
+// other vector the store would refuse (of other than dims entries, NaN or
+// infinite) is an error.
+func rank(ctx context.Context, store vector.Store, c vector.Coord, base vector.Query, vectors [][]float32, dims int, minScore float64) ([]hit, error) {
 	if base.Limit <= 0 {
 		base.Limit = defaultLimit
 	}
 	best := make(map[string]hit)
 	for i, v := range vectors {
+		if isZero(v) {
+			continue
+		}
+		if err := vector.Validate(v, dims); err != nil {
+			return nil, fmt.Errorf("search: query vector %d: %w", i, err)
+		}
 		q := base
 		q.Vector = v
 		raw, err := store.Search(ctx, c, q)
@@ -56,6 +67,16 @@ func rank(ctx context.Context, store vector.Store, c vector.Coord, base vector.Q
 		out = out[:base.Limit]
 	}
 	return out, nil
+}
+
+// isZero reports whether v has entries and all of them are zero.
+func isZero(v []float32) bool {
+	for _, x := range v {
+		if x != 0 {
+			return false
+		}
+	}
+	return len(v) > 0
 }
 
 // aboveFloor returns the leading matches of raw (best first) that score at

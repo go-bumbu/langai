@@ -394,7 +394,7 @@ func TestMediaIndex_MinScoreLimitAndEmptyQueries(t *testing.T) {
 }
 
 func TestMediaIndex_IndexFramesHonoursTheCallersHash(t *testing.T) {
-	ix, emb, store := newMediaIndex(t)
+	ix, emb, _ := newMediaIndex(t)
 	ctx := context.Background()
 	frames := clipFrames()[:1]
 	for range 2 {
@@ -412,19 +412,6 @@ func TestMediaIndex_IndexFramesHonoursTheCallersHash(t *testing.T) {
 	}
 	if emb.calls.Load() != 3 {
 		t.Errorf("empty hash: %d embed calls, want 3", emb.calls.Load())
-	}
-	// no frames: the hash is kept, nothing is found
-	if err := ix.IndexFrames(ctx, "empty", "h2", nil); err != nil {
-		t.Fatal(err)
-	}
-	if h, _ := store.Hashes(ctx, vector.Coord{Index: "t", Partition: "p", Collection: "c"}, "empty"); h["empty"] == "" {
-		t.Errorf("stored hashes = %v, want one for empty", h)
-	}
-	hits, _ := ix.SearchFrames(ctx, frames, 10)
-	for _, h := range hits {
-		if h.DocID == "empty" {
-			t.Errorf("an item without frames was found: %+v", hits)
-		}
 	}
 }
 

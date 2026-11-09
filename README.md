@@ -192,6 +192,12 @@ that embeds to the zero vector), by id; such a failure does not stop the others.
 embedder or store error does: it is returned, `Indexed` is exactly what was stored before
 it, and the same call again picks up where it stopped.
 
+Text is cleaned before it is chunked and hashed: invalid UTF-8 becomes U+FFFD and NUL
+bytes are dropped, which a Postgres `TEXT` column refuses and SQLite takes, so both
+backends store the same. A blank query finds nothing, and so does one that embeds to the
+zero vector, which has no direction to rank by; a document chunk that embeds to it fails
+that document, by name.
+
 "Unchanged" means the hash stored with the document matches, and that hash covers
 everything that shapes its vectors: the text, the chunker's settings and the embedding
 model (its name, when it implements `langai.Identified`, and its dimensions). A chunker
@@ -300,6 +306,12 @@ from out of its hits; a search by a file that is also indexed finds that item fi
 a score near 1. `IndexFrames` and `SearchFrames` take
 frames you extracted yourself, with your own content hash; more image formats register
 through `image.RegisterFormat`.
+
+`IndexImage` and `SearchImage` read at most 64 MiB from their reader
+(`WithMaxImageBytes`) and refuse a longer stream with `search.ErrTooLarge`, and refuse a
+picture of more than 256 megapixels before decoding it. A video the `Sampler` takes no
+frames from, or the `VideoEmbedder` no segments, is `search.ErrNoFrames` and nothing is
+stored, so the next run tries it again rather than keep an item that is never found.
 
 - **Models.** The default, `google/siglip2-base-patch16-224` (Apache-2.0, 768
   dimensions), was trained with a text tower, so its vectors can later be matched by
