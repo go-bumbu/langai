@@ -105,10 +105,10 @@ func WithMediaMinScore(min float64) MediaOption {
 // refuses another model's afterwards.
 func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, partition, collection string, opts ...MediaOption) (*MediaIndex, error) {
 	if embedder == nil {
-		return nil, errors.New("nil embedder")
+		return nil, errors.New("search: nil embedder")
 	}
 	if store == nil {
-		return nil, errors.New("nil store")
+		return nil, errors.New("search: nil store")
 	}
 	ix := &MediaIndex{
 		embedder: embedder, store: store, minScore: math.Inf(-1),
@@ -144,7 +144,7 @@ type MediaMatch struct {
 // to call eagerly.
 func (ix *MediaIndex) IndexImage(ctx context.Context, docID string, r io.Reader) error {
 	if docID == "" {
-		return errors.New("empty document id")
+		return ErrEmptyID
 	}
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -169,7 +169,7 @@ func (ix *MediaIndex) IndexImage(ctx context.Context, docID string, r io.Reader)
 // hashing the file is far cheaper than decoding it.
 func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error {
 	if docID == "" {
-		return errors.New("empty document id")
+		return ErrEmptyID
 	}
 	if ix.sampler == nil && ix.video == nil {
 		return errors.New("search: no sampler: pass WithSampler or WithVideoEmbedder to NewMediaIndex to index videos")
@@ -212,7 +212,7 @@ func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error 
 // the item is known but never found.
 func (ix *MediaIndex) IndexFrames(ctx context.Context, docID, contentHash string, frames []media.Frame) error {
 	if docID == "" {
-		return errors.New("empty document id")
+		return ErrEmptyID
 	}
 	if contentHash != "" {
 		if same, err := ix.unchanged(ctx, docID, contentHash); err != nil || same {
@@ -278,7 +278,7 @@ func (ix *MediaIndex) embed(ctx context.Context, frames []media.Frame) ([][]floa
 // error.
 func (ix *MediaIndex) Delete(ctx context.Context, docID string) error {
 	if docID == "" {
-		return errors.New("empty document id")
+		return ErrEmptyID
 	}
 	if err := ix.store.Delete(ctx, ix.coord, docID); err != nil {
 		return fmt.Errorf("search: delete %q: %w", docID, err)
@@ -343,10 +343,6 @@ func (ix *MediaIndex) SearchText(ctx context.Context, text string, limit int) ([
 	return ix.search(ctx, []queryVector{{vector: vectors[0]}}, limit)
 }
 
-// ErrNotIndexed is returned by SearchIndexed for an id with no stored
-// vectors: never indexed, deleted, or indexed with nothing to embed.
-var ErrNotIndexed = errors.New("search: no stored vectors for this id")
-
 // SearchIndexed returns the items that look most like the already indexed
 // item docID, best first, at most limit (10 when <= 0), searching with its
 // stored vectors instead of embedding the file again: no model runs, so it
@@ -354,12 +350,15 @@ var ErrNotIndexed = errors.New("search: no stored vectors for this id")
 // is a query and QueryAt is its time, as with SearchVideo. The item itself
 // comes first with a score of about 1.
 func (ix *MediaIndex) SearchIndexed(ctx context.Context, docID string, limit int) ([]MediaMatch, error) {
+	if docID == "" {
+		return nil, ErrEmptyID
+	}
 	chunks, err := ix.store.Chunks(ctx, ix.coord, docID)
 	if err != nil {
-		return nil, fmt.Errorf("search: read stored vectors: %w", err)
+		return nil, fmt.Errorf("search: read stored vectors of %q: %w", docID, err)
 	}
 	if len(chunks) == 0 {
-		return nil, ErrNotIndexed
+		return nil, fmt.Errorf("%w: %q", ErrNotIndexed, docID)
 	}
 	queries := make([]queryVector, len(chunks))
 	for i, c := range chunks {

@@ -22,6 +22,15 @@ import (
 	"github.com/go-bumbu/langai/vector"
 )
 
+var (
+	// ErrEmptyID is returned by every call that takes a document id when the
+	// id is empty, before any model or store is asked anything.
+	ErrEmptyID = errors.New("search: empty document id")
+	// ErrNotIndexed is returned by SearchIndexed for an id with no stored
+	// vectors: never indexed, deleted, or indexed with nothing to embed.
+	ErrNotIndexed = errors.New("search: no stored vectors")
+)
+
 // Index ties an Embedder, a Store and a Chunker together into the high-level
 // operations callers use: index a document, remove it, search.
 type Index struct {
@@ -61,10 +70,10 @@ func WithMinScore(min float64) Option {
 // vectors written to the collection and refuses another model's afterwards.
 func New(embedder langai.Embedder, store vector.Store, index, partition, collection string, opts ...Option) (*Index, error) {
 	if embedder == nil {
-		return nil, errors.New("nil embedder")
+		return nil, errors.New("search: nil embedder")
 	}
 	if store == nil {
-		return nil, errors.New("nil store")
+		return nil, errors.New("search: nil store")
 	}
 	// no floor by default: math.Inf(-1) rather than 0, because 0 is a
 	// meaningful cutoff on cosine backends and would silently become policy
@@ -85,7 +94,7 @@ func New(embedder langai.Embedder, store vector.Store, index, partition, collect
 // startup).
 func (ix *Index) Index(ctx context.Context, docID, text string) error {
 	if docID == "" {
-		return errors.New("empty document id")
+		return ErrEmptyID
 	}
 	hash := ContentHash(text)
 	stored, err := ix.store.Hashes(ctx, ix.coord, docID)
@@ -121,9 +130,12 @@ func (ix *Index) Index(ctx context.Context, docID, text string) error {
 // Delete removes a document from the index. Unknown ids are a no-op.
 func (ix *Index) Delete(ctx context.Context, docID string) error {
 	if docID == "" {
-		return errors.New("empty document id")
+		return ErrEmptyID
 	}
-	return ix.store.Delete(ctx, ix.coord, docID)
+	if err := ix.store.Delete(ctx, ix.coord, docID); err != nil {
+		return fmt.Errorf("search: delete %q: %w", docID, err)
+	}
+	return nil
 }
 
 // Search embeds the query and returns the closest documents, best first, at
