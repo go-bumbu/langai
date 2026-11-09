@@ -29,8 +29,11 @@ import (
 // Q8_0 through llama.cpp b11429, 4 threads on an AMD Ryzen AI 9 HX PRO 370: ten
 // documents took 6.6 to 13.2 s each (English about 7 s, Spanish 9, German 11);
 // the model wrote ten tags for each, the best scoring 0.58 to 0.68 and 6 to 10
-// of them reaching tagging.DefaultGeneratorMinScore. The floors below leave a margin for
-// another build of the model.
+// of them reaching tagging.DefaultGeneratorMinScore. Measured again on 2026-11-09 with
+// Vulkan on that machine's iGPU: 2.2 to 5.1 s each, ten tags for each, the best
+// scoring 0.58 to 0.68 and 5 to 10 of them reaching the cutoff, the same tags
+// and scores as on the commit before the reply parser was hardened. The floors
+// below leave a margin for another build of the model.
 func TestGenerateTagsWithTheDefaultModels(t *testing.T) {
 	if os.Getenv("SEMSEARCH_MODELS") == "" {
 		t.Skip("set SEMSEARCH_MODELS=1 to download and test the real models")

@@ -42,19 +42,29 @@ func (c *longCatalog) Members(context.Context, string, string, []string) (map[st
 // catalog of one name-only tag per topic label of all of them: each document
 // should get its main and side tags and not its passing mentions, nor the
 // tags of the other documents. Its suggestions are scored with
-// eval.MatchTopics: a tag counts for a topic when the cosine of their
-// RoleDocument embeddings reaches 0.75 (or one contains the other). Gated like
+// eval.MatchTopics: a tag counts for a topic when it is the topic's label or
+// an alias, or holds one or is held by one as whole words, or when the cosine
+// of its RoleDocument embedding and an alias's reaches 0.75. Gated like
 // TestGoldenTagging:
 //
 //	SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$HOME/.cache/semsearch-yzma go test ./tagging/ -run TestTaggerLongTags -v
 //
-// Measured on 2026-11-07 with EmbeddingGemma 300M Q8_0 through llama.cpp
-// b11429, Vulkan on the iGPU of an AMD Ryzen AI 9 HX PRO 370, in 17 s: main
-// recall 0.917, side recall 0.678, mention rate 0.021 (one of 54), precision
-// 0.783, F1 0.755, 8 tags per document; the mean of the pieces, the rule
-// before, had side recall 0.583 at precision 0.780, and no ChunkBytes 0.451.
-// Main recall is short of 1 because of eval.MatchTopics: a document's main
-// label is picked for every one of them. The floors sit 0.05 under this run.
+// Measured on 2026-11-09 with EmbeddingGemma 300M Q8_0 through llama.cpp
+// b11429, Vulkan on the iGPU of an AMD Ryzen AI 9 HX PRO 370, in 16 s: main
+// recall 1.000, side recall 0.897, mention rate 0.021 (one of 54), precision
+// 0.801, mean F1 0.838 (the mean of the documents' own F1), 8.0 tags per
+// document, none without tags. Without ChunkBytes: side recall 0.653,
+// precision 0.859, mean F1 0.722, 5.5 tags. At NameMinScore 0.43: side recall
+// 0.897, precision 0.849, mean F1 0.869, 7.1 tags. The floors sit 0.05 under
+// this run, rounded down.
+//
+// The same suggestions scored 0.917, 0.678 and 0.783 (F1 of the mean precision
+// and recall 0.755) on 2026-11-07, when eval.MatchTopics gave a side tag that
+// holds a main alias ("housing cooperatives") to the main topic and counted
+// the side topic as missed; the Tagger did not change, the scoring did. The
+// comparison that chose the scoring rule was made on those numbers: the mean
+// of the pieces had side recall 0.583 at precision 0.780, and 0.753 against
+// 0.892 for this rule when scored by exact label.
 func TestTaggerLongTags(t *testing.T) {
 	if os.Getenv("SEMSEARCH_MODELS") == "" {
 		t.Skip("set SEMSEARCH_MODELS=1 to run the long tagging test with the real model")
@@ -134,9 +144,9 @@ func TestTaggerLongTags(t *testing.T) {
 		m.Documents, m.Untagged, m.Recall, m.MainRecall, m.SideRecall, m.LateSideRecall, m.MentionRate, m.Precision, m.MeanF1, m.Tags)
 
 	const (
-		minMainRecall  = 0.87
-		minSideRecall  = 0.63
-		minPrecision   = 0.73
+		minMainRecall  = 0.95
+		minSideRecall  = 0.84
+		minPrecision   = 0.75
 		maxMentionRate = 0.05
 	)
 	if m.MainRecall < minMainRecall {
