@@ -261,27 +261,28 @@ func TestEnsureFile_ConcurrentCallsDownloadOnce(t *testing.T) {
 	}
 }
 
-// TestDownload_SweepsStaleTempFiles: the temp files of the old naming that a
-// killed process left are removed once they are old; a fresh one may belong
-// to a process still running the old code.
-func TestDownload_SweepsStaleTempFiles(t *testing.T) {
+// TestDownload_RemovesNothingNextToItsFile: a download's directory is the
+// caller's (a models directory, a home directory), and whatever else is in
+// it is not the download's to judge. Files that look like the temp files an
+// old version left, however old, are still there afterwards.
+func TestDownload_RemovesNothingNextToItsFile(t *testing.T) {
 	_, a := serve(t, []byte("hello"))
 	dir := t.TempDir()
-	old, fresh := filepath.Join(dir, ".download-111"), filepath.Join(dir, ".download-222")
-	for _, p := range []string{old, fresh} {
+	past := time.Now().Add(-30 * 24 * time.Hour)
+	for _, name := range []string{".download-111", ".download-222", ".partial-333", "notes.partial"} {
+		p := filepath.Join(dir, name)
 		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-	}
-	past := time.Now().Add(-2 * staleAfter)
-	if err := os.Chtimes(old, past, past); err != nil {
-		t.Fatal(err)
+		if err := os.Chtimes(p, past, past); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := dl(cap).File(context.Background(), "test", a, filepath.Join(dir, "out.bin")); err != nil {
 		t.Fatal(err)
 	}
-	if got := names(t, dir); got != ".download-222,out.bin" {
-		t.Errorf("after the sweep: %s", got)
+	if got := names(t, dir); got != ".download-111,.download-222,.partial-333,notes.partial,out.bin" {
+		t.Errorf("next to the download: %s", got)
 	}
 }
 

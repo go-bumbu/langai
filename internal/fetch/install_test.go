@@ -241,36 +241,158 @@ func TestInstallDir_ConcurrentCallsInstallOnce(t *testing.T) {
 	}
 }
 
-// TestInstallDir_ReadyErrorAndLeftovers: a Ready that refuses stops the
-// install before anything is fetched, and what a killed install left next
-// to the directory (its staging, the directory it was replacing, a staging
-// directory of the old naming) is cleared.
-func TestInstallDir_ReadyErrorAndLeftovers(t *testing.T) {
-	a := libArchive(t)
-	parent := t.TempDir()
-	dir := filepath.Join(parent, "1.0")
-	for _, left := range []string{dir + stagingSuffix, dir + retiredSuffix, filepath.Join(parent, ".partial-123"), filepath.Join(parent, ".partial-fresh")} {
-		mkdir(t, left)
-		write(t, filepath.Join(left, "junk"), "x")
+// siblings puts next to dir what could be taken for an install's leftovers
+// and is not: directories under the names an older version used for its
+// staging and its retired directory (a user's "libs.old" backup has that
+// name too), a staging directory of the oldest naming, and directories under
+// today's names that carry no marker. Each holds a file that must survive.
+// It returns the files.
+func siblings(t *testing.T, dir string) []string {
+	t.Helper()
+	var precious []string
+	for _, d := range []string{dir + ".old", dir + ".staging", filepath.Join(filepath.Dir(dir), ".partial-123")} {
+		mkdir(t, d)
+		p := filepath.Join(d, "precious.txt")
+		write(t, p, "mine")
+		precious = append(precious, p)
+		past := time.Now().Add(-30 * 24 * time.Hour)
+		if err := os.Chtimes(d, past, past); err != nil {
+			t.Fatal(err)
+		}
 	}
-	past := time.Now().Add(-2 * staleAfter)
-	if err := os.Chtimes(filepath.Join(parent, ".partial-123"), past, past); err != nil {
-		t.Fatal(err)
+	return precious
+}
+
+// TestInstallDir_NeverTouchesWhatItDoesNotOwn: the directory's parent is
+// the caller's (with LibDir "~/llama" it is the home directory), so nothing
+// next to the directory is removed for looking like a leftover. A call that
+// finds the directory ready changes nothing at all, not even a real
+// leftover; one that refuses does not either; and one that installs clears
+// only what carries this package's marker or the install's record.
+func TestInstallDir_NeverTouchesWhatItDoesNotOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// ready is what Ready answers before the install; nil means the
+		// directory's own state
+		ready func() (bool, error)
+		// installs says whether the call fills the directory
+		installs bool
+	}{
+		{name: "the directory is ready", ready: func() (bool, error) { return true, nil }},
+		{name: "the install is refused", ready: func() (bool, error) { return false, errors.New("in use") }},
+		{name: "the directory is installed", installs: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := libArchive(t)
+			parent := t.TempDir()
+			dir := filepath.Join(parent, "libs")
+			precious := siblings(t, dir)
+			// a killed install's own leftovers: marked staging, a retired
+			// directory with the record
+			mkdir(t, dir+stagingSuffix)
+			write(t, filepath.Join(dir+stagingSuffix, markerFile), "")
+			write(t, filepath.Join(dir+stagingSuffix, "libhalf.so"), "half")
+			mkdir(t, dir+retiredSuffix)
+			write(t, filepath.Join(dir+retiredSuffix, testRecord), "{}")
+
+			in := install(dir, a)
+			if tc.ready != nil {
+				in.Ready = tc.ready
+			}
+			installed, _ := dl(cap).InstallDir(context.Background(), in)
+			if installed != tc.installs {
+				t.Fatalf("installed = %v, want %v", installed, tc.installs)
+			}
+			for _, p := range precious {
+				if got, _ := os.ReadFile(p); string(got) != "mine" {
+					t.Errorf("%s is gone", p)
+				}
+			}
+			after := names(t, parent)
+			if !tc.installs {
+				if want := ".partial-123,libs.langai-retired,libs.langai-staging,libs.lock,libs.old,libs.staging"; after != want {
+					t.Errorf("next to the directory: %s\nwant                   %s", after, want)
+				}
+				return
+			}
+			if want := ".partial-123,libs,libs.lock,libs.old,libs.staging"; after != want {
+				t.Errorf("after the install: %s\nwant               %s", after, want)
+			}
+			if got := names(t, dir); got != testRecord+",libx.so,libx.so.1" {
+				t.Errorf("installed %s", got)
+			}
+		})
 	}
+}
+
+// TestInstallDir_LeftoversOfItsOwnNames: a directory under one of this
+// package's own sibling names is cleared when it is a leftover of an install
+// (it carries the marker or the record, or is empty) and stops the install,
+// untouched and before the download, when it is anything else.
+func TestInstallDir_LeftoversOfItsOwnNames(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		suffix  string
+		files   map[string]string
+		refused bool
+	}{
+		{name: "staging with the marker", suffix: stagingSuffix, files: map[string]string{markerFile: "", "libhalf.so": "half"}},
+		{name: "staging with the record", suffix: stagingSuffix, files: map[string]string{testRecord: "{}", "libx.so": "x"}},
+		{name: "empty staging", suffix: stagingSuffix},
+		{name: "retired with the record", suffix: retiredSuffix, files: map[string]string{testRecord: "{}", "libold.so": "old"}},
+		{name: "empty retired", suffix: retiredSuffix},
+		{name: "someone's files under the staging name", suffix: stagingSuffix, files: map[string]string{"notes.txt": "mine"}, refused: true},
+		{name: "someone's files under the retired name", suffix: retiredSuffix, files: map[string]string{"notes.txt": "mine"}, refused: true},
+		{name: "a directory called like the marker", suffix: stagingSuffix, files: map[string]string{"notes.txt": "mine", markerFile + "/x": "x"}, refused: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, requests := countedArchive(t)
+			parent := t.TempDir()
+			dir := filepath.Join(parent, "libs")
+			mkdir(t, dir)
+			write(t, filepath.Join(dir, testRecord), "{}") // an earlier install, to be replaced
+			in := install(dir, a)
+			in.Ready = nil
+			left := dir + tc.suffix
+			mkdir(t, left)
+			for name, content := range tc.files {
+				mkdir(t, filepath.Dir(filepath.Join(left, name)))
+				write(t, filepath.Join(left, name), content)
+			}
+			_, err := dl(cap).InstallDir(context.Background(), in)
+			if !tc.refused {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := names(t, parent); got != "libs,libs.lock" {
+					t.Errorf("after the install: %s", got)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), filepath.Base(left)) {
+				t.Fatalf("err = %v, want a refusal naming %s", err, filepath.Base(left))
+			}
+			if requests.Load() != 0 {
+				t.Error("the archive was downloaded before the refusal")
+			}
+			if got, _ := os.ReadFile(filepath.Join(left, "notes.txt")); string(got) != "mine" {
+				t.Error("the foreign file is gone")
+			}
+			if got := names(t, dir); got != testRecord {
+				t.Errorf("the directory was changed: %s", got)
+			}
+		})
+	}
+	// a plain file under one of the names is nobody's leftover either
+	a, requests := countedArchive(t)
+	dir := filepath.Join(t.TempDir(), "libs")
+	write(t, dir+retiredSuffix, "mine")
 	in := install(dir, a)
-	boom := errors.New("in use")
-	in.Ready = func() (bool, error) { return false, boom }
-	if _, err := dl(cap).InstallDir(context.Background(), in); !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want Ready's", err)
+	if _, err := dl(cap).InstallDir(context.Background(), in); err == nil || requests.Load() != 0 {
+		t.Errorf("a file at the retired name: err = %v after %d downloads, want a refusal before any", err, requests.Load())
 	}
-	if got := names(t, parent); got != ".partial-fresh,1.0.lock" {
-		t.Errorf("after a refused install: %s", got)
-	}
-	if _, err := dl(cap).InstallDir(context.Background(), install(dir, a)); err != nil {
-		t.Fatal(err)
-	}
-	if got := names(t, parent); got != ".partial-fresh,1.0,1.0.lock" {
-		t.Errorf("after the install: %s", got)
+	if got, _ := os.ReadFile(dir + retiredSuffix); string(got) != "mine" {
+		t.Error("the file at the retired name is gone")
 	}
 }
 

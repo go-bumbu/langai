@@ -13,6 +13,12 @@
 // turns, and it survives an interrupted run: the next one asks the server
 // for the rest with a Range request and verifies the whole against the
 // pinned digest.
+//
+// The directories all this happens in are the caller's, and may hold
+// anything. The package writes only under names derived from the
+// destination ("<dest>.partial", "<dir>.lock", "<dir>.langai-download",
+// "<dir>.langai-staging", "<dir>.langai-retired") and removes only what it
+// wrote or what carries its marker: nothing is swept for its name or age.
 package fetch
 
 import (
@@ -33,18 +39,9 @@ import (
 	"time"
 )
 
-const (
-	// partialSuffix is appended to a destination to name the file its
-	// download is written to.
-	partialSuffix = ".partial"
-	// staleDownloadPrefix is how downloads were named before they became
-	// resumable: a random temp file per attempt, which a killed process left
-	// behind for good.
-	staleDownloadPrefix = ".download-"
-	// staleAfter is how old such a leftover must be before it is removed: no
-	// download of that naming ran longer than an hour.
-	staleAfter = 2 * time.Hour
-)
+// partialSuffix is appended to a destination to name the file its download
+// is written to.
+const partialSuffix = ".partial"
 
 // Asset is one downloadable file with its expected digest.
 type Asset struct {
@@ -174,7 +171,6 @@ func (d Downloader) download(ctx context.Context, what string, a Asset, dest str
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", 0, false, err
 	}
-	sweepStale(dir, staleDownloadPrefix)
 	release, err := inProcess.acquire(ctx, dest)
 	if err != nil {
 		return "", 0, false, err
@@ -243,27 +239,6 @@ func syncDir(dir string) {
 	}
 	_ = d.Sync()
 	_ = d.Close()
-}
-
-// sweepStale removes the entries of dir whose names start with prefix and
-// that have not been touched for staleAfter: the temp files and staging
-// directories of the naming used before downloads became resumable, which
-// nothing else ever cleans up.
-func sweepStale(dir, prefix string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), prefix) {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil || time.Since(info.ModTime()) < staleAfter {
-			continue
-		}
-		_ = os.RemoveAll(filepath.Join(dir, e.Name()))
-	}
 }
 
 // transferVerified fills part with a's content and checks it. When the

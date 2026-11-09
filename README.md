@@ -149,7 +149,13 @@ go get github.com/go-bumbu/langai
   an earlier install left its record in, is filled or replaced; anything else is an
   error, never a deletion. Installs take a lock file next to it (`<LibDir>.lock`), so
   goroutines and processes that start together download once and none loads a
-  half-installed library. Libraries a process has loaded are never replaced under it:
+  half-installed library. An install works next to the directory, under
+  `<LibDir>.langai-download`, `<LibDir>.langai-staging` and `<LibDir>.langai-retired`,
+  and nothing else in the parent directory is its business: an open that finds the
+  libraries in place writes nothing but the lock file, and what a killed install left
+  under those names is cleared only when it carries the install's marker or record
+  (anything else there stops the install with an error). A `libs.old` of yours stays.
+  Libraries a process has loaded are never replaced under it:
   asking by name for another build in the same process (`AccelCPU` first and
   `AccelVulkan` later, `ProviderCPU` and then `ProviderCUDA`) is an error, so open the
   most capable one first; `Accel` left empty keeps what is loaded.
