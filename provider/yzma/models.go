@@ -57,6 +57,7 @@ func pinnedModels() []pinnedModel {
 			asset: asset{
 				URL:    "https://huggingface.co/TwinSunsLLC/multilingual-e5-small-gguf/resolve/main/multilingual-e5-small-q8_0.gguf",
 				SHA256: "e011debc1208e31bf7b6aebee2d9fc8bd2ca11694a77ed66ac9d0c9d0a877c93",
+				Size:   132439008,
 			},
 			pooling:        PoolingMean,
 			queryPrefix:    "query: ",
@@ -69,6 +70,7 @@ func pinnedModels() []pinnedModel {
 			asset: asset{
 				URL:    "https://huggingface.co/smarttasks/bge-m3-GGUF/resolve/main/bge-m3-Q8_0.gguf",
 				SHA256: "aa473d51f451a22f0fcf39ba3330c14bed38a385712b1113440f69df4047a173",
+				Size:   634553760,
 			},
 			pooling: PoolingCLS,
 			dims:    1024,
@@ -79,6 +81,7 @@ func pinnedModels() []pinnedModel {
 			asset: asset{
 				URL:    "https://huggingface.co/ggml-org/Nomic-Embed-Text-V2-GGUF/resolve/main/nomic-embed-text-v2-moe-q8_0.gguf",
 				SHA256: "36c5817bc25f379e62021f49efde05b10ed3b0c93ab8059c43173a7a5de73565",
+				Size:   512225120,
 			},
 			pooling:        PoolingMean,
 			queryPrefix:    "search_query: ",

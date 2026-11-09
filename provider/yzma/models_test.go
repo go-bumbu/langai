@@ -54,6 +54,15 @@ func TestNew_RunsTheSelectedModel(t *testing.T) {
 	if err := os.WriteFile(modelPath, []byte("GGUF fake model"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// a file of another length than the pin's is a truncated download, which
+	// New would fetch again: the stand-in is as long as the real one, sparse
+	spec, err := LookupSpec("intfloat/multilingual-e5-small", modelsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(modelPath, spec.Size); err != nil {
+		t.Fatal(err)
+	}
 	e, err := New(context.Background(), Config{
 		Runtime:   Runtime{LibDir: rt.LibDir, ManagedLibDir: rt.ManagedLibDir, Threads: rt.Threads},
 		Model:     "intfloat/multilingual-e5-small",
