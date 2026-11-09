@@ -25,6 +25,8 @@ package yzma
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -41,7 +43,8 @@ import (
 // DefaultModel is the logical identity of the model New runs unless
 // Config.Model selects another: google/embeddinggemma-300m, a multilingual
 // encoder producing 768-dimensional vectors, trained with a prompt per role.
-// It is the string to cache alongside vectors (see tagging.TaggerConfig.Model); the
+// It is the name the identity to store next to vectors starts with (see
+// Embedder.Model and tagging.TaggerConfig.Model); the
 // GGUF file behind it is defaultModelAsset in fetch.go.
 const DefaultModel = "google/embeddinggemma-300m"
 
@@ -137,7 +140,8 @@ type Config struct {
 // from) and how it must be run. Spec returns the pinned ones New selects
 // from; the evaluation command builds others from its models file.
 type ModelSpec struct {
-	// Name is the logical identity cached alongside vectors.
+	// Name names the model. It is the first part of the identity to store
+	// next to vectors, which Embedder.Model completes.
 	Name string
 	// File is the GGUF path. When it is missing and URL is set, it is
 	// downloaded there first.
@@ -326,6 +330,7 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 		return nil, err
 	}
 	e.accel = b.accel
+	e.model = embedderModel(spec.Name, pooling, spec.QueryPrefix, spec.DocumentPrefix)
 	if spec.Dims != 0 && e.Dimensions() != spec.Dims {
 		_ = e.Close()
 		return nil, fmt.Errorf("yzma: model %q produces %d-dimensional vectors, its spec says %d", spec.Name, e.Dimensions(), spec.Dims)
@@ -361,6 +366,7 @@ type Embedder struct {
 	queryPrefix    string
 	documentPrefix string
 	accel          string // what runs the model, see Accel
+	model          string // the identity of its vectors, see Model
 }
 
 // verify the interface is actually satisfied
@@ -388,6 +394,39 @@ func (e *Embedder) Dimensions() int { return e.dims }
 // Accel says what runs the model, as the load log line does: "cpu" or the
 // GPU device.
 func (e *Embedder) Accel() string { return e.accel }
+
+// Model identifies the vectors this Embedder produces: the string to store
+// next to them (see tagging.TaggerConfig.Model), the same on every run and
+// different whenever the vectors would be. It is the spec's name followed
+// by what else decides the vector of a text:
+//
+//	<ModelSpec.Name>;pooling=<mean|cls|last>;prefixes=<id>
+//
+// where <id> is "none" for a model without prefixes and otherwise the first
+// eight hex digits of the SHA-256 of the query prefix, a NUL byte and the
+// document prefix. The default model is
+// "google/embeddinggemma-300m;pooling=mean;prefixes=<id>". What does not
+// move a vector (threads, the accelerator, the library directory) is not
+// part of it; neither is the GGUF file, so two quantizations of one model
+// need two names.
+func (e *Embedder) Model() string { return e.model }
+
+// embedderModel builds the identity Model documents.
+func embedderModel(name string, pooling Pooling, queryPrefix, documentPrefix string) string {
+	prefixes := "none"
+	if queryPrefix != "" || documentPrefix != "" {
+		prefixes = shortDigest(queryPrefix, documentPrefix)
+	}
+	return name + ";pooling=" + string(pooling) + ";prefixes=" + prefixes
+}
+
+// shortDigest is the first eight hex digits of the SHA-256 of the parts
+// joined by NUL bytes: enough to tell settings apart in an identity string
+// without spelling them out.
+func shortDigest(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:4])
+}
 
 // Embed implements langai.Embedder: each text gets the role's prefix and
 // is encoded on its own.

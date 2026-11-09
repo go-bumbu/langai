@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -82,7 +83,8 @@ type VisionConfig struct {
 // VisionSpec describes one vision embedding model: the language model GGUF,
 // the projector GGUF (the vision tower), and where both come from.
 type VisionSpec struct {
-	// Name is the logical identity cached alongside vectors.
+	// Name names the model. It is the first part of the identity to store
+	// next to vectors, which Vision.Model completes.
 	Name string
 	// File is the model GGUF path; when missing and URL is set, it is
 	// downloaded there first, verified against SHA256 and Size.
@@ -338,6 +340,7 @@ type Vision struct {
 	fps         float64
 	maxSegments int
 	accel       string
+	id          string // the identity of its vectors, see Model
 	closed      bool
 }
 
@@ -430,6 +433,8 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 		v.release()
 		return nil, fmt.Errorf("yzma: vision model %q produces %d-dimensional vectors, its spec says %d", spec.Name, v.dims, spec.Dims)
 	}
+	v.id = fmt.Sprintf("%s;instruction=%s;dims=%d;image_tokens=%d-%d;fps=%s;segment=%s", spec.Name, shortDigest(v.instruction),
+		v.dims, cfg.ImageMinTokens, cfg.ImageMaxTokens, strconv.FormatFloat(v.fps, 'g', -1, 64), v.segment)
 	return v, nil
 }
 
@@ -459,6 +464,24 @@ func (v *Vision) Accel() string { return v.accel }
 
 // SegmentLength is how much of a video goes through the model at once.
 func (v *Vision) SegmentLength() time.Duration { return v.segment }
+
+// Model identifies the vectors this Vision produces: the string to store
+// next to them, the same on every run and different whenever the vector of
+// some input would be. It is the spec's name followed by what else decides
+// a vector:
+//
+//	<VisionSpec.Name>;instruction=<id>;dims=<n>;image_tokens=<min>-<max>;fps=<f>;segment=<duration>
+//
+// <id> is the first eight hex digits of the SHA-256 of the instruction,
+// which sets the space every input lands in; dims is the vector length;
+// image_tokens are ImageMinTokens and ImageMaxTokens, 0 for the model's
+// own, which set the resolution a picture is seen at; fps and segment (as
+// time.Duration prints it) set what a video segment holds. With the
+// defaults that is
+// "Qwen/Qwen3-VL-Embedding-2B;instruction=<id>;dims=2048;image_tokens=0-0;fps=1;segment=20s".
+// The context size, MaxSegments, the threads and the accelerator are not
+// part of it: they do not move the vector of anything that is embedded.
+func (v *Vision) Model() string { return v.id }
 
 // Close frees the projector, the model and its context; a later call
 // fails. Closing twice is a no-op.

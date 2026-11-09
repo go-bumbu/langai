@@ -36,8 +36,9 @@ import (
 // DefaultModel is the logical identity of the model New runs unless
 // Config.Model selects another: the vision tower of google/siglip2-base-patch16-224,
 // a 768-dimensional image encoder trained with a text tower, so its vectors
-// can later be matched by text too. It is the string to cache alongside
-// vectors; the ONNX file behind it is in models.go.
+// can later be matched by text too. It is the name the identity to store next
+// to vectors starts with (see Embedder.Model); the ONNX file behind it is in
+// models.go.
 const DefaultModel = "google/siglip2-base-patch16-224"
 
 // Provider selects what runs the model.
@@ -169,7 +170,8 @@ type Config struct {
 // it, which must match what the model was trained with. Spec returns the
 // pinned ones New selects from.
 type ModelSpec struct {
-	// Name is the logical identity cached alongside vectors.
+	// Name names the model. It is the first part of the identity to store
+	// next to vectors, which Embedder.Model completes.
 	Name string
 	// File is the ONNX path. When it is missing and URL is set, it is
 	// downloaded there first.
@@ -401,10 +403,29 @@ type Embedder struct {
 	batch   int
 	pooling Pooling
 	pre     preprocessor
+	model   string // the identity of its vectors, see Model
 }
 
 // verify the interface is actually satisfied
 var _ langai.ImageEmbedder = (*Embedder)(nil)
+
+// preparation numbers the way this package turns a picture into the model's
+// input, beyond what a ModelSpec says. It is part of Model, and is raised
+// whenever the same picture and spec would give other pixels:
+//
+//	1: transparent pixels scaled as premultiplied colour, which made them black
+//	2: transparency composed on white (imageutil.ScaleOnWhite)
+const preparation = 2
+
+// modelID builds the identity Model documents from a normalized spec.
+func modelID(spec ModelSpec) string {
+	triple := func(v [3]float32) string {
+		return fmt.Sprintf("%g,%g,%g", v[0], v[1], v[2])
+	}
+	return fmt.Sprintf("%s;output=%s;pooling=%s;side=%d;resize=%s;edge=%d;filter=%s;mean=%s;std=%s;prep=%d",
+		spec.Name, spec.Output, spec.Pooling, spec.Side, spec.Resize, spec.ShortestEdge, spec.Interpolation,
+		triple(spec.Mean), triple(spec.Std), preparation)
+}
 
 // newEmbedder wraps a session and runs it once on a blank picture, which
 // catches a provider that was accepted but cannot run, and settles the
@@ -418,7 +439,7 @@ func newEmbedder(s session, spec ModelSpec, dims, batch int) (*Embedder, error) 
 	if dims == 0 {
 		dims = spec.Dims
 	}
-	e := &Embedder{s: s, dims: dims, batch: batch, pooling: spec.Pooling, pre: preprocessor{
+	e := &Embedder{s: s, dims: dims, batch: batch, pooling: spec.Pooling, model: modelID(spec), pre: preprocessor{
 		side: spec.Side, shortestEdge: spec.ShortestEdge, resize: spec.Resize, interpolation: spec.Interpolation,
 		mean: spec.Mean, std: spec.Std,
 	}}
@@ -438,6 +459,21 @@ func newEmbedder(s session, spec ModelSpec, dims, batch int) (*Embedder, error) 
 
 // Dimensions implements langai.ImageEmbedder.
 func (e *Embedder) Dimensions() int { return e.dims }
+
+// Model identifies the vectors this Embedder produces: the string to store
+// next to them, the same on every run and different whenever the vector of
+// a picture would be. It is the spec's name followed by what else decides
+// a vector, the tensor that is read and how a picture is prepared:
+//
+//	<ModelSpec.Name>;output=<tensor>;pooling=<none|cls|mean>;side=<n>;resize=<squash|crop>;edge=<n>;filter=<bilinear|bicubic>;mean=<r>,<g>,<b>;std=<r>,<g>,<b>;prep=<n>
+//
+// with the spec's defaults filled in (edge is ShortestEdge) and prep the
+// number of this package's own picture preparation, which goes up when a
+// release changes the pixels a picture becomes. The default model is
+// "google/siglip2-base-patch16-224;output=pooler_output;pooling=none;side=224;resize=squash;edge=224;filter=bilinear;mean=0.5,0.5,0.5;std=0.5,0.5,0.5;prep=2".
+// The provider, threads and batch size are not part of it, and neither is
+// the ONNX file, so two exports of one model need two names.
+func (e *Embedder) Model() string { return e.model }
 
 // EmbedImages implements langai.ImageEmbedder: the pictures go through the
 // model BatchSize at a time, and each comes back as a unit-length vector.

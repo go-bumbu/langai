@@ -294,6 +294,14 @@ All three behave alike:
 - **`Close` releases the model.** It cancels a load in progress and waits for it, closes
   the loaded model when it has a `Close`, and makes every waiting and later call fail.
 
+`Model()` on `yzma.Embedder`, `yzma.Vision` and `onnx.Embedder` is the identity of the
+vectors they produce, the string to store next to them: the model's name followed by
+what else decides a vector (the pooling and the prefixes for a text model; the
+instruction, the image token bounds and the video sampling for `Vision`; the tensor and
+the picture preparation for an ONNX model). It is the same on every run and changes
+whenever a vector would, so vectors stored under another identity are stale. A call on
+a closed provider returns an error that wraps `langai.ErrClosed`.
+
 ### Image and video search
 
 ```go
