@@ -41,9 +41,11 @@
 // one rebuild of a space at a time. A rebuild that fails returns an error wrapping ErrNotRebuilt and leaves the
 // index as it was, so the next call tries again; texts are embedded and cached
 // a batch at a time, so it embeds only what is still missing. A member's text
-// the embedder cannot take is left out of its tag and reported to
-// TaggerConfig.Logger instead of failing the rebuild. Losing the cache or the
-// index costs time, never correctness.
+// the embedder cannot take, while it takes others, is left out of its tag,
+// reported to TaggerConfig.Logger and listed by Scope.Incomplete instead of
+// failing the rebuild; an embedder that is down fails it, so an outage is
+// never recorded as a rebuild. Losing the cache or the index costs time, never
+// correctness.
 //
 // A Generator starts from nothing: a language model (a langai.Completer)
 // proposes tags for the text, an embedding model (a langai.Embedder) scores

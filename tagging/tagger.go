@@ -75,8 +75,10 @@ const longRule = "best"
 // a call: a member text it left out of its tag because the embedder failed on
 // it or answered with a vector that is no use (with the index, the partition,
 // the tag's id, and the SHA-256 and length of the text, which is not logged
-// itself), and a cache it could read but not write. Nil discards them. It is
-// no scoring setting: Taggers that differ only in it share a TagIndex freely.
+// itself), and a cache it could read but not write. Nil discards them; the
+// tags built without a member are listed by Scope.Incomplete all the same. It
+// is no scoring setting: Taggers that differ only in it share a TagIndex
+// freely.
 type TaggerConfig struct {
 	Model          string
 	NameMinScore   float64
@@ -198,17 +200,25 @@ func checkConfig(cfg TaggerConfig) (TaggerConfig, string, error) {
 
 // ErrNotRebuilt is wrapped, together with its cause, by the error of a
 // Suggest, Scores or Warm that could not bring its space up to the revision it
-// was given: the Catalog failed during the rebuild, or the embedder failed on
-// a tag's name, which the error then names by the tag's id. The call returns
-// nothing. The index is left as it was and the revision unrecorded, so the
-// next call diffs again; texts are embedded and cached in batches, so what
-// was embedded before the failure stays cached and the next call embeds only
-// what is missing. Test for it with errors.Is.
+// was given: the Catalog failed during the rebuild, the embedder failed on a
+// tag's name, which the error then names by the tag's id, or the embedder is
+// down. The call returns nothing. The index is left as it was and the
+// revision unrecorded, so the next call diffs again; texts are embedded and
+// cached in batches, so what was embedded before the failure stays cached and
+// the next call embeds only what is missing. Test for it with errors.Is.
 //
-// The embedder failing on a member's text is not such a failure: the member
-// is left out of its tag, which is built from its name and its other members,
-// and reported to TaggerConfig.Logger; the tag is built again at the space's
-// next revision, when the member gets another try.
+// The embedder failing on one member's text while it takes others is not such
+// a failure: the member is left out of its tag, which is built from its name
+// and its other members, and reported to TaggerConfig.Logger; the tag is
+// listed by Scope.Incomplete and built again at the space's next revision,
+// when the member gets another try. A member is only left out on evidence
+// that the embedder itself works: it answered with a vector that is no use,
+// or an Embed after the one that failed worked, of a later text or, when
+// there is none, of the tag's name embedded once more as a canary. An
+// embedder that fails on that too is down, and so is one whose error wraps
+// langai.ErrClosed, context.Canceled or context.DeadlineExceeded, which no
+// text is to blame for: the rebuild fails with the embedder's error, after a
+// handful of Embed calls rather than one per text, and records nothing.
 var ErrNotRebuilt = errors.New("tagging: tag not rebuilt")
 
 // Scope is a handle on one space of tags: its index is the hard isolation
@@ -297,13 +307,34 @@ func (s *Scope) Scores(ctx context.Context, revision, text string) ([]TagScore, 
 //
 // The texts are embedded and cached a batch at a time, so a Warm that fails or
 // is cancelled keeps what it had done and the next one embeds the rest. A text
-// the embedder fails on does not stop the others: Warm embeds them all the
-// same and then returns an error that names each text it could not embed by
-// its place among texts ("text 3 of 500") and wraps the cause.
+// the embedder fails on while it takes others does not stop them: Warm embeds
+// them all the same and then returns an error that names each text it could
+// not embed by its place among texts ("text 3 of 500") and wraps the cause.
+// An embedder that is down (it is closed, or it fails on every text it is
+// given, one it took a moment ago included) ends the Warm with its error
+// after a handful of calls, not one per text.
 func (s *Scope) Warm(ctx context.Context, revision string, texts ...string) error {
 	return s.tg.e.call(ctx, func(ctx context.Context) error {
 		return s.tg.e.warm(ctx, s.index, s.partition, revision, texts)
 	})
+}
+
+// Incomplete returns the ids, sorted, of the space's tags that were last built
+// without one or more of their members, because the embedder could not take
+// the member's text (see ErrNotRebuilt): each is built from its name and its
+// other members, and suggests on that until the space's next revision, when
+// the members left out get another try. It is how an application without a
+// TaggerConfig.Logger sees that a member was skipped: check it after a Warm,
+// say, and change the space's revision to try again sooner. It reads the
+// TagIndex only, so it is nil for a space that was never built, or that the
+// index evicted. An empty index is an error.
+func (s *Scope) Incomplete(ctx context.Context) ([]string, error) {
+	var ids []string
+	err := s.tg.e.call(ctx, func(ctx context.Context) (err error) {
+		ids, err = s.tg.e.incomplete(ctx, s.index, s.partition)
+		return err
+	})
+	return ids, err
 }
 
 // Touch marks every embedding the space's tags are built from as used now:

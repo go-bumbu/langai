@@ -97,7 +97,7 @@ func (e *engine) scores(ctx context.Context, index, partition, revision, text st
 	if strings.TrimSpace(text) == "" {
 		return nil, errBlankText
 	}
-	vecs, failed, err := e.itemVectors(ctx, index, []string{text})
+	vecs, failed, err := e.itemVectors(ctx, index, []string{text}, "")
 	if err != nil {
 		return nil, err
 	}
@@ -141,8 +141,10 @@ func (e *engine) candidates(ctx context.Context, index, partition, revision stri
 
 // warm brings the space up to revision (see refresh) and caches the vectors
 // of texts, the blank ones skipped, so no later scores pays for them. A text
-// the embedder fails on does not stop the others: they are embedded and
-// cached, and the error names each one that was not by its place in texts.
+// the embedder fails on while it takes others does not stop them: they are
+// embedded and cached, and the error names each one that was not by its place
+// in texts. An embedder that is down ends the call with its error (see
+// vectors).
 func (e *engine) warm(ctx context.Context, index, partition, revision string, texts []string) error {
 	if err := checkSpace(index, revision); err != nil {
 		return err
@@ -150,7 +152,7 @@ func (e *engine) warm(ctx context.Context, index, partition, revision string, te
 	if err := e.refresh(ctx, index, partition, revision); err != nil {
 		return err
 	}
-	_, failed, err := e.itemVectors(ctx, index, nonBlank(texts))
+	_, failed, err := e.itemVectors(ctx, index, nonBlank(texts), "")
 	if err != nil || len(failed) == 0 {
 		return err
 	}
@@ -346,14 +348,17 @@ func (e *engine) diff(ctx context.Context, index, partition string, held map[str
 // asked for are ignored, and blank texts skipped. A member enters as one
 // vector (see memberVector).
 //
-// A member whose text could not be embedded is left out, reported to the
-// Logger, and marks its tag to be built again at the next revision (see
+// A member whose text the embedder could not take is left out, reported to
+// the Logger, and marks its tag to be built again at the next revision (see
 // skippedMark): one text the embedder cannot take must not keep a whole space
-// from being built. A name that could not be embedded leaves its tag with
-// nothing to be built from, so it is an error naming the tag, and so is a
-// member with a vector not as long as the tag's name vector, which blend and
-// tagCutoff index one by the other. Everything else is embedded and cached
-// before either error is returned.
+// from being built. That is only so while the embedder works, which a later
+// text of the call, or else the first tag's name as the canary, has to show
+// (see embedRun): an embedder that is down fails the build, so that an outage
+// is never recorded as a space built from its names alone. A name that could
+// not be embedded leaves its tag with nothing to be built from, so it is an
+// error naming the tag, and so is a member with a vector not as long as the
+// tag's name vector, which blend and tagCutoff index one by the other.
+// Everything else is embedded and cached before either error is returned.
 func (e *engine) build(ctx context.Context, index, partition string, tags []TagVector) error {
 	ids, names := make([]string, len(tags)), make([]string, len(tags))
 	for i, t := range tags {
@@ -369,11 +374,11 @@ func (e *engine) build(ctx context.Context, index, partition string, tags []TagV
 		members[id] = nonBlank(got[id])
 		texts = append(texts, members[id]...)
 	}
-	items, skipped, err := e.itemVectors(ctx, index, texts)
+	items, skipped, err := e.itemVectors(ctx, index, texts, names[0])
 	if err != nil {
 		return err
 	}
-	nameVecs, unnamed, err := e.vectors(ctx, index, langai.RoleDocument, names)
+	nameVecs, unnamed, err := e.vectors(ctx, index, langai.RoleDocument, names, "")
 	if err != nil {
 		return err
 	}
@@ -424,6 +429,26 @@ func (e *engine) buildTag(index, partition string, t *TagVector, nameVec []float
 	t.Vec = blend(nameVec, vecs, k)
 	t.Cutoff = storedCutoff(tagCutoff(nameVec, vecs, k, e.cfg.NameMinScore, e.cfg.MemberMinScore))
 	return nil
+}
+
+// incomplete is Scope.Incomplete: the ids, sorted, of the tags the index
+// holds under a fingerprint that ends in skippedMark.
+func (e *engine) incomplete(ctx context.Context, index, partition string) ([]string, error) {
+	if index == "" {
+		return nil, errEmptyIndex
+	}
+	_, held, _, err := e.ix.State(ctx, index, partition)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for id, fp := range held {
+		if strings.HasSuffix(fp, skippedMark) {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids, nil
 }
 
 // nonBlank returns the texts that are not blank, in order.

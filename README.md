@@ -515,7 +515,8 @@ pictures and clips, and an image finds the stretch of a video it appears in.
    2. The library embeds the text, using the cache with the text's hash as the key.
    3. The library keeps an in-memory index of tag vectors. When the revision changes, it
       rebuilds the changed tags from the `Catalog` and the cached embeddings. A member
-      text that cannot be embedded is left out and logged.
+      text the embedder cannot take is left out, logged and listed by `Incomplete`; an
+      embedder that is down fails the rebuild instead.
    4. A tag vector is its name blended with the average of its members' vectors, and
       each tag has its own cutoff.
    5. The library compares the text's vector with every tag vector by cosine.
@@ -691,19 +692,31 @@ How a tag is judged:
   wrapping `langai.ErrClosed`.
 - **A failure keeps what was done.** Texts go to the embedder 32 at a time and each batch
   is cached as it comes back, so a rebuild or a `Warm` that fails or is cancelled loses at
-  most one batch, and the next call embeds only what is missing. A catalog failure, or an
-  embedder failure on a tag's *name*, fails the call with no tags and an error wrapping
-  `tagging.ErrNotRebuilt` that names the tag; the index stays as it was, so the next call
-  tries again.
+  most one batch, and the next call embeds only what is missing. A catalog failure, an
+  embedder that is down, or an embedder failure on a tag's *name* (the error then names
+  the tag) fails the call with no tags and an error wrapping `tagging.ErrNotRebuilt`; the
+  index stays as it was, so the next call tries again.
 - **One bad member does not block a space.** When a batch fails, its texts are embedded
   again one at a time. A member's text the embedder still fails on, or answers with a
   vector of NaN, infinite or all-zero values, is left out: its tag is built from its name
   and its other members, nothing is cached for it, and the Tagger tries it again at the
-  space's next revision. `TaggerConfig.Logger` (a `*slog.Logger`, nil discards) gets a
-  warning for each one, with the index, the partition, the tag's id and the SHA-256 and
+  space's next revision. `space.Incomplete(ctx)` lists the ids of the tags built that
+  way, and `TaggerConfig.Logger` (a `*slog.Logger`, nil discards) gets a
+  warning for each member, with the index, the partition, the tag's id and the SHA-256 and
   length of the text, so you can find the item; the text itself is not logged. `Warm`
   returns an error naming the texts it could not embed by their position, after
   embedding the rest; `Suggest` and `Scores` fail when their own text cannot be embedded.
+- **An embedder that is down is not a bad member.** A member is left out only on evidence
+  that the embedder works: it answered with a useless vector, or an `Embed` after the one
+  that failed succeeded, of a later text or, when there is none, of the tag's name
+  embedded once more as a canary. When that fails too, or the embedder's error wraps
+  `langai.ErrClosed`, `context.Canceled` or `context.DeadlineExceeded` (a closed model, a
+  request timeout of its own), the rebuild fails with an error wrapping
+  `tagging.ErrNotRebuilt` and the cause, and nothing is recorded: the next call tries
+  again, so an outage never leaves tags built from their names alone. After three texts in
+  a row have failed the Tagger checks the canary before going on, so a dead embedder costs
+  a handful of calls, not one per text. `Warm` ends the same way, with the embedder's
+  error.
 - **A cache that cannot be written still answers.** On a read-only replica or a locked
   SQLite file the vectors are read but their last-used time cannot be refreshed, and new
   embeddings cannot be stored. Neither fails a call: the Tagger uses the vectors it has
