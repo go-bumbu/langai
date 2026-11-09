@@ -9,7 +9,7 @@ models run in-process through llama.cpp and ONNX Runtime.
 
 | Package | What it does |
 |---|---|
-| `langai` | The ports: `Embedder` (text embedding models), `ImageEmbedder` (image embedding models), `VideoEmbedder` (video embedding models, one vector per `Segment` of a video), `Completer` (chat models), the `Role` a text is embedded as, and the optional `Identified`, by which a model names itself so that stores never mix two models' vectors. `Normalize` scales a vector to unit length for the providers. `LazyEmbedder`, `LazyImageEmbedder` and `LazyCompleter` defer loading a model to its first use and release it on `Close`. |
+| `langai` | The ports: `Embedder` (text embedding models), `ImageEmbedder` (image embedding models), `VideoEmbedder` (video embedding models, one vector per `Segment` of a video), `Completer` (chat models), the `Role` a text is embedded as, and the optional `Identified`, by which a model names itself so that stores never mix two models' vectors. `Normalize` scales a vector to unit length for the providers, and `ErrClosed` is what every call on something closed wraps. `LazyEmbedder`, `LazyImageEmbedder` and `LazyCompleter` defer loading a model to its first use and release it on `Close`. |
 | `search` | Turns documents into embedding vectors and answers free-text queries with the closest ones: `Index` and the markdown-aware chunker. `MediaIndex` does the same for pictures: it embeds images and videos (as sampled frames through an image model, or as whole segments through a video model) and answers an image, a video or, with a model that has a text side, a text with the items that look most like it, across both kinds. |
 | `media` | The ports for decoding video: `Sampler` turns a video file into the `Frame`s that stand for it, `Cutter` measures and cuts it (for a `VideoEmbedder` that embeds in segments). |
 | `media/ffmpeg` | `Sampler` and `Cutter` over the ffmpeg and ffprobe binaries: the first frame, every scene cut and one frame per interval, scaled down, capped per video, or the keyframes only, for long videos; stream-copy cuts for the segment embedder. |
@@ -18,8 +18,8 @@ models run in-process through llama.cpp and ONNX Runtime.
 | `vector/vectortest` | The conformance suite every `Store` passes. |
 | `vector/sqlitevec` | `Store` on SQLite with the sqlite-vec extension (CGO). |
 | `vector/pgvec` | `Store` on Postgres with pgvector. |
-| `provider/yzma` | `Embedder` that runs a GGUF sentence-embedding model, `Completer` that runs a GGUF chat model (the one the `Generator` writes tags with), and `Vision`, which runs Qwen3-VL-Embedding as a text, image and video embedder in one space, through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Downloads and verifies the pinned llama.cpp build and models on first use, and picks the build and the GPU offload from the hardware (`Runtime.Accel`). |
-| `provider/onnx` | `ImageEmbedder` that runs an ONNX vision model through [ONNX Runtime](https://onnxruntime.ai) (CGO, via [onnxruntime_go](https://github.com/yalue/onnxruntime_go)): SigLIP 2 base by default, DINOv2 base as the other pinned model, any other through a `ModelSpec`. CPU by default, CUDA or CoreML by configuration. Downloads and verifies the pinned runtime build and model on first use. |
+| `provider/yzma` | `Embedder` that runs a GGUF sentence-embedding model, `Completer` that runs a GGUF chat model (the one the `Generator` writes tags with), and `Vision`, which runs Qwen3-VL-Embedding as a text, image and video embedder in one space, through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Each opens two ways: `New`, `NewCompleter` and `NewVision` from a `Config` naming a pinned model (`Models`, `CompleterModels`, `VisionModels`) with the `Runtime` embedded, or `Open`, `OpenCompleter` and `OpenVision` from a spec (`LookupSpec`, `LookupCompleterSpec`, `LookupVisionSpec`, or your own) and a `Runtime`; a `Vision` also takes its `VisionOptions`. Downloads and verifies the pinned llama.cpp build and models on first use, and picks the build and the GPU offload from the hardware (`Runtime.Accel`). |
+| `provider/onnx` | `ImageEmbedder` that runs an ONNX vision model through [ONNX Runtime](https://onnxruntime.ai) (CGO, via [onnxruntime_go](https://github.com/yalue/onnxruntime_go)): SigLIP 2 base by default, DINOv2 base as the other pinned model (`Models`, `LookupSpec`), any other through a `ModelSpec`; `New` and `Open` have yzma's shape. CPU by default, CUDA or CoreML by configuration. Downloads and verifies the pinned runtime build and model on first use. |
 | `provider/phash` | `ImageEmbedder` without a model: a 64- or 256-bit perceptual hash (pHash or dHash) as a unit vector whose cosine is `1 - 2·hamming/bits`, for finding exact and near-exact duplicates (re-encoded, resized, lightly edited copies) with the same `MediaIndex` and stores. Pure Go, nothing to download, a few milliseconds per picture. `Hash` gives the bits themselves for grouping without a store. |
 | `zarf/eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. `make semeval` compares embedding models side by side on it. |
 | `langaitest` | Fakes of the ports, for tests. `FakeEmbedder`, `FakeImageEmbedder` and `FakeVideoEmbedder` are deterministic and each names a fixed model (`FakeEmbedderModel`, `FakeImageEmbedderModel`, `FakeVideoEmbedderModel`); a `FakeVideoEmbedder`'s segments are pictures embedded in `FakeImageEmbedder`'s space, listed per file name or derived from it; `FakeCompleter` is a scripted chat model: canned replies in order or a function of the prompt, an error on demand, and a record of the prompts it received. |
@@ -36,7 +36,8 @@ The packages form a tree, and the tree is also the plan: packages marked *planne
 not exist yet (see TODO.md).
 
 ```
-langai/                 the shared ports: Embedder, ImageEmbedder, Completer, Role
+langai/                 the shared ports: Embedder, ImageEmbedder, VideoEmbedder, Completer,
+│                       Role, Identified, ErrClosed; the lazy loaders
 │
 ├── search/             text → similar documents; image or video → similar images and videos
 ├── tagging/            text → tags from your corpus (Tagger), text → new tags (Generator);
@@ -49,7 +50,8 @@ langai/                 the shared ports: Embedder, ImageEmbedder, Completer, Ro
 ├── caption/            planned: image or video → description
 │
 ├── provider/           model runtimes; each implements some of the ports
-│   ├── yzma/           llama.cpp in process: Embedder (New), Completer (NewCompleter)
+│   ├── yzma/           llama.cpp in process: Embedder (New), Completer (NewCompleter),
+│   │                   Vision (NewVision): text, images and videos in one space
 │   ├── onnx/           ONNX Runtime in process (CGO): SigLIP 2 and DINOv2 image embeddings
 │   ├── phash/          no model: perceptual hashes (pHash, dHash) as image embeddings, for duplicates
 │   ├── kronk/          planned: llama.cpp via kronk: embeddings, chat, vision, rerank
@@ -61,8 +63,8 @@ langai/                 the shared ports: Embedder, ImageEmbedder, Completer, Ro
 │   ├── vectortest/     conformance suite for a Store
 │   ├── internal/       sqlstore: the SQL the two stores share
 │   └── qdrant/         planned, if a dedicated vector database is needed
-├── media/              video input: the Sampler port and Frame
-│   └── ffmpeg/         video → frames via the ffmpeg binary
+├── media/              video decoding: the Sampler and Cutter ports, and Frame
+│   └── ffmpeg/         video → frames, and cuts, via the ffmpeg binary
 │
 ├── langaitest/         fakes of the ports, for tests
 ├── internal/           tablename: SQL table names; fetch: verified, resumable downloads and
@@ -94,7 +96,7 @@ both; nothing in `tagging` loads or picks a model.
 - **The root is the front door:** the shared ports and the capabilities (`search`,
   `tagging`, `mediatag`, `caption`) are what you import.
 - **Each group holds one kind of implementation:** model runtimes in `provider/`, vector
-  stores in `vector/`, video input in `media/`. A new backend is a new folder in its
+  stores in `vector/`, video decoding in `media/`. A new backend is a new folder in its
   group.
 - **Dependencies point one way:** a capability never imports an implementation, an
   implementation imports the package whose port it implements, and your application
@@ -337,8 +339,8 @@ ix, err := search.NewMediaIndex(emb, store, "tenant-1", "space-7", "media",
 err = ix.IndexImage(ctx, "photo-42", file)             // JPEG, PNG, GIF, WebP, BMP, TIFF; a no-op while the bytes are unchanged
 err = ix.IndexVideo(ctx, "clip-7", "/media/clip-7.mp4") // one vector per sampled frame; a no-op while the file is unchanged
 hits, err := ix.SearchImage(ctx, file, 10)              // []search.MediaMatch: DocID, Score, At (the matching frame's time)
-hits, err := ix.SearchVideo(ctx, "/media/query.mp4", 10) // and QueryAt, the query frame that matched
-hits, err := ix.SearchIndexed(ctx, "clip-7", 10)         // "more like this" with the stored vectors: no model runs
+hits, err = ix.SearchVideo(ctx, "/media/query.mp4", 10)  // and QueryAt, the query frame that matched
+hits, err = ix.SearchIndexed(ctx, "clip-7", 10)          // "more like this" with the stored vectors: no model runs
 err = ix.Delete(ctx, "photo-42", "clip-7")               // Docs lists what is indexed, as for Index
 ```
 
@@ -473,9 +475,10 @@ pictures and clips, and an image finds the stretch of a video it appears in.
   tokens per second of video, so a segment is a few thousand tokens and a feature film
   never overflows the context (`ContextTokens`, 16384). The `Cutter` (the ffmpeg
   `Sampler`) cuts by stream copy, so a segment starts at the last keyframe before its
-  time; a cut that fails or is cancelled removes its partial output. `MaxSegments` caps the work per video. A segment is one vector: the model sees
-  the whole stretch, which is what makes a clip match a description, and what loses the
-  "matched at 4.00 s" precision of the frame route. A file whose container states no
+  time; a cut that fails or is cancelled removes its partial output. `MaxSegments` caps
+  the work per video. A segment is one vector: the model sees the whole stretch, which
+  is what makes a clip match a description, and what loses the "matched at 4.00 s"
+  precision of the frame route. A file whose container states no
   length (a recording that was never finalized, a stream dump) is first copied into a
   Matroska file in the temp directory, `MaxSegments` segments of it or all of it, so
   that it has one, and is then cut like any other; a file without an extension is cut
@@ -565,7 +568,7 @@ There's no "learn" call. The Tagger learns only when the app changes the revisio
 // catalog is your tagging.Catalog: Tags lists a space's tags (id, name, revision),
 // Members the texts of the items tagged with some of them by hand
 cache, err := sqlitecache.New(ctx, db)
-tagger, err := tagging.NewTagger(emb, catalog, cache, tagging.TaggerConfig{Model: yzma.DefaultModel, Logger: logger})
+tagger, err := tagging.NewTagger(emb, catalog, cache, tagging.TaggerConfig{Model: emb.Model(), Logger: logger})
 defer tagger.Close() // cancels and waits for what is in flight; later calls wrap langai.ErrClosed
 space := tagger.Scope("tenant-1", "space-7")
 ids, err := space.Suggest(ctx, rev, essence)    // auto tags, best first; never stored as links
@@ -583,8 +586,9 @@ member deleted. At the revision it was last built at, a Suggest never calls the 
 As in search, the first argument of `Scope` is the hard isolation boundary (a tenant) and
 the second a space within it; scopes never see each other's tags, and no embedding is read
 on behalf of another index. Use a tag's full path as its name (`colors / warm / red` says
-more than `red`). `TaggerConfig.Model` names the embedding model, and every cached vector
-is kept under the model it came from.
+more than `red`). `TaggerConfig.Model` is the identity of the embedding model, its
+`Model()` (or its spec's `ModelID()`), and every cached vector is kept under the model
+it came from.
 
 **Long items.** An embedder reads a window of tokens and silently drops the rest: the
 default yzma model reads 512 tokens, some 2 KB of prose, so only the start of a longer item
@@ -936,6 +940,7 @@ took; or search with a file of your own. See [zarf/examples/README.md](zarf/exam
 ```
 make test          # go tests (the pgvector ones skip without TESTDBS_ALL=1 and Docker; the ffmpeg ones without ffmpeg)
 make test-models   # the real-model tests (downloads ~350 MB on first run)
+make test-vision   # the vision embedder on the real model (2.7 GB; loads it twice, the second time on the CPU)
 make test-gentags  # the tag Generator on the real models (adds the 2.5 GB chat model; minutes on a CPU)
 make test-images   # the real image-model tests: ONNX Runtime + SigLIP 2 (downloads ~380 MB on first run)
 make coverage      # per-package coverage gate (>= 70%), pgvector tests included

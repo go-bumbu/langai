@@ -57,7 +57,11 @@ type options struct{ generation string }
 // generation in the same database, so the vectors of a different embedding
 // model can be built next to the current ones before an application switches
 // over; DropGeneration retires the old ones afterwards. generation is "" (the
-// default) or 1-12 lowercase letters and digits.
+// default) or 1-12 lowercase letters and digits. An index's tables are named
+// ss_<generation>_<hash>_<suffix>, where <hash> is the first 16 hex digits of
+// the SHA-256 of the index, so any index string makes a safe identifier and
+// two indexes never share tables; the default generation's are
+// ss_<hash>_<suffix>, the names the stores used before generations existed.
 func WithGeneration(generation string) Option {
 	return func(o *options) { o.generation = generation }
 }

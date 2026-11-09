@@ -60,7 +60,7 @@ func openTagging(ctx context.Context, cfg yzma.Config, dataDir, samples string, 
 	}
 	nb, err := autotag.New(ctx, autotag.Config{
 		Cache:       cache,
-		Tagging:     tagging.TaggerConfig{Model: yzma.DefaultModel, ChunkBytes: chunkBytes},
+		Tagging:     tagging.TaggerConfig{Model: emb.Model(), ChunkBytes: chunkBytes},
 		Chat:        chat,
 		Embedder:    emb,
 		File:        filepath.Join(dataDir, "notebook.json"),

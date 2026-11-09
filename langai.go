@@ -1,9 +1,13 @@
 // Package langai holds what the language-AI packages of this module share:
 // the ports a model runtime implements, Embedder for text embedding models,
-// ImageEmbedder for image embedding models and Completer for chat models, and
-// the Role an Embedder is asked to embed a text as, and Normalize, which the
-// providers scale their vectors to unit length with. It imports no runtime
-// and no store.
+// ImageEmbedder for image embedding models, VideoEmbedder for models that
+// embed a video as Segments, and Completer for chat models; the Role an
+// Embedder is asked to embed a text as; Identified, by which a model names
+// the vectors it makes; ErrClosed, which every call on a closed value
+// wraps; and Normalize, which the providers scale their vectors to unit
+// length with. LazyEmbedder, LazyImageEmbedder and LazyCompleter defer
+// loading a model to its first use. It imports no runtime, no store and no
+// other package of the module.
 //
 // The capabilities live in subpackages: search answers free-text queries over
 // documents and finds the images and videos that look like a given image or
@@ -12,11 +16,10 @@
 // sit in groups by the port they implement: provider/yzma runs GGUF models
 // locally through llama.cpp, provider/onnx runs image embedding models through
 // ONNX Runtime, provider/phash hashes pictures perceptually to find duplicates
-// without a model, media/ffmpeg samples the frames of a video, and
-// vector/sqlitevec and vector/pgvec store search vectors. LazyEmbedder defers
-// loading a model to its first use, langaitest has the fakes for tests, and
-// eval measures an Embedder's search and tagging quality over a labelled
-// dataset.
+// without a model, media/ffmpeg samples and cuts videos for the media ports in
+// media, and vector/sqlitevec and vector/pgvec store search vectors.
+// langaitest has the fakes for tests, and zarf/eval measures an Embedder's
+// search and tagging quality over a labelled dataset.
 package langai
 
 import (
