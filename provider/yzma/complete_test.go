@@ -828,6 +828,42 @@ func TestNewCompleter_RunsThePinnedModel(t *testing.T) {
 	}
 }
 
+// TestNewCompleter_PassesAccelAndGPULayers: the Config's acceleration
+// settings reach the model load as they do for New. On a machine whose
+// libraries registered a GPU, AccelCPU keeps the chat model off it and
+// GPULayers caps the offload.
+func TestNewCompleter_PassesAccelAndGPULayers(t *testing.T) {
+	gpu := []device{{name: "Vulkan0", backend: "Vulkan", description: "GPU", gpu: true}}
+	for _, tc := range []struct {
+		name   string
+		accel  Accel
+		layers int
+		want   int32
+	}{
+		{"auto offloads everything", AccelAuto, 0, allLayers},
+		{"cpu stays on the cpu", AccelCPU, 0, 0},
+		{"a layer cap", AccelAuto, 7, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			f := newFakeChat()
+			f.devs = gpu
+			rt := fakeChatRuntime(t, f, tmp)
+			_, a := serve(t, []byte("GGUF fake chat model"))
+			orig := defaultCompleterAsset
+			defaultCompleterAsset = a
+			t.Cleanup(func() { defaultCompleterAsset = orig })
+			cfg := Config{ModelsDir: filepath.Join(tmp, "models"), LibDir: rt.LibDir, ManagedLibDir: true, Threads: 2, Accel: tc.accel, GPULayers: tc.layers}
+			if _, err := NewCompleter(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			if args := f.only(t, "loadModel"); args[1] != tc.want {
+				t.Errorf("loadModel offloads %v layers, want %d", args[1], tc.want)
+			}
+		})
+	}
+}
+
 func TestNewCompleter_UnknownModelListsTheAvailableOnes(t *testing.T) {
 	_, err := NewCompleter(context.Background(), Config{Model: "BAAI/bge-m3", LibDir: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), DefaultCompleterModel) {

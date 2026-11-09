@@ -107,7 +107,7 @@ func NewCompleter(ctx context.Context, cfg Config) (*Completer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return OpenCompleter(ctx, spec, Runtime{LibDir: cfg.LibDir, ManagedLibDir: cfg.ManagedLibDir, Threads: cfg.Threads, Logger: cfg.Logger})
+	return OpenCompleter(ctx, spec, cfg.runtime())
 }
 
 // OpenCompleter prepares the libraries and the model described by spec
