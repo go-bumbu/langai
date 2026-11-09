@@ -383,9 +383,16 @@ func (s *Scope) Touch(ctx context.Context) error {
 // them again at its next rebuild, never correctness. When a space cannot be
 // read, nothing is removed.
 //
-// unusedSince must be at least CacheRefreshAfter (24 hours) in the past: a
-// read rewrites an entry's last-used time only once it is that stale, so a
-// more recent cutoff would remove entries read minutes ago, and is refused.
+// What a cutoff guarantees: an entry read (by a Suggest, a Scores or a Warm)
+// in the last A - CacheRefreshAfter stays, A being how far in the past
+// unusedSince is. Not in the last A: a read rewrites an entry's last-used time
+// only once that is CacheRefreshAfter (24 hours) stale, so the recorded time
+// may be up to a day older than the last read. A cutoff of 30 days removes
+// what was not read for 30 days, and may remove what was last read 29 days
+// ago. unusedSince must therefore be at least MinPruneAge, two days, in the
+// past, which keeps the last day's reads; a more recent one could remove
+// entries read minutes ago, and is refused with an error, before anything is
+// read or removed.
 func (t *Tagger) Prune(ctx context.Context, unusedSince time.Time, spaces ...Space) (int64, error) {
 	var removed int64
 	err := t.e.call(ctx, func(ctx context.Context) (err error) {

@@ -157,8 +157,9 @@ type group struct {
 }
 
 // Get implements tagging.EmbeddingCache. Keys are grouped by model and role and
-// matched 500 at a time; the entries found older than
-// tagging.CacheRefreshAfter get their last-used time rewritten. When that
+// matched 500 at a time; the entries found last used
+// tagging.CacheRefreshAfter ago or longer, to the second, get their last-used
+// time rewritten, as in every backend (see cachetest). When that
 // write fails, on a read-only replica or a locked file, the vectors were read
 // all the same: Get returns all of them together with an error wrapping
 // tagging.ErrCacheWrite.
@@ -175,12 +176,12 @@ func (c *Cache) Get(ctx context.Context, index string, keys []tagging.CacheKey) 
 		return nil, err
 	}
 	now := c.now().Unix()
-	staleBefore := now - int64(tagging.CacheRefreshAfter/time.Second)
+	staleAt := now - int64(tagging.CacheRefreshAfter/time.Second)
 	var notRefreshed error
 	for g, hashes := range groups {
 		for start := 0; start < len(hashes); start += chunk {
 			part := hashes[start:min(start+chunk, len(hashes))]
-			stale, err := c.read(ctx, index, g, part, staleBefore, out)
+			stale, err := c.read(ctx, index, g, part, staleAt, out)
 			if err != nil {
 				return nil, err
 			}
@@ -189,7 +190,7 @@ func (c *Cache) Get(ctx context.Context, index string, keys []tagging.CacheKey) 
 			}
 			// only the entries still stale: two readers do not rewrite a
 			// row one after the other for nothing
-			notRefreshed = c.touch(ctx, index, g, stale, now, &staleBefore)
+			notRefreshed = c.touch(ctx, index, g, stale, now, &staleAt)
 		}
 	}
 	if notRefreshed != nil {
@@ -221,8 +222,8 @@ func grouped(keys []tagging.CacheKey) (map[group][][]byte, error) {
 }
 
 // read adds to out the entries of hashes that the cache holds and returns the
-// hashes of those last used before staleBefore.
-func (c *Cache) read(ctx context.Context, index string, g group, hashes [][]byte, staleBefore int64, out map[tagging.CacheKey][]float32) ([][]byte, error) {
+// hashes of those last used at staleAt or before.
+func (c *Cache) read(ctx context.Context, index string, g group, hashes [][]byte, staleAt int64, out map[tagging.CacheKey][]float32) ([][]byte, error) {
 	args := append([]any{index, g.model, int64(g.role)}, bytesArgs(hashes)...)
 	rows, err := c.db.QueryContext(ctx, c.q(`SELECT hash, vec, used FROM `+table+
 		` WHERE idx = ? AND model = ? AND role = ? AND hash IN (`+placeholders(len(hashes))+`)`), args...)
@@ -247,7 +248,7 @@ func (c *Cache) read(ctx context.Context, index string, g group, hashes [][]byte
 			return nil, err
 		}
 		out[k] = v
-		if used < staleBefore {
+		if used <= staleAt {
 			stale = append(stale, hash)
 		}
 	}
@@ -258,16 +259,16 @@ func (c *Cache) read(ctx context.Context, index string, g group, hashes [][]byte
 }
 
 // touch sets the last-used time of the entries of hashes to now, 500 at a
-// time: of all of them, or with usedBefore only of the ones last used before
-// it.
-func (c *Cache) touch(ctx context.Context, index string, g group, hashes [][]byte, now int64, usedBefore *int64) error {
+// time: of all of them, or with usedBy only of the ones last used at that
+// time or before.
+func (c *Cache) touch(ctx context.Context, index string, g group, hashes [][]byte, now int64, usedBy *int64) error {
 	for start := 0; start < len(hashes); start += chunk {
 		part := hashes[start:min(start+chunk, len(hashes))]
 		args := []any{now, index, g.model, int64(g.role)}
 		guard := ""
-		if usedBefore != nil {
-			guard = ` AND used < ?`
-			args = append(args, *usedBefore)
+		if usedBy != nil {
+			guard = ` AND used <= ?`
+			args = append(args, *usedBy)
 		}
 		args = append(args, bytesArgs(part)...)
 		if _, err := c.db.ExecContext(ctx, c.q(`UPDATE `+table+` SET used = ? WHERE idx = ? AND model = ? AND role = ?`+guard+

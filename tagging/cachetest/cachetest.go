@@ -98,6 +98,8 @@ func Run(t *testing.T, newCache func(t *testing.T, now func() time.Time) tagging
 		{"PruneDeletesUnused", pruneDeletesUnused},
 		{"PruneKeepsWhatWasUsedAtTheCutoff", pruneKeepsWhatWasUsedAtTheCutoff},
 		{"GetRefreshesStaleEntries", getRefreshesStaleEntries},
+		{"GetRefreshesAtExactlyCacheRefreshAfter", getRefreshesAtExactlyCacheRefreshAfter},
+		{"GetDoesNotRefreshEarlier", getDoesNotRefreshEarlier},
 		{"TouchKeepsWhatPruneWouldDrop", touchKeepsWhatPruneWouldDrop},
 		{"TouchIgnoresMissingKeys", touchIgnoresMissingKeys},
 		{"TouchIsPerIndex", touchIsPerIndex},
@@ -329,6 +331,41 @@ func getRefreshesStaleEntries(t *testing.T, c tagging.EmbeddingCache, clk *clock
 	prune(t, c, clk.Now().Add(-time.Hour), 1)
 	if got := get(t, c, idx, k1, k2); len(got) != 1 || !reflect.DeepEqual(got[k1], v1) {
 		t.Errorf("after Prune = %v, want only k1: the Get refreshed its last-used time", got)
+	}
+}
+
+// getRefreshesAtExactlyCacheRefreshAfter: the refresh begins when an entry was
+// last used exactly CacheRefreshAfter ago, not a moment later. Every backend
+// draws the line at the same place, since Tagger.Prune's guarantee is counted
+// from it: what was read in the last (age of the cutoff - CacheRefreshAfter)
+// stays.
+func getRefreshesAtExactlyCacheRefreshAfter(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1, k2: v2})
+	stored := clk.Now()
+	clk.advance(tagging.CacheRefreshAfter)
+	if got := get(t, c, idx, k1); !reflect.DeepEqual(got[k1], v1) {
+		t.Fatalf("k1 = %v, want %v", got[k1], v1)
+	}
+	// k2 was last used when it was stored; k1 now, if the Get refreshed it
+	prune(t, c, stored.Add(time.Second), 1)
+	if got := get(t, c, idx, k1, k2); len(got) != 1 || !reflect.DeepEqual(got[k1], v1) {
+		t.Errorf("after Prune = %v, want only k1: a Get exactly CacheRefreshAfter after the last use refreshes it", got)
+	}
+}
+
+// getDoesNotRefreshEarlier: a second before CacheRefreshAfter has passed a Get
+// leaves the last-used time alone, so reads do not turn into writes, and the
+// entry goes with a Prune of what was unused since just after it was stored.
+func getDoesNotRefreshEarlier(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1, k2: v2})
+	stored := clk.Now()
+	clk.advance(tagging.CacheRefreshAfter - time.Second)
+	if got := get(t, c, idx, k1); !reflect.DeepEqual(got[k1], v1) {
+		t.Fatalf("k1 = %v, want %v", got[k1], v1)
+	}
+	prune(t, c, stored.Add(time.Second), 2)
+	if got := get(t, c, idx, k1, k2); len(got) != 0 {
+		t.Errorf("after Prune = %v, want nothing: a Get a second short of CacheRefreshAfter refreshes nothing", got)
 	}
 }
 

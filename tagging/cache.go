@@ -57,11 +57,13 @@ func checkName(what, name string) error {
 // UTF-8.
 type EmbeddingCache interface {
 	// Get returns the vectors of the keys it holds; missing keys are absent
-	// from the map, and a key listed twice counts once. It refreshes the
-	// last-used time of an entry older than CacheRefreshAfter. A cache that
-	// read the vectors but could not write that refresh may return them
-	// together with an error wrapping ErrCacheWrite; with any other error it
-	// returns no vectors.
+	// from the map, and a key listed twice counts once. It sets the last-used
+	// time of an entry to now when that entry was last used CacheRefreshAfter
+	// ago or longer, and leaves a more recent one alone; a cache that keeps
+	// its times in seconds compares them in seconds. A cache that read the
+	// vectors but could not write that refresh may return them together with
+	// an error wrapping ErrCacheWrite; with any other error it returns no
+	// vectors.
 	Get(ctx context.Context, index string, keys []CacheKey) (map[CacheKey][]float32, error)
 	// Put stores or replaces the vectors, last used now. An empty vector is an error.
 	Put(ctx context.Context, index string, vecs map[CacheKey][]float32) error
@@ -82,7 +84,9 @@ type EmbeddingCache interface {
 }
 
 // CacheRefreshAfter is how stale a last-used time gets before a Get rewrites
-// it, so reads do not turn into writes. An entry's recorded time may therefore
-// be up to this much older than its last read, which is why Tagger.Prune
-// refuses a cutoff more recent than this.
+// it, so reads do not turn into writes: a Get this long after the last use, or
+// later, refreshes the entry, and an earlier one does not. An entry's recorded
+// time may therefore be up to this much older than its last read, so a
+// Tagger.Prune keeps for certain only what was read in the last (age of its
+// cutoff - CacheRefreshAfter), and refuses a cutoff younger than MinPruneAge.
 const CacheRefreshAfter = 24 * time.Hour

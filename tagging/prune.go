@@ -60,14 +60,22 @@ func (e *engine) touch(ctx context.Context, index, partition string) error {
 	return nil
 }
 
-// prune is Tagger.Prune: it refuses a cutoff less than CacheRefreshAfter old
-// before it reads anything, touches each of spaces, and only when all of them
-// were touched removes the cache's entries last used before unusedSince.
+// MinPruneAge is how far in the past the cutoff of a Tagger.Prune must be at
+// least: twice CacheRefreshAfter, two days. A read leaves a last-used time
+// alone until it is CacheRefreshAfter old, so a cutoff of age A keeps for
+// certain only what was read in the last A - CacheRefreshAfter; at this age
+// that is the last day's reads, and at a younger one it shrinks to nothing.
+const MinPruneAge = 2 * CacheRefreshAfter
+
+// prune is Tagger.Prune: it refuses a cutoff less than MinPruneAge old before
+// it reads anything, touches each of spaces, and only when all of them were
+// touched removes the cache's entries last used before unusedSince.
 func (e *engine) prune(ctx context.Context, unusedSince time.Time, spaces []Space) (int64, error) {
-	if age := e.now().Sub(unusedSince); age < CacheRefreshAfter {
-		return 0, fmt.Errorf("tagging: prune cutoff is %s old, want at least CacheRefreshAfter (%s): "+
-			"a read rewrites a last-used time only once it is that stale, so the entries read since would be removed",
-			age.Round(time.Second), CacheRefreshAfter)
+	if age := e.now().Sub(unusedSince); age < MinPruneAge {
+		return 0, fmt.Errorf("tagging: prune cutoff is %s old, want at least MinPruneAge (%s, twice CacheRefreshAfter): "+
+			"a read rewrites a last-used time only once it is CacheRefreshAfter (%s) stale, so a cutoff keeps for certain "+
+			"only what was read in the last (its age - CacheRefreshAfter), and this one would remove entries read since",
+			age.Round(time.Second), MinPruneAge, CacheRefreshAfter)
 	}
 	for _, s := range spaces {
 		if err := e.touch(ctx, s.Index, s.Partition); err != nil {

@@ -644,9 +644,13 @@ embeddings of its name and members look unused however often the tag is suggeste
 therefore first reads the `Catalog` of each space you pass and marks what its tags are built
 from as used (`EmbeddingCache.Touch`), and only then deletes. A space you leave out loses
 its old embeddings and embeds them again at its next rebuild: time, never correctness. If a
-space's catalog fails, nothing is deleted. The cutoff must be at least 24 hours old
-(`tagging.CacheRefreshAfter`): a read rewrites a last-used time only once it is that stale,
-so a more recent cutoff would delete embeddings read minutes ago, and `Prune` refuses it.
+space's catalog fails, nothing is deleted. A read rewrites a last-used time only once it
+is 24 hours stale (`tagging.CacheRefreshAfter`), so the recorded time can be up to a day
+older than the last read, and a cutoff of age A keeps for certain only what was read in
+the last A minus 24 hours: 30 days removes what was unread for 30 days and may remove
+what was last read 29 days ago. The cutoff must therefore be at least two days old
+(`tagging.MinPruneAge`), which protects the last day's reads; `Prune` refuses a more
+recent one with an error, since it could delete embeddings read minutes ago.
 When Taggers of several models that are all in use share one cache, call `Scope.Touch` on
 the other Taggers' spaces first, since a `Prune` keeps only its own model's embeddings.
 

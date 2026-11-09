@@ -78,14 +78,21 @@ func TestEngine_PruneDropsWhatNoListedSpaceUses(t *testing.T) {
 
 // TestEngine_PruneRefusesARecentCutoff: a Get rewrites a last-used time only
 // once it is CacheRefreshAfter old, so an entry read a minute ago may still
-// say "yesterday": a cutoff younger than that would remove it.
+// say "yesterday": a cutoff of age A only keeps what was read in the last A -
+// CacheRefreshAfter. One less than twice CacheRefreshAfter old would protect
+// less than a day of reads, at exactly CacheRefreshAfter none at all, and is
+// refused.
 func TestEngine_PruneRefusesARecentCutoff(t *testing.T) {
 	p := newPruneRig(t, engineCfg, breadWithRecipes("1"))
 	p.scores(t, "1", croissantText)
 	*p.now = p.now.Add(23 * time.Hour)
 	p.scores(t, "1", croissantText) // read now; its last-used time stays 23 hours old
 	tags, members := p.cat.counts()
-	for _, cutoff := range []time.Time{p.now.Add(-time.Hour), *p.now, p.now.Add(time.Hour), p.now.Add(-CacheRefreshAfter + time.Second)} {
+	for _, cutoff := range []time.Time{
+		p.now.Add(-time.Hour), *p.now, p.now.Add(time.Hour),
+		p.now.Add(-CacheRefreshAfter + time.Second), p.now.Add(-CacheRefreshAfter),
+		p.now.Add(-2*CacheRefreshAfter + time.Second),
+	} {
 		n, err := p.e.prune(context.Background(), cutoff, []Space{{"1", "10"}})
 		if err == nil || !strings.Contains(err.Error(), "CacheRefreshAfter") || n != 0 {
 			t.Errorf("prune at now%+v = %d, %v; want 0 and an error naming CacheRefreshAfter", cutoff.Sub(*p.now), n, err)
@@ -99,8 +106,53 @@ func TestEngine_PruneRefusesARecentCutoff(t *testing.T) {
 	if n := b.emb.total(); n != 0 {
 		t.Errorf("a refused prune removed embeddings: a restart embedded %d texts", n)
 	}
-	if n, err := p.e.prune(context.Background(), p.now.Add(-CacheRefreshAfter), []Space{{"1", "10"}}); err != nil || n != 0 {
-		t.Errorf("prune at exactly CacheRefreshAfter ago = %d, %v; want 0, nil", n, err)
+	if n, err := p.e.prune(context.Background(), p.now.Add(-2*CacheRefreshAfter), []Space{{"1", "10"}}); err != nil || n != 0 {
+		t.Errorf("prune at exactly twice CacheRefreshAfter ago = %d, %v; want 0, nil", n, err)
+	}
+}
+
+// TestEngine_PruneKeepsWhatWasReadWithinItsGuarantee: an item's text is
+// stored, and read again 23 hours and 59 minutes later, which does not rewrite
+// its last-used time. A prune two minutes after that with a cutoff a day old
+// used to be accepted, and removed the entry just read. A cutoff of age A
+// keeps what was read in the last A - CacheRefreshAfter, whatever the
+// last-used time says, and removes only what was not.
+func TestEngine_PruneKeepsWhatWasReadWithinItsGuarantee(t *testing.T) {
+	const item = "an item the application asks about now and then"
+	const readAt = 23*time.Hour + 59*time.Minute
+	for _, tc := range []struct {
+		name    string
+		pruneAt time.Duration // when the prune runs, after the item was stored
+		age     time.Duration // how old its cutoff is
+		refused bool
+		kept    bool
+	}{
+		{"a cutoff a day old, two minutes after the read", readAt + 2*time.Minute, CacheRefreshAfter, true, true},
+		{"two days old, two minutes after the read", readAt + 2*time.Minute, 2 * CacheRefreshAfter, false, true},
+		{"two days old, a day after the read", readAt + CacheRefreshAfter, 2 * CacheRefreshAfter, false, true},
+		{"two days old, a day and two minutes after the read", readAt + CacheRefreshAfter + 2*time.Minute, 2 * CacheRefreshAfter, false, false},
+		{"thirty days old, twenty-nine days after the read", readAt + 29*day, 30 * day, false, true},
+		{"thirty days old, twenty-nine days and two minutes after the read", readAt + 29*day + 2*time.Minute, 30 * day, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPruneRig(t, engineCfg, breadWithRecipes("1"))
+			stored := *p.now
+			p.scores(t, "1", item)
+			*p.now = stored.Add(readAt)
+			p.scores(t, "1", item)
+			*p.now = stored.Add(tc.pruneAt)
+			n, err := p.e.prune(context.Background(), p.now.Add(-tc.age), []Space{{"1", "10"}})
+			if (err != nil) != tc.refused {
+				t.Fatalf("prune = %d, %v; want refused: %v", n, err, tc.refused)
+			}
+			// the guarantee: read within the cutoff's age less CacheRefreshAfter
+			if guaranteed := tc.pruneAt-readAt <= tc.age-CacheRefreshAfter; guaranteed && !tc.kept {
+				t.Fatalf("the case expects an entry read %v ago gone at a cutoff %v old", tc.pruneAt-readAt, tc.age)
+			}
+			if got := cached(t, p.cache, item)[item]; got != tc.kept {
+				t.Errorf("after the prune the item's embedding is kept: %v, want %v (removed %d)", got, tc.kept, n)
+			}
+		})
 	}
 }
 
