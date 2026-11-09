@@ -196,7 +196,7 @@ func TestFlight_NoGoroutineOutlivesClose(t *testing.T) {
 			for i := range 100 {
 				d := time.Duration(100+(g*7+i*13)%2900) * time.Microsecond
 				ctx, cancel := context.WithTimeout(context.Background(), d)
-				_, err := f.do(ctx, spaceKey{"k", string(rune('a' + g%3))}, "tag", fn)
+				_, err := f.do(ctx, Space{"k", string(rune('a' + g%3))}, "tag", fn)
 				cancel()
 				// context.Canceled is the error of a run that close cut short
 				if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && !errors.Is(err, langai.ErrClosed) {

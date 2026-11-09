@@ -94,7 +94,7 @@ func TestScope_SuggestIsThePickedScores(t *testing.T) {
 	cat := &fakeCatalog{tags: []CatalogTag{
 		{"bread", "bread baking", "1"}, {"travel", "travel hiking trail", "1"}, {"tax", "income tax", "1"},
 	}}
-	s := newTestTagger(t, cat, TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2}).Scope("ix", "p")
+	s := newTestTagger(t, cat, TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2}).Scope(Space{"ix", "p"})
 	const text = "baking bread at home, then a hiking trail"
 	got, err := s.Scores(ctx, "1", text)
 	if err != nil {
@@ -130,7 +130,7 @@ func TestScope_SuggestIsThePickedScores(t *testing.T) {
 			t.Errorf("Suggest of %s = %v, %v; want no ids and an error", tc.name, ids, err)
 		}
 	}
-	if _, err := s.tg.Scope("", "p").Suggest(ctx, "1", text); err == nil {
+	if _, err := s.tg.Scope(Space{"", "p"}).Suggest(ctx, "1", text); err == nil {
 		t.Error("Suggest in an empty index: want an error")
 	}
 }
@@ -143,7 +143,7 @@ func TestScope_WarmFillsTheCacheAndTheIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := tg.Scope("ix", "p")
+	s := tg.Scope(Space{"ix", "p"})
 	const text = "Baking bread at home: a cooking guide"
 	if err := s.Warm(ctx, "1", text, "  "); err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestWithTagIndex_IsUsed(t *testing.T) {
 	ctx := context.Background()
 	ix := &countingIndex{TagIndex: NewMemIndex(0)}
 	cat := &fakeCatalog{tags: []CatalogTag{{"bread", "cooking / bread", "1"}}}
-	s := newTestTagger(t, cat, TaggerConfig{Model: "fake"}, WithTagIndex(ix)).Scope("ix", "p")
+	s := newTestTagger(t, cat, TaggerConfig{Model: "fake"}, WithTagIndex(ix)).Scope(Space{"ix", "p"})
 	for i := range 3 {
 		if _, err := s.Suggest(ctx, "1", "Baking bread at home"); err != nil {
 			t.Fatal(err)
@@ -189,7 +189,7 @@ func TestWithTagIndex_IsUsed(t *testing.T) {
 		}
 	}
 	// a nil index keeps the default
-	if _, err := newTestTagger(t, cat, TaggerConfig{Model: "fake"}, WithTagIndex(nil)).Scope("ix", "p").Suggest(ctx, "1", "bread"); err != nil {
+	if _, err := newTestTagger(t, cat, TaggerConfig{Model: "fake"}, WithTagIndex(nil)).Scope(Space{"ix", "p"}).Suggest(ctx, "1", "bread"); err != nil {
 		t.Errorf("Suggest with WithTagIndex(nil): %v", err)
 	}
 }

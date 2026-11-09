@@ -216,7 +216,7 @@ func (e *engine) refresh(ctx context.Context, index, partition, revision string)
 		case ok && cur == state:
 			return nil
 		}
-		again, err := e.flight.do(ctx, spaceKey{index, partition}, state, func(ctx context.Context) error {
+		again, err := e.flight.do(ctx, Space{index, partition}, state, func(ctx context.Context) error {
 			return e.rebuild(ctx, index, partition, state)
 		})
 		if again {

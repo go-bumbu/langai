@@ -147,7 +147,7 @@ func newGoldenWorld(t *testing.T, emb langai.Embedder, ds *eval.Dataset, chunkBy
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.space = tg.Scope("1", "1")
+	w.space = tg.Scope(Space{"1", "1"})
 	for i, path := range ds.Tags {
 		id := strconv.Itoa(i + 1)
 		w.tagIDs[path], w.names[id], w.nums[id] = id, path, i+1

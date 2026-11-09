@@ -241,21 +241,29 @@ func checkConfig(cfg TaggerConfig) (TaggerConfig, string, error) {
 // handful of Embed calls rather than one per text, and records nothing.
 var ErrNotRebuilt = errors.New("tagging: tag not rebuilt")
 
-// Scope is a handle on one space of tags: its index is the hard isolation
-// boundary (a tenant, say) and its partition a further coordinate within it
-// (a space of that tenant). Scopes never see each other's tags, and no
-// embedding is read on behalf of another index.
+// Space names one space of tags, wherever the Tagger is told of one: by
+// Tagger.Scope and by Tagger.Prune. Index is the hard isolation boundary (a
+// tenant, say), and is never empty; Partition is a further coordinate within
+// it (a space of that tenant), and may be. Spaces never see each other's
+// tags, and no embedding is read on behalf of another index. A Space is
+// comparable, so it can key a map.
+type Space struct{ Index, Partition string }
+
+// Scope is a handle on one Space of tags: what suggests for it, warms it and
+// inspects it.
 type Scope struct {
-	tg               *Tagger
-	index, partition string
+	tg    *Tagger
+	space Space
 }
 
-// Scope returns the handle on the space at index and partition. It holds no
-// data, so it is cheap to make. Every call through a scope with an empty index
-// fails.
-func (t *Tagger) Scope(index, partition string) *Scope {
-	return &Scope{tg: t, index: index, partition: partition}
+// Scope returns the handle on space. It holds no data, so it is cheap to
+// make. Every call through a scope with an empty Index fails.
+func (t *Tagger) Scope(space Space) *Scope {
+	return &Scope{tg: t, space: space}
 }
+
+// Space returns the space the scope is a handle on, as Tagger.Prune takes it.
+func (s *Scope) Space() Space { return s.space }
 
 // Suggest returns the ids of the tags whose score for text reaches that tag's
 // own cutoff (see tagCutoff), best score first and equal scores by id, with no
@@ -313,7 +321,7 @@ func (t TagScore) Picked() bool { return t.Score >= t.Cutoff && t.ShadowedBy == 
 func (s *Scope) Scores(ctx context.Context, revision, text string) ([]TagScore, error) {
 	var scores []TagScore
 	err := s.tg.e.call(ctx, func(ctx context.Context) (err error) {
-		scores, err = s.tg.e.scores(ctx, s.index, s.partition, revision, text)
+		scores, err = s.tg.e.scores(ctx, s.space.Index, s.space.Partition, revision, text)
 		return err
 	})
 	return scores, err
@@ -335,7 +343,7 @@ func (s *Scope) Scores(ctx context.Context, revision, text string) ([]TagScore, 
 // after a handful of calls, not one per text.
 func (s *Scope) Warm(ctx context.Context, revision string, texts ...string) error {
 	return s.tg.e.call(ctx, func(ctx context.Context) error {
-		return s.tg.e.warm(ctx, s.index, s.partition, revision, texts)
+		return s.tg.e.warm(ctx, s.space.Index, s.space.Partition, revision, texts)
 	})
 }
 
@@ -351,7 +359,7 @@ func (s *Scope) Warm(ctx context.Context, revision string, texts ...string) erro
 func (s *Scope) Incomplete(ctx context.Context) ([]string, error) {
 	var ids []string
 	err := s.tg.e.call(ctx, func(ctx context.Context) (err error) {
-		ids, err = s.tg.e.incomplete(ctx, s.index, s.partition)
+		ids, err = s.tg.e.incomplete(ctx, s.space.Index, s.space.Partition)
 		return err
 	})
 	return ids, err
@@ -365,7 +373,7 @@ func (s *Scope) Incomplete(ctx context.Context) ([]string, error) {
 // would otherwise take for unused. An empty index is an error.
 func (s *Scope) Touch(ctx context.Context) error {
 	return s.tg.e.call(ctx, func(ctx context.Context) error {
-		return s.tg.e.touch(ctx, s.index, s.partition)
+		return s.tg.e.touch(ctx, s.space.Index, s.space.Partition)
 	})
 }
 

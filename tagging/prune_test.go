@@ -187,7 +187,7 @@ func TestTagger_PruneAndTouch(t *testing.T) {
 	}
 	tg.e.now = clock
 	ctx := context.Background()
-	space := tg.Scope("1", "10")
+	space := tg.Scope(Space{"1", "10"})
 	if _, err := space.Suggest(ctx, "1", croissantText); err != nil {
 		t.Fatal(err)
 	}
@@ -199,10 +199,10 @@ func TestTagger_PruneAndTouch(t *testing.T) {
 		t.Fatalf("Prune after Touch = %d, %v; want 1, nil: the item's text only", n, err)
 	}
 	now = now.Add(40 * day)
-	if n, err := tg.Prune(ctx, now.Add(-30*day), Space{Index: "1", Partition: "10"}); err != nil || n != 0 {
+	if n, err := tg.Prune(ctx, now.Add(-30*day), space.Space()); err != nil || n != 0 {
 		t.Fatalf("Prune of the listed space = %d, %v; want 0, nil", n, err)
 	}
-	if err := tg.Scope("", "10").Touch(ctx); err == nil {
+	if err := tg.Scope(Space{"", "10"}).Touch(ctx); err == nil {
 		t.Error("Touch with an empty index succeeded")
 	}
 	got, err := cache.Get(ctx, "1", []CacheKey{KeyFor("fake", langai.RoleDocument, "cooking / bread")})

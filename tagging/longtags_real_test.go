@@ -95,7 +95,7 @@ func TestTaggerLongTags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	space := tg.Scope("long", "1")
+	space := tg.Scope(Space{"long", "1"})
 
 	vecs := map[string][]float32{} // RoleDocument vectors of tags and aliases
 	embed := func(texts []string) {

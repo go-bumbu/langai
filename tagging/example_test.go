@@ -74,7 +74,7 @@ func ExampleTagger() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	space := tagger.Scope("tenant-1", "space-7")
+	space := tagger.Scope(tagging.Space{Index: "tenant-1", Partition: "space-7"})
 
 	// suggest prints the tags suggested for an item's text at the space's
 	// current revision.

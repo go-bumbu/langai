@@ -572,7 +572,7 @@ There's no "learn" call. The Tagger learns only when the app changes the revisio
 cache, err := sqlitecache.New(ctx, db)
 tagger, err := tagging.NewTagger(emb, catalog, cache, tagging.TaggerConfig{Model: emb.Model(), Logger: logger})
 defer tagger.Close() // cancels and waits for what is in flight; later calls wrap langai.ErrClosed
-space := tagger.Scope("tenant-1", "space-7")
+space := tagger.Scope(tagging.Space{Index: "tenant-1", Partition: "space-7"})
 ids, err := space.Suggest(ctx, rev, essence)    // auto tags, best first; never stored as links
 scores, err := space.Scores(ctx, rev, essence)  // every tag's score and cutoff: why a tag was or was not picked
 err = space.Warm(ctx, rev, essences...)         // optional warm-up, e.g. after switching models
@@ -585,9 +585,11 @@ opaque string the application changes whenever a tag, a hand-made link or a tagg
 of the space does (a counter on the space's row will do), and each tag's own revision
 changes whenever its members do: a link added or removed, a member's text edited, a
 member deleted. At the revision it was last built at, a Suggest never calls the catalog.
-As in search, the first argument of `Scope` is the hard isolation boundary (a tenant) and
-the second a space within it; scopes never see each other's tags, and no embedding is read
-on behalf of another index. Use a tag's full path as its name (`colors / warm / red` says
+A space is named by one `tagging.Space{Index, Partition}` wherever the Tagger takes one,
+`Scope` and `Prune` alike, and `space.Space()` gives a scope's back. As in search, `Index`
+is the hard isolation boundary (a tenant) and `Partition` a space within it; scopes never
+see each other's tags, and no embedding is read on behalf of another index. Use a tag's
+full path as its name (`colors / warm / red` says
 more than `red`). `TaggerConfig.Model` is the identity of the embedding model, its
 `Model()` (or its spec's `ModelID()`), and every cached vector is kept under the model
 it came from.

@@ -14,7 +14,7 @@ import (
 )
 
 // flightKey is the key the flight tests run under.
-var flightKey = spaceKey{"k", ""}
+var flightKey = Space{"k", ""}
 
 // run is flight.do for one key and tag, for the tests that have no use for
 // again.
@@ -53,7 +53,7 @@ func TestFlight_RunsOncePerKey(t *testing.T) {
 		}
 		// another key runs on its own, while the first is in flight
 		other := func(context.Context) error { others.Add(1); return nil }
-		if _, err := f.do(context.Background(), spaceKey{"other", ""}, "tag", other); err != nil {
+		if _, err := f.do(context.Background(), Space{"other", ""}, "tag", other); err != nil {
 			t.Error(err)
 		}
 		if others.Load() != 1 {
@@ -354,7 +354,7 @@ func TestTagger_Close(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		space := tg.Scope("1", "10")
+		space := tg.Scope(Space{"1", "10"})
 		ctx := context.Background()
 		emb.hangOn(langai.RoleDocument, true)
 		caller := make(chan error, 1)

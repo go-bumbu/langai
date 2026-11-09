@@ -154,7 +154,7 @@ func New(ctx context.Context, cfg Config) (*Notebook, error) {
 	if err != nil {
 		return nil, fmt.Errorf("autotag: %w", err)
 	}
-	nb.tagger, nb.scope = tg, tg.Scope(scopeIndex, scopePartition)
+	nb.tagger, nb.scope = tg, tg.Scope(tagging.Space{Index: scopeIndex, Partition: scopePartition})
 
 	start := time.Now()
 	texts := make([]string, len(nb.cat.Notes))

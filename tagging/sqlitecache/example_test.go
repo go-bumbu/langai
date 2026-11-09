@@ -39,7 +39,7 @@ func ExampleNew() {
 		log.Fatal(err)
 	}
 	defer func() { _ = tagger.Close() }()
-	space := tagger.Scope("tenant-1", "space-7")
+	space := tagger.Scope(tagging.Space{Index: "tenant-1", Partition: "space-7"})
 	ids, err := space.Suggest(ctx, "rev-12", "Baking sourdough bread at home")
 	if err != nil {
 		log.Fatal(err)

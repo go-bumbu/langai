@@ -21,7 +21,7 @@ var errClosed = fmt.Errorf("tagging: tagger: %w", langai.ErrClosed)
 // zero value is ready to use.
 type flight struct {
 	mu      sync.Mutex
-	calls   map[spaceKey]*flightCall
+	calls   map[Space]*flightCall
 	closed  bool
 	running sync.WaitGroup
 	// onPanic, when set, is told of a panic in a run, with its stack, once
@@ -80,7 +80,7 @@ func (p *panicError) Error() string { return fmt.Sprintf("panic: %v", p.value) }
 // the process down: it is the run's error, with the value panicked with, and
 // is reported to onPanic with its stack. A caller that arrives once a run has
 // ended starts a new one, so a failure is retried.
-func (f *flight) do(ctx context.Context, key spaceKey, tag string, fn func(context.Context) error) (again bool, err error) {
+func (f *flight) do(ctx context.Context, key Space, tag string, fn func(context.Context) error) (again bool, err error) {
 	for {
 		f.mu.Lock()
 		if f.closed {
@@ -117,9 +117,9 @@ func (f *flight) do(ctx context.Context, key spaceKey, tag string, fn func(conte
 }
 
 // start begins a run of fn for key. The caller holds the mutex.
-func (f *flight) start(ctx context.Context, key spaceKey, tag string, fn func(context.Context) error) *flightCall {
+func (f *flight) start(ctx context.Context, key Space, tag string, fn func(context.Context) error) *flightCall {
 	if f.calls == nil {
-		f.calls = map[spaceKey]*flightCall{}
+		f.calls = map[Space]*flightCall{}
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	c := &flightCall{tag: tag, done: make(chan struct{}), cancel: cancel}
@@ -175,7 +175,7 @@ func (f *flight) abandon(c *flightCall, period int) {
 
 // run runs fn for c, turning a panic into the run's error, and then ends the
 // flight of key.
-func (f *flight) run(ctx context.Context, key spaceKey, c *flightCall, fn func(context.Context) error) {
+func (f *flight) run(ctx context.Context, key Space, c *flightCall, fn func(context.Context) error) {
 	defer f.running.Done()
 	defer func() {
 		if v := recover(); v != nil {

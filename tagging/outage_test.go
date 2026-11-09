@@ -343,7 +343,7 @@ func TestScope_IncompleteNamesTheTagsBuiltWithoutAMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tg.Close() })
-	space := tg.Scope("1", "10")
+	space := tg.Scope(Space{"1", "10"})
 	if ids, err := space.Incomplete(ctx); err != nil || len(ids) != 0 {
 		t.Fatalf("Incomplete of a space never built = %v, %v; want none", ids, err)
 	}
@@ -353,7 +353,7 @@ func TestScope_IncompleteNamesTheTagsBuiltWithoutAMember(t *testing.T) {
 	if ids, err := space.Incomplete(ctx); err != nil || !slices.Equal(ids, []string{"bread"}) {
 		t.Errorf("Incomplete = %v, %v; want [bread]", ids, err)
 	}
-	if _, err := tg.Scope("", "10").Incomplete(ctx); err == nil {
+	if _, err := tg.Scope(Space{"", "10"}).Incomplete(ctx); err == nil {
 		t.Error("Incomplete with an empty index succeeded")
 	}
 }

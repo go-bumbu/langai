@@ -13,10 +13,6 @@ import (
 // at once.
 const membersGroupSize = 64
 
-// Space names one space of tags: an index and a partition within it, as
-// Tagger.Scope takes them.
-type Space struct{ Index, Partition string }
-
 // touch sets the last-used time of every embedding the space's tags are built
 // from to now: the name of each tag the catalog lists and the pieces of each
 // of its members, under the engine's model. Nothing is embedded, and what the

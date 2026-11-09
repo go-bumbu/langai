@@ -105,7 +105,7 @@ func newChunkScope(t *testing.T, chunk int) *Scope {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tg.Scope("ix", "p")
+	return tg.Scope(Space{"ix", "p"})
 }
 
 func TestScope_ChunkBytesReadsTheWholeItem(t *testing.T) {
