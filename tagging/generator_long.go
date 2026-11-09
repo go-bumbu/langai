@@ -42,7 +42,7 @@ func titleOf(text string) string {
 // the model as Chunk returns them, the ones after the first headed by the
 // text's title (see maxTitleBytes); the chunks that score are the text's own.
 func (g *Generator) generateLong(ctx context.Context, text string, minScore float64) ([]Tag, error) {
-	clean := g.clean()
+	clean := g.clean
 	var names []string
 	seen := make(map[string]bool)
 	title := titleOf(text)

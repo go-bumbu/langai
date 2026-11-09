@@ -102,9 +102,9 @@ func TestCleanPath(t *testing.T) {
 		"dev // go /":                               "dev / go",
 		"single":                                    "single",
 		"dev / this level is far too long a phrase": "",
-		"   ":                                       "",
+		"   ": "",
 	} {
-		if got := cleanPath(in); got != want {
+		if got := cleanPath(in, nil); got != want {
 			t.Errorf("cleanPath(%q) = %q, want %q", in, got, want)
 		}
 	}

@@ -43,8 +43,10 @@ const (
 
 // Tag is one generated tag and how well it fits the text.
 type Tag struct {
-	// Name is the tag as the model wrote it, without list markers, quotes or
-	// trailing punctuation. Its case is the model's.
+	// Name is the tag as the model wrote it, without what it wrote around it:
+	// list markers, quotes, brackets, Markdown emphasis, a remark in brackets
+	// after it, trailing punctuation. Its case is the model's, except for the
+	// part of a tree tag that is an existing path (see WithTreeTags).
 	Name string
 	// Score is the cosine between the embeddings of the text and of the name:
 	// 1 for identical vectors and about 0 for unrelated ones. For a text read
@@ -85,6 +87,9 @@ type Generator struct {
 	cfg    GeneratorConfig
 	opts   generatorOptions
 	prompt string // the system prompt, built once from cfg and opts
+	// clean is how a name the model wrote is cleaned: as a tree path with
+	// WithTreeTags, mapped back to the existing paths, and as a tag otherwise
+	clean func(string) string
 }
 
 // generatorOptions are what the GeneratorOptions set.
@@ -136,6 +141,13 @@ func WithLanguageTags(lang string) GeneratorOption {
 // and to start a new top-level category only when none fits. The first ones up
 // to MaxTreeBytes in all are shown to the model; with none, it writes a tree of
 // its own.
+//
+// A tag that is one of existing, or starts with one or with its upper levels,
+// comes back with that part in the spelling given here, whatever case and
+// spacing the model wrote it in ("cooking/baking" for "Cooking / Baking"), so
+// the application can match it against its own paths as strings. That part is
+// the application's and is kept whatever its length; only the levels the
+// model adds are held to the length of a tag.
 func WithTreeTags(existing ...string) GeneratorOption {
 	return func(o *generatorOptions) {
 		o.tree = true
@@ -175,7 +187,12 @@ func NewGenerator(llm langai.Completer, emb langai.Embedder, cfg GeneratorConfig
 			return nil, o.err
 		}
 	}
-	return &Generator{llm: llm, emb: emb, cfg: cfg, opts: o, prompt: systemPrompt(cfg.Candidates, o)}, nil
+	clean := cleanTag
+	if o.tree {
+		existing := newPathIndex(o.existing)
+		clean = func(s string) string { return cleanPath(s, existing) }
+	}
+	return &Generator{llm: llm, emb: emb, cfg: cfg, opts: o, prompt: systemPrompt(cfg.Candidates, o), clean: clean}, nil
 }
 
 // systemPrompt sets the task. The text itself is the user message, so a text
@@ -295,7 +312,7 @@ func (g *Generator) Generate(ctx context.Context, text string, minScore float64)
 	if err != nil {
 		return nil, fmt.Errorf("tagging: write tags: %w", err)
 	}
-	names := parseTags(answer, g.cfg.Candidates, g.clean())
+	names := parseTags(answer, g.cfg.Candidates, g.clean)
 	if len(names) == 0 {
 		return nil, nil
 	}
@@ -322,15 +339,6 @@ func (g *Generator) Generate(ctx context.Context, text string, minScore float64)
 	}
 	slices.SortStableFunc(tags, func(a, b Tag) int { return cmp.Compare(b.Score, a.Score) })
 	return tags, nil
-}
-
-// clean returns how a name the model wrote is cleaned: as a tree path with
-// WithTreeTags, as a tag otherwise.
-func (g *Generator) clean() func(string) string {
-	if g.opts.tree {
-		return cleanPath
-	}
-	return cleanTag
 }
 
 // embed embeds texts as role and checks that every one was answered.

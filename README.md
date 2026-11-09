@@ -608,7 +608,11 @@ well cost long texts 0.07 of side recall). `WithTreeTags(existing...)` writes ea
 category down (`dev / go / error wrapping`, at most `MaxTreeLevels` deep) and the tags of a
 text as a small tree sharing upper levels. With existing paths, the model is shown them (up
 to `MaxTreeBytes`) and asked to extend them, written as they are, and to start a new
-top-level category only when none fits; a tag is scored by its whole path. On a Spanish
+top-level category only when none fits; a tag is scored by its whole path. A path the model
+reuses, whole or as the start of a longer one, comes back in your spelling whatever case or
+spacing the model wrote (`cooking/baking` becomes your `Cooking / Baking`), and is kept even
+when one of its levels is longer than the four words and 40 characters a level the model
+adds may have. On a Spanish
 text about Go errors, with the golden tags as the tree, it wrote `dev / go / error wrapping`
 and three siblings, in English although the text is Spanish: the tree's language wins over
 `WithNativeLanguageTags`, although the prompt also says that new levels follow the text.
@@ -633,6 +637,12 @@ measured on long documents and not on essences.
   cosine between the embedding of the text (as a query) and of the tag (as a document):
   the roles, and so the scale, of the Tagger's `NameMinScore`. One cutoff then means the same
   on every text, and a tag the model invented falls under it.
+- **The reply is read leniently.** The model is asked for one tag per line, and what it
+  wraps around them is dropped: a `<think>…</think>` block (one never closed takes the
+  rest of the reply), code fences, a JSON array or a `{"tags": [...]}` object, a label
+  such as `Tags:`, list markers, quotes, brackets, Markdown emphasis, and a remark in
+  brackets after a tag (`sourdough (bread)`). A name left with a bracket or a quote that
+  does not close, or longer than four words or 40 characters, is not a tag.
 - **The cutoff is yours.** `-1` returns every candidate. `tagging.DefaultGeneratorMinScore` (0.45)
   fits the default models: over ten golden documents in English, Spanish and German the
   model's tags scored 0.31 to 0.68, the main topics at 0.5 and up, and what fell under
