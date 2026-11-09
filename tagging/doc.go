@@ -55,7 +55,9 @@
 // as the title and repeated at the head of every window, so pass "title\n" +
 // body), so the topics of later
 // sections get tags too, and each tag is scored by the chunk of the text it
-// fits best; that costs a call per window, about eleven for 64 KB.
+// fits best; that costs a call per window, about eleven for 64 KB. A call that
+// fails is made once more, and a window lost all the same costs only itself:
+// the tags of the others come back with an error wrapping ErrPartial.
 //
 // The model supplies the words and the embedder the score. A model's own
 // confidence is poorly calibrated and moves from run to run, while the cosine

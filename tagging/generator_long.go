@@ -3,6 +3,7 @@ package tagging
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -41,30 +42,57 @@ func titleOf(text string) string {
 // each name is scored by longScore over the text's chunks. The windows go to
 // the model as Chunk returns them, the ones after the first headed by the
 // text's title (see maxTitleBytes); the chunks that score are the text's own.
+//
+// A window the model fails on, twice (see write), does not cost the others:
+// its error is kept, the remaining windows are read, and the tags of the ones
+// that worked are returned with an error wrapping ErrPartial. With no window
+// read there is nothing to return but the errors, and a ctx that ended stops
+// the reading with its own error.
 func (g *Generator) generateLong(ctx context.Context, text string, minScore float64) ([]Tag, error) {
-	clean := g.clean
 	var names []string
+	var failed []error
 	seen := make(map[string]bool)
 	title := titleOf(text)
-	for i, w := range Chunk(text, windowBytes) {
+	windows := Chunk(text, windowBytes)
+	for i, w := range windows {
 		if i > 0 && title != "" {
 			w = title + "\n" + w
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		answer, err := g.write(ctx, w)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
-		answer, err := g.llm.Complete(ctx, g.prompt, w)
 		if err != nil {
-			return nil, fmt.Errorf("tagging: write tags: %w", err)
+			failed = append(failed, fmt.Errorf("tagging: write tags for window %d of %d: %w", i+1, len(windows), err))
+			continue
 		}
 		// a window with no usable tag adds nothing, and the others still count
-		for _, name := range parseTags(answer, g.cfg.Candidates, clean) {
+		for _, name := range parseTags(answer, g.cfg.Candidates, g.clean) {
 			if key := strings.ToLower(name); !seen[key] {
 				seen[key] = true
 				names = append(names, name)
 			}
 		}
 	}
+	var partial error
+	switch {
+	case len(failed) == len(windows):
+		return nil, errors.Join(failed...)
+	case len(failed) > 0:
+		partial = fmt.Errorf("%w: the model failed on %d of %d windows: %w", ErrPartial, len(failed), len(windows), errors.Join(failed...))
+	}
+	tags, err := g.scoreLong(ctx, text, names, minScore)
+	if err != nil {
+		return nil, err
+	}
+	return tags, partial
+}
+
+// scoreLong returns the tags among names that score at least minScore on a
+// long text, best first, at most Candidates of them: each name is scored by
+// longScore over the text's chunks. No names is no tags, and nothing is
+// embedded for it.
+func (g *Generator) scoreLong(ctx context.Context, text string, names []string, minScore float64) ([]Tag, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}

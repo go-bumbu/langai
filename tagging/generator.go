@@ -281,6 +281,13 @@ func languageName(code string) string {
 // first GeneratorConfig.MaxBytes bytes of text are read, and a blank text asks
 // nobody. A model that writes no usable tag is not an error.
 //
+// A model call that fails, or answers with nothing at all, is made once more,
+// unless ctx has ended. On a short text a second failure is the error of
+// Generate, wrapping the model's or ErrEmptyReply. On a long text the windows
+// that were read still count: Generate returns their tags together with an
+// error wrapping ErrPartial and the causes, so a result may hold tags and an
+// error at once; only when no window could be read does it return no tags.
+//
 // A text of at most GeneratorConfig.ChunkBytes is written about in one model
 // call and every tag is scored against the whole of it. A longer one is read
 // in windows of about 6 KB, one model call each, so that topics of later
@@ -308,7 +315,7 @@ func (g *Generator) Generate(ctx context.Context, text string, minScore float64)
 	if len(text) > g.cfg.ChunkBytes {
 		return g.generateLong(ctx, text, minScore)
 	}
-	answer, err := g.llm.Complete(ctx, g.prompt, text)
+	answer, err := g.write(ctx, text)
 	if err != nil {
 		return nil, fmt.Errorf("tagging: write tags: %w", err)
 	}
@@ -339,6 +346,46 @@ func (g *Generator) Generate(ctx context.Context, text string, minScore float64)
 	}
 	slices.SortStableFunc(tags, func(a, b Tag) int { return cmp.Compare(b.Score, a.Score) })
 	return tags, nil
+}
+
+// ErrEmptyReply is wrapped by the error of a Generate whose model answered
+// with nothing to read tags from, twice: an empty reply, or one that is empty
+// once its reasoning block and code fences are gone. A model that has no tag
+// for a text says so in words, which is not an error; one that says nothing
+// has failed, and returning no tags for it would hide that.
+var ErrEmptyReply = errors.New("tagging: the model replied with nothing")
+
+// ErrPartial is wrapped by the error of a Generate over a long text when the
+// model failed on some of its windows and not on others. The tags returned
+// with it are good, and may be none: they are the ones of the windows that
+// were read, scored against the whole text as usual, so topics of the windows
+// that failed can be missing. The error also wraps each window's cause and
+// says which windows they are. Test for it with errors.Is, and keep the tags
+// or call again as suits the application.
+var ErrPartial = errors.New("tagging: tags of a part of the text only")
+
+// write asks the model for the tags of text, a short text whole or one window
+// of a long one, and returns its reply. A call that fails, and a reply with
+// nothing to read (see ErrEmptyReply), is asked once more: one bad answer in
+// the many a long text takes must not cost the others. It does not ask again
+// once ctx has ended, and returns the last failure.
+func (g *Generator) write(ctx context.Context, text string) (string, error) {
+	var failure error
+	for range 2 {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		answer, err := g.llm.Complete(ctx, g.prompt, text)
+		switch {
+		case err != nil:
+			failure = err
+		case strings.TrimSpace(stripScaffolding(answer)) == "":
+			failure = ErrEmptyReply
+		default:
+			return answer, nil
+		}
+	}
+	return "", failure
 }
 
 // embed embeds texts as role and checks that every one was answered.

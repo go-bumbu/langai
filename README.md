@@ -349,7 +349,9 @@ pictures and clips, and an image finds the stretch of a video it appears in.
       title) repeated at the head of every window after the first, and the names of all
       the windows are merged.
    4. The LLM writes up to `Candidates` tags (10 by default) per call, either as short
-      words or as tree paths, optionally extending the app's existing paths.
+      words or as tree paths, optionally extending the app's existing paths. A call that
+      fails or replies with nothing is made once more; a window that fails twice is left
+      out and reported with `ErrPartial`.
    5. The library embeds the text (in 2 KB chunks when it is long) and each candidate
       tag. Nothing is cached.
    6. Each candidate is scored by the cosine between its vector and the text's vector;
@@ -643,6 +645,20 @@ measured on long documents and not on essences.
   such as `Tags:`, list markers, quotes, brackets, Markdown emphasis, and a remark in
   brackets after a tag (`sourdough (bread)`). A name left with a bracket or a quote that
   does not close, or longer than four words or 40 characters, is not a tag.
+- **A bad answer is asked for again, once.** A model call that fails or replies with
+  nothing is repeated, unless the context has ended. If it fails again on a short text,
+  `Generate` returns the error; a model that twice says nothing is
+  `tagging.ErrEmptyReply`, not "no tags". On a long text the other windows still count:
+  `Generate` returns their tags *and* an error wrapping `tagging.ErrPartial` that names
+  the windows it lost, so check the error before you discard the tags:
+
+  ```go
+  tags, err := gen.Generate(ctx, text, tagging.DefaultGeneratorMinScore)
+  if err != nil && !errors.Is(err, tagging.ErrPartial) {
+      return err // nothing was read
+  }
+  // tags are good; with ErrPartial, topics of the lost windows may be missing
+  ```
 - **The cutoff is yours.** `-1` returns every candidate. `tagging.DefaultGeneratorMinScore` (0.45)
   fits the default models: over ten golden documents in English, Spanish and German the
   model's tags scored 0.31 to 0.68, the main topics at 0.5 and up, and what fell under
@@ -668,8 +684,8 @@ measured on long documents and not on essences.
   that took one call now takes up to 11, and yzma's default chat context went from 2048
   to 4096 tokens. `GeneratorConfig{MaxBytes: 2048}` restores today's behaviour: one call
   on the first 2 KB. With a chat context under 4096 tokens keep `MaxBytes` at or under
-  `ChunkBytes`: a 6 KB window, in German about 2,500 tokens, may not fit, and then the
-  whole Generate call fails. If you never tag long texts, set
+  `ChunkBytes`: a 6 KB window, in German about 2,500 tokens, may not fit, and then that
+  window fails (twice, see above). If you never tag long texts, set
   `CompleterSpec.ContextTokens` to 2048 to keep the smaller KV cache.
 - **Cost.** The chat model is a 2.5 GB download, and a process with it and the embedding
   model loaded holds about 5 GB. A text takes 7 to 13 s with the default 4 threads on an

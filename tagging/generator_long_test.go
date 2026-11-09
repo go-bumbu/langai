@@ -308,7 +308,7 @@ func TestGenerate_MaxBytesBelowChunkBytesStaysShort(t *testing.T) {
 
 func TestGenerate_LongTextSkipsWindowsWithoutTags(t *testing.T) {
 	ws := windowsOf(t, threeWindows, 3)
-	llm := &stubLLM{byUser: map[string]string{ws[0]: "\n \n", ws[1]: "alpha", ws[2]: "Here are the tags:\n"}}
+	llm := &stubLLM{byUser: map[string]string{ws[0]: noTags, ws[1]: "alpha", ws[2]: "Here are the tags:\n"}}
 	g := newLongGenerator(t, llm, newFlat(), GeneratorConfig{})
 	got, err := g.Generate(context.Background(), threeWindows, 0)
 	if err != nil {
@@ -321,7 +321,7 @@ func TestGenerate_LongTextSkipsWindowsWithoutTags(t *testing.T) {
 }
 
 func TestGenerate_LongTextReturnsNilWhenNoWindowHasTags(t *testing.T) {
-	llm, emb := &stubLLM{answer: "\n"}, newFlat()
+	llm, emb := &stubLLM{answer: noTags}, newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{})
 	got, err := g.Generate(context.Background(), threeWindows, 0)
 	if err != nil || got != nil {
@@ -329,6 +329,87 @@ func TestGenerate_LongTextReturnsNilWhenNoWindowHasTags(t *testing.T) {
 	}
 	if len(llm.asked) != 3 || len(emb.calls) != 0 {
 		t.Errorf("asked %d times and embedded %v, want 3 and nothing", len(llm.asked), emb.calls)
+	}
+}
+
+// failingCalls has the model fail the prompts with these numbers (1 for the
+// first) with errBoom.
+func failingCalls(llm *stubLLM, calls ...int) {
+	llm.hook = func(n int) error {
+		if slices.Contains(calls, n) {
+			return errBoom
+		}
+		return nil
+	}
+}
+
+// TestGenerate_LongTextAsksAFailedWindowAgain: a window that fails once is
+// asked again, and the result is whole: no error.
+func TestGenerate_LongTextAsksAFailedWindowAgain(t *testing.T) {
+	ws := windowsOf(t, threeWindows, 3)
+	llm := &stubLLM{byUser: map[string]string{ws[0]: "alpha", ws[1]: "beta", ws[2]: "gamma"}}
+	failingCalls(llm, 2)
+	g := newLongGenerator(t, llm, newFlat(), GeneratorConfig{})
+	got, err := g.Generate(context.Background(), threeWindows, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireTags(t, got, []Tag{{"alpha", 1}, {"beta", 1}, {"gamma", 1}})
+	if want := []string{ws[0], ws[1], ws[1], ws[2]}; !slices.Equal(users(llm.asked), want) {
+		t.Errorf("asked %d times, want the second window twice", len(llm.asked))
+	}
+}
+
+// TestGenerate_LongTextKeepsTheTagsOfTheWindowsThatWorked: the second window
+// fails twice. The ten minutes the others took used to be thrown away with
+// it; now their tags are scored and returned, next to an error that says the
+// result is partial, which window is missing and why.
+func TestGenerate_LongTextKeepsTheTagsOfTheWindowsThatWorked(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fail  func(llm *stubLLM, second string)
+		cause error
+	}{
+		"the model fails":           {func(llm *stubLLM, _ string) { failingCalls(llm, 2, 3) }, errBoom},
+		"the model replies nothing": {func(llm *stubLLM, second string) { llm.byUser[second] = " \n" }, ErrEmptyReply},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws := windowsOf(t, threeWindows, 3)
+			llm, emb := &stubLLM{byUser: map[string]string{ws[0]: "alpha", ws[1]: "beta", ws[2]: "gamma"}}, newFlat()
+			tc.fail(llm, ws[1])
+			g := newLongGenerator(t, llm, emb, GeneratorConfig{})
+			got, err := g.Generate(context.Background(), threeWindows, 0)
+			if !errors.Is(err, ErrPartial) || !errors.Is(err, tc.cause) || !strings.Contains(err.Error(), "window 2 of 3") {
+				t.Fatalf("err = %v, want one wrapping ErrPartial and the cause, naming window 2 of 3", err)
+			}
+			requireTags(t, got, []Tag{{"alpha", 1}, {"gamma", 1}})
+			if want := []string{ws[0], ws[1], ws[1], ws[2]}; !slices.Equal(users(llm.asked), want) {
+				t.Errorf("asked %d times, want the second window twice and the third after it", len(llm.asked))
+			}
+		})
+	}
+}
+
+// TestGenerate_LongTextWithNoWindowReadIsAnError: when every window fails
+// there is nothing partial about the result: no tags, and the causes.
+func TestGenerate_LongTextWithNoWindowReadIsAnError(t *testing.T) {
+	for name, tc := range map[string]struct {
+		llm   *stubLLM
+		cause error
+	}{
+		"the model fails":           {&stubLLM{answer: "alpha", err: errBoom}, errBoom},
+		"the model replies nothing": {&stubLLM{answer: "\n"}, ErrEmptyReply},
+	} {
+		t.Run(name, func(t *testing.T) {
+			emb := newFlat()
+			g := newLongGenerator(t, tc.llm, emb, GeneratorConfig{})
+			got, err := g.Generate(context.Background(), threeWindows, 0)
+			if !errors.Is(err, tc.cause) || errors.Is(err, ErrPartial) || got != nil {
+				t.Fatalf("got %v, %v; want no tags and an error wrapping the cause, not ErrPartial", got, err)
+			}
+			if len(tc.llm.asked) != 6 || len(emb.calls) != 0 {
+				t.Errorf("asked %d times and embedded %v, want each of 3 windows twice and nothing embedded", len(tc.llm.asked), emb.calls)
+			}
+		})
 	}
 }
 
@@ -365,21 +446,27 @@ func TestGenerate_LongTextKeepsUTF8Valid(t *testing.T) {
 	}
 }
 
-func TestGenerate_LongTextReportsAModelFailure(t *testing.T) {
+// TestGenerate_LongTextDoesNotAskAgainOnceItsContextEnded: a model that fails
+// because the caller gave up is not asked again, and nothing partial is
+// returned: the caller is gone.
+func TestGenerate_LongTextDoesNotAskAgainOnceItsContextEnded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	llm, emb := &stubLLM{answer: "alpha"}, newFlat()
 	llm.hook = func(n int) error {
 		if n == 2 {
-			return errBoom
+			cancel()
+			return ctx.Err()
 		}
 		return nil
 	}
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{})
-	_, err := g.Generate(context.Background(), threeWindows, 0)
-	if !errors.Is(err, errBoom) || !strings.HasPrefix(err.Error(), "tagging: write tags: ") {
-		t.Fatalf("got %v, want a write-tags error wrapping %v", err, errBoom)
+	got, err := g.Generate(ctx, threeWindows, 0)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrPartial) || got != nil {
+		t.Fatalf("got %v, %v; want no tags and context.Canceled", got, err)
 	}
 	if len(llm.asked) != 2 || len(emb.calls) != 0 {
-		t.Errorf("asked %d times and embedded %v after the model failed", len(llm.asked), emb.calls)
+		t.Errorf("asked %d times and embedded %v after the context was canceled", len(llm.asked), emb.calls)
 	}
 }
 

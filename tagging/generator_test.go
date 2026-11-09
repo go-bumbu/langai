@@ -295,26 +295,83 @@ func TestGenerate_AsksNobodyAboutABlankText(t *testing.T) {
 	}
 }
 
+// noTags is a reply that holds words but no tag: every line is too long to be
+// one.
+const noTags = "I am sorry but this text is not something I can write tags for."
+
 func TestGenerate_AnswerWithoutTagsIsNotAnError(t *testing.T) {
-	g, _, emb := newGenerator(t, "\n \n", angled(), GeneratorConfig{})
+	g, llm, emb := newGenerator(t, noTags, angled(), GeneratorConfig{})
 	got, err := g.Generate(context.Background(), bread, 0)
 	if err != nil || got != nil {
 		t.Fatalf("got %v, %v", got, err)
 	}
-	if len(emb.calls) != 0 {
-		t.Errorf("embedded %v although the model wrote no tag", emb.calls)
+	if len(llm.asked) != 1 || len(emb.calls) != 0 {
+		t.Errorf("asked %d times and embedded %v, want one question and nothing embedded", len(llm.asked), emb.calls)
+	}
+}
+
+// TestGenerate_AnEmptyReplyIsAskedAgainAndThenAnError: a model that answers
+// with nothing has not said "no tags", it has failed. It used to come back as
+// no tags and no error. It is asked once more, and a second empty reply is an
+// error the caller can tell from a text without tags.
+func TestGenerate_AnEmptyReplyIsAskedAgainAndThenAnError(t *testing.T) {
+	for name, empty := range map[string]string{
+		"nothing":                    "",
+		"blank lines":                "\n \n",
+		"a reasoning block only":     "<think>\nbread, I suppose\n</think>\n",
+		"reasoning that never ended": "<think>\nThe text is about bread and",
+		"an empty code fence":        "```\n```",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, llm, emb := newGenerator(t, empty, angled(), GeneratorConfig{})
+			got, err := g.Generate(context.Background(), bread, 0)
+			if !errors.Is(err, ErrEmptyReply) || got != nil {
+				t.Fatalf("got %v, %v; want no tags and ErrEmptyReply", got, err)
+			}
+			if len(llm.asked) != 2 || len(emb.calls) != 0 {
+				t.Errorf("asked %d times and embedded %v, want two questions and nothing embedded", len(llm.asked), emb.calls)
+			}
+		})
+	}
+}
+
+// TestGenerate_AFailedOrEmptyReplyIsAskedAgainOnce: one bad reply, an error or
+// nothing at all, does not fail the call: the second answer counts.
+func TestGenerate_AFailedOrEmptyReplyIsAskedAgainOnce(t *testing.T) {
+	for name, first := range map[string]func(*stubLLM) error{
+		"an error":       func(*stubLLM) error { return errBoom },
+		"an empty reply": func(llm *stubLLM) error { llm.answer = ""; return nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, llm, _ := newGenerator(t, "alpha", angled(), GeneratorConfig{})
+			llm.hook = func(n int) error {
+				if n == 1 {
+					return first(llm)
+				}
+				llm.answer = "alpha"
+				return nil
+			}
+			got, err := g.Generate(context.Background(), bread, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireTags(t, got, []Tag{{"alpha", 0.6}})
+			if len(llm.asked) != 2 {
+				t.Errorf("asked %d times, want twice", len(llm.asked))
+			}
+		})
 	}
 }
 
 func TestGenerate_ReportsAModelFailure(t *testing.T) {
 	g, llm, emb := newGenerator(t, "alpha", angled(), GeneratorConfig{})
 	llm.err = errBoom
-	_, err := g.Generate(context.Background(), bread, 0)
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("got %v, want it to wrap %v", err, errBoom)
+	got, err := g.Generate(context.Background(), bread, 0)
+	if !errors.Is(err, errBoom) || errors.Is(err, ErrPartial) || got != nil {
+		t.Fatalf("got %v, %v; want no tags and an error wrapping %v", got, err, errBoom)
 	}
-	if len(emb.calls) != 0 {
-		t.Errorf("embedded %v after the model failed", emb.calls)
+	if len(llm.asked) != 2 || len(emb.calls) != 0 {
+		t.Errorf("asked %d times and embedded %v, want two questions and nothing embedded", len(llm.asked), emb.calls)
 	}
 }
 
