@@ -30,10 +30,13 @@ func serve(t *testing.T, body []byte) (*httptest.Server, Asset) {
 
 const cap = 1 << 20
 
+// dl is a Downloader with the given cap and nothing else set.
+func dl(limit int64) Downloader { return Downloader{Limit: limit} }
+
 func TestFile_WritesVerifiedFile(t *testing.T) {
 	_, a := serve(t, []byte("hello"))
 	dest := filepath.Join(t.TempDir(), "out.bin")
-	if err := File(context.Background(), nil, "test", a, dest, cap); err != nil {
+	if err := dl(cap).File(context.Background(), "test", a, dest); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(dest)
@@ -50,7 +53,7 @@ func TestFile_RejectsDigestMismatch(t *testing.T) {
 	_, a := serve(t, []byte("hello"))
 	a.SHA256 = strings.Repeat("0", 64)
 	dest := filepath.Join(t.TempDir(), "out.bin")
-	err := File(context.Background(), nil, "test", a, dest, cap)
+	err := dl(cap).File(context.Background(), "test", a, dest)
 	if err == nil || !strings.Contains(err.Error(), "sha256") {
 		t.Fatalf("err = %v, want a digest error", err)
 	}
@@ -66,14 +69,14 @@ func TestFile_RejectsDigestMismatch(t *testing.T) {
 func TestFile_RejectsWrongSizeAndHTTPErrors(t *testing.T) {
 	_, a := serve(t, []byte("hello"))
 	a.Size = 4
-	err := File(context.Background(), nil, "test", a, filepath.Join(t.TempDir(), "out.bin"), cap)
+	err := dl(cap).File(context.Background(), "test", a, filepath.Join(t.TempDir(), "out.bin"))
 	if err == nil || !strings.Contains(err.Error(), "bytes") {
 		t.Fatalf("err = %v, want a size error", err)
 	}
 	srv := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)
 	a = Asset{URL: srv.URL + "/missing", SHA256: strings.Repeat("0", 64)}
-	err = File(context.Background(), nil, "test", a, filepath.Join(t.TempDir(), "out.bin"), cap)
+	err = dl(cap).File(context.Background(), "test", a, filepath.Join(t.TempDir(), "out.bin"))
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("err = %v, want the HTTP status", err)
 	}
@@ -84,11 +87,11 @@ func TestFile_CapsTheDownloadAtTheLargerOfLimitAndSize(t *testing.T) {
 	_, a := serve(t, body)
 	dest := filepath.Join(t.TempDir(), "out.bin")
 	// the pinned size raises a smaller cap
-	if err := File(context.Background(), nil, "test", a, dest, 10); err != nil {
+	if err := dl(10).File(context.Background(), "test", a, dest); err != nil {
 		t.Fatalf("a download of its pinned size must pass a smaller cap: %v", err)
 	}
 	a.Size = 0
-	err := File(context.Background(), nil, "test", a, filepath.Join(t.TempDir(), "out.bin"), 10)
+	err := dl(10).File(context.Background(), "test", a, filepath.Join(t.TempDir(), "out.bin"))
 	if err == nil || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("err = %v, want the cap error", err)
 	}
@@ -103,7 +106,7 @@ func TestFile_UsesTheClientAndUserAgent(t *testing.T) {
 	t.Cleanup(srv.Close)
 	sum := sha256.Sum256([]byte("x"))
 	a := Asset{URL: srv.URL, SHA256: hex.EncodeToString(sum[:])}
-	if err := File(context.Background(), srv.Client(), "langai-test", a, filepath.Join(t.TempDir(), "x"), cap); err != nil {
+	if err := (Downloader{Client: srv.Client(), UserAgent: "langai-test", Limit: cap}).File(context.Background(), "test", a, filepath.Join(t.TempDir(), "x")); err != nil {
 		t.Fatal(err)
 	}
 	if agent != "langai-test" {
@@ -111,7 +114,7 @@ func TestFile_UsesTheClientAndUserAgent(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := File(ctx, nil, "test", a, filepath.Join(t.TempDir(), "x"), cap); err == nil {
+	if err := dl(cap).File(ctx, "test", a, filepath.Join(t.TempDir(), "x")); err == nil {
 		t.Error("a cancelled context must fail the download")
 	}
 }
@@ -120,7 +123,7 @@ func TestUnpinned_ReportsDigestAndSize(t *testing.T) {
 	body := []byte("pin me")
 	_, a := serve(t, body)
 	dest := filepath.Join(t.TempDir(), "sub", "out.bin")
-	sum, n, err := Unpinned(context.Background(), nil, "test", a.URL, dest, cap)
+	sum, n, err := dl(cap).Unpinned(context.Background(), a.URL, dest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +135,7 @@ func TestUnpinned_ReportsDigestAndSize(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)
-	if _, _, err := Unpinned(context.Background(), nil, "test", srv.URL, filepath.Join(t.TempDir(), "x"), cap); err == nil {
+	if _, _, err := dl(cap).Unpinned(context.Background(), srv.URL, filepath.Join(t.TempDir(), "x")); err == nil {
 		t.Error("404: want an error")
 	}
 }
@@ -142,9 +145,19 @@ type tarEntry struct {
 	body       string
 }
 
-// tarGz builds a gzipped tarball in memory with entries nested under dir/,
-// like a release archive.
+// tarGz writes tarGzBytes to a file and returns its path.
 func tarGz(t *testing.T, dir string, entries []tarEntry) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "libs.tar.gz")
+	if err := os.WriteFile(p, tarGzBytes(t, dir, entries), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// tarGzBytes builds a gzipped tarball in memory with entries nested under dir/,
+// like a release archive.
+func tarGzBytes(t *testing.T, dir string, entries []tarEntry) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -173,11 +186,7 @@ func tarGz(t *testing.T, dir string, entries []tarEntry) string {
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
 	}
-	p := filepath.Join(t.TempDir(), "libs.tar.gz")
-	if err := os.WriteFile(p, buf.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return p
+	return buf.Bytes()
 }
 
 // wantLib accepts the .so files directly under lib/.

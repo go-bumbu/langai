@@ -94,7 +94,7 @@ func TestHandler_SimilarAndPictures(t *testing.T) {
 	status, body, _ := get(t, srv.URL+"/api/similar/sub%20dir/green%20blue.png?limit=2")
 	var res Result
 	decode(t, body, &res)
-	if status != 200 || len(res.Hits) != 2 || !res.Hits[0].Self || !res.Stored {
+	if status != 200 || len(res.Hits) != 2 || res.Hits[0].Self || !res.Stored {
 		t.Errorf("similar: %d %+v", status, res)
 	}
 	if status, body, _ := get(t, srv.URL+"/api/similar/nope.png"); status != 404 || !bytes.Contains(body, []byte("error")) {
@@ -214,5 +214,30 @@ func TestHandler_TextSearch(t *testing.T) {
 	f.lib.cfg.Index = ix
 	if _, err := f.lib.SearchText(context.Background(), "green", 0); err == nil || !strings.Contains(err.Error(), "WithTextEmbedder") {
 		t.Errorf("no text embedder: %v", err)
+	}
+}
+
+func TestHandler_InfoSaysWhereTheModelAndTheScanStand(t *testing.T) {
+	f := scanned(t)
+	cfg := f.lib.cfg
+	cfg.ModelState = func() string { return "not started" }
+	lib, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib.scanning.Store(true)
+	srv := httptest.NewServer(Handler(lib))
+	t.Cleanup(srv.Close)
+	_, body, _ := get(t, srv.URL+"/api/info")
+	var info struct {
+		Scanning   bool   `json:"scanning"`
+		ModelState string `json:"modelState"`
+	}
+	decode(t, body, &info)
+	if !info.Scanning || info.ModelState != "not started" {
+		t.Errorf("info: %+v", info)
+	}
+	if f.lib.Scanning() || f.lib.ModelState() != "" {
+		t.Errorf("a library that is idle and was told nothing: %v %q", f.lib.Scanning(), f.lib.ModelState())
 	}
 }

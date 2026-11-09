@@ -68,9 +68,20 @@ type Config struct {
 	// SamplesFile is an eval dataset (zarf/eval/testdata/golden.yaml) that
 	// LoadSamples imports; empty disables it.
 	SamplesFile string
-	// ChatState says whether the chat model is loaded yet ("not loaded",
-	// "loading", "ready" or an error); nil leaves it out.
+	// ChatState says where the chat model's lazy loader stands ("not
+	// started", "loading", "loaded", or the error of a load that failed);
+	// nil leaves it out.
 	ChatState func() string
+	// EmbedderState says the same of the embedding model, and RunsOn what
+	// it runs on, which a lazy model knows once it is loaded; nil leaves
+	// them out, and the page then shows Info.Accel.
+	EmbedderState func() string
+	RunsOn        func() string
+	// WarmLater has New skip its warm-up: the caller calls Warm itself, behind
+	// its server say, so that notes the cache does not hold yet (a fresh
+	// cache, another model) do not delay the start by the time it takes to
+	// embed them.
+	WarmLater bool
 	Info      Info
 	Logger    *slog.Logger
 }
@@ -109,6 +120,7 @@ const (
 type Notebook struct {
 	cfg    Config
 	logger *slog.Logger
+	tagger *tagging.Tagger
 	scope  *tagging.Scope
 	mu     sync.RWMutex
 	cat    catalog
@@ -118,12 +130,31 @@ type Notebook struct {
 	// under the same id never comes back at a revision the Tagger has seen.
 	rev    int64
 	tagRev map[string]int64
+
+	pruneMu   sync.Mutex
+	lastPrune PruneResult
+}
+
+// PruneResult is the outcome of one PruneCache.
+type PruneResult struct {
+	// At is when it ran; zero when none has yet.
+	At time.Time
+	// Removed is how many embeddings it removed, the ones last used before
+	// UnusedSince.
+	Removed     int64
+	UnusedSince time.Time
+	// Err is why it removed nothing.
+	Err error
 }
 
 // New loads the notebook file, if there is one, builds a Tagger over it (the
 // notebook is the Catalog) and warms it: the tags are built and every note is
 // embedded, unless the cache holds it already. A fresh cache, or another
-// model, embeds everything again.
+// model, embeds everything again. When the cache holds everything, the
+// embedder is never called, so a lazy one stays unloaded. An embedder that
+// fails does not keep the notebook from opening: the failure is logged and
+// each note shows it until the embedder works. With Config.WarmLater the
+// warm-up is left to the caller's Warm.
 func New(ctx context.Context, cfg Config) (*Notebook, error) {
 	if cfg.Cache == nil || cfg.Chat == nil || cfg.Embedder == nil {
 		return nil, errors.New("autotag: Config needs a Cache, a Chat model and an Embedder")
@@ -153,7 +184,11 @@ func New(ctx context.Context, cfg Config) (*Notebook, error) {
 	if err != nil {
 		return nil, fmt.Errorf("autotag: %w", err)
 	}
-	nb.scope = tg.Scope(scopeIndex, scopePartition)
+	nb.tagger, nb.scope = tg, tg.Scope(tagging.Space{Index: scopeIndex, Partition: scopePartition})
+	if cfg.WarmLater {
+		nb.logger.Info("notebook loaded", "tags", len(nb.cat.Tags), "notes", len(nb.cat.Notes))
+		return nb, nil
+	}
 
 	start := time.Now()
 	texts := make([]string, len(nb.cat.Notes))
@@ -161,10 +196,69 @@ func New(ctx context.Context, cfg Config) (*Notebook, error) {
 		texts[i] = itemText(n)
 	}
 	if err := nb.scope.Warm(ctx, revision(nb.rev), texts...); err != nil {
-		return nil, fmt.Errorf("autotag: warm the tagger: %w", err)
+		if ctx.Err() != nil {
+			_ = tg.Close()
+			return nil, fmt.Errorf("autotag: warm the tagger: %w", err)
+		}
+		nb.logger.Warn("notebook not warmed: its notes are embedded when the embedder works", "err", err)
 	}
 	nb.logger.Info("notebook loaded", "tags", len(nb.cat.Tags), "notes", len(nb.cat.Notes), "elapsed", time.Since(start).Round(time.Millisecond))
 	return nb, nil
+}
+
+// Close stops the notebook's Tagger and waits for what it has running (a
+// rebuild after a change, a View in flight) to end, so nothing reads the
+// embedder or the cache after it: call it before closing those. Every later
+// View and LoadSamples fails with langai.ErrClosed. It does not close the
+// Embedder, the Chat model or the Cache, which the caller made.
+func (nb *Notebook) Close() error { return nb.tagger.Close() }
+
+// PruneCache removes from the Tagger's cache the embeddings last used before
+// unusedSince, and returns how many: the texts of notes edited or deleted
+// since, and what another embedding model left there. It goes through
+// Tagger.Prune with the notebook's space, not the cache's own Prune, so the
+// names and members of tags that have not changed since, which the Tagger
+// never reads again, are marked as used first. unusedSince must be at least
+// tagging.MinPruneAge in the past.
+func (nb *Notebook) PruneCache(ctx context.Context, unusedSince time.Time) (int64, error) {
+	removed, err := nb.tagger.Prune(ctx, unusedSince, nb.scope.Space())
+	nb.pruneMu.Lock()
+	nb.lastPrune = PruneResult{At: time.Now(), Removed: removed, UnusedSince: unusedSince, Err: err}
+	nb.pruneMu.Unlock()
+	return removed, err
+}
+
+// LastPrune returns the outcome of the last PruneCache, whoever called it;
+// its At is zero before the first.
+func (nb *Notebook) LastPrune() PruneResult {
+	nb.pruneMu.Lock()
+	defer nb.pruneMu.Unlock()
+	return nb.lastPrune
+}
+
+// KeepCachePruned prunes the cache of what was unused for unusedFor (see
+// PruneCache) now and then once every interval, until ctx ends, and logs how
+// many embeddings each run removed. It returns when ctx ends or the notebook
+// is closed, so run it on a goroutine and cancel ctx before Close.
+func (nb *Notebook) KeepCachePruned(ctx context.Context, unusedFor, interval time.Duration) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		removed, err := nb.PruneCache(ctx, time.Now().Add(-unusedFor))
+		switch {
+		case ctx.Err() != nil || errors.Is(err, langai.ErrClosed):
+			return
+		case err != nil:
+			nb.logger.Warn("tag cache not pruned", "err", err)
+		default:
+			nb.logger.Info("tag cache pruned", "removed", removed, "unused_for", unusedFor)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 // revision formats a revision counter as the Tagger reads it.
@@ -227,12 +321,34 @@ func (nb *Notebook) ChatState() string {
 	return nb.cfg.ChatState()
 }
 
+// EmbedderState says whether the embedding model is loaded.
+func (nb *Notebook) EmbedderState() string {
+	if nb.cfg.EmbedderState == nil {
+		return ""
+	}
+	return nb.cfg.EmbedderState()
+}
+
+// RunsOn says what the embedding model runs on: what the Notebook was told
+// (Config.RunsOn), or Info.Accel.
+func (nb *Notebook) RunsOn() string {
+	if nb.cfg.RunsOn == nil {
+		return nb.cfg.Info.Accel
+	}
+	return nb.cfg.RunsOn()
+}
+
 // TagView is a tag with how many notes carry it by hand and how many the
 // Tagger picks it for.
 type TagView struct {
 	Tag
 	Hand int `json:"hand"`
 	Auto int `json:"auto"`
+	// Incomplete says the tag was built without one or more of the notes
+	// that carry it by hand, because the embedder could not take their text
+	// (tagging.Scope.Incomplete): it suggests on its name and its other
+	// notes until the notebook next changes, when they get another try.
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 // NoteView is a note with the tags the Tagger picks for it, best first, and
@@ -322,7 +438,58 @@ func (nb *Notebook) View(ctx context.Context) (View, error) {
 		v.Notes = append(v.Notes, nv)
 	}
 	v.SuggestMs = time.Since(start).Milliseconds()
+	// the tags the rebuild above left a member out of
+	incomplete, err := nb.scope.Incomplete(ctx)
+	if err != nil {
+		nb.logger.Warn("incomplete tags not read", "err", err)
+	}
+	for _, id := range incomplete {
+		if i, ok := known[id]; ok {
+			v.Tags[i].Incomplete = true
+		}
+	}
 	return v, nil
+}
+
+// WarmStats says what a Warm did.
+type WarmStats struct {
+	// Notes and Tags are how many texts and tags the Tagger was warmed
+	// with, at Revision.
+	Notes    int    `json:"notes"`
+	Tags     int    `json:"tags"`
+	Revision string `json:"revision"`
+	Ms       int64  `json:"ms"`
+	// Incomplete are the ids of the tags built without one of their notes
+	// (see TagView.Incomplete).
+	Incomplete []string `json:"incomplete"`
+}
+
+// Warm brings the Tagger up to the notebook's revision and has it embed
+// every note the cache does not hold yet (tagging.Scope.Warm), so that no
+// View pays for them: what an application does after it switches embedding
+// models. New does it at startup; over a cache that holds everything it
+// embeds nothing and takes milliseconds, which is the point of the cache.
+// A note the embedder cannot take does not stop the others: the error names
+// it by its place, and the stats still say what was done.
+func (nb *Notebook) Warm(ctx context.Context) (WarmStats, error) {
+	nb.mu.RLock()
+	texts := make([]string, len(nb.cat.Notes))
+	for i, n := range nb.cat.Notes {
+		texts[i] = itemText(n)
+	}
+	st := WarmStats{Notes: len(texts), Tags: len(nb.cat.Tags), Revision: revision(nb.rev), Incomplete: []string{}}
+	nb.mu.RUnlock()
+
+	start := time.Now()
+	err := nb.scope.Warm(ctx, st.Revision, texts...)
+	st.Ms = time.Since(start).Milliseconds()
+	if incomplete, ierr := nb.scope.Incomplete(ctx); ierr == nil && incomplete != nil {
+		st.Incomplete = incomplete
+	}
+	if err != nil {
+		return st, fmt.Errorf("autotag: warm the tagger: %w", err)
+	}
+	return st, nil
 }
 
 // AddTag creates a tag, or returns the one with that name (case does not
@@ -513,13 +680,20 @@ type Recommendation struct {
 	MinScore float64          `json:"minScore"`
 	Ms       int64            `json:"ms"`
 	Options  RecommendOptions `json:"options"`
+	// Error is set when the model failed on a part of a long note: Tags are
+	// those of the rest, so topics of that part may be missing (see
+	// tagging.ErrPartial).
+	Error string `json:"error,omitempty"`
 }
 
 // Recommend has a Generator write new tags for a note, as opts say. Every tag
 // the model wrote comes back, best first, those under the cutoff marked: a
 // debug view wants to see what was dropped. The first call loads the chat
 // model. A Generator keeps no state, so each call builds its own: in tree mode
-// the notebook's tags as they are now are the tree it extends.
+// the notebook's tags as they are now are the tree it extends. When the model
+// fails on some windows of a long note and not on others, the tags of the
+// windows it read come back with Recommendation.Error saying so, as a note's
+// scores do in a View; any other failure is the error of Recommend.
 func (nb *Notebook) Recommend(ctx context.Context, noteID string, opts RecommendOptions) (Recommendation, error) {
 	nb.mu.RLock()
 	i := nb.noteIndex(noteID)
@@ -548,10 +722,17 @@ func (nb *Notebook) Recommend(ctx context.Context, noteID string, opts Recommend
 	}
 	start := time.Now()
 	tags, err := gen.Generate(ctx, text, -1)
-	if err != nil {
+	partial := ""
+	switch {
+	case errors.Is(err, tagging.ErrPartial):
+		// the model failed on some windows of a long note: the tags of the
+		// others are good, so they are shown, with what went wrong
+		nb.logger.Warn("recommended tags cover a part of the note only", "note", noteID, "err", err)
+		partial = err.Error()
+	case err != nil:
 		return Recommendation{}, err
 	}
-	res := Recommendation{Tags: make([]Recommended, 0, len(tags)), MinScore: nb.cfg.Info.MinScore, Ms: time.Since(start).Milliseconds(), Options: opts}
+	res := Recommendation{Tags: make([]Recommended, 0, len(tags)), MinScore: nb.cfg.Info.MinScore, Ms: time.Since(start).Milliseconds(), Options: opts, Error: partial}
 	nb.mu.RLock()
 	defer nb.mu.RUnlock()
 	for _, t := range tags {

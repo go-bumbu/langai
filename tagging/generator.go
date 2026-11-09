@@ -20,7 +20,8 @@ const (
 	// 4B Instruct writing the tags and EmbeddingGemma scoring them (provider/yzma).
 	// Measured on 2026-10-25 over ten golden documents in English, Spanish and
 	// German, the ten tags the model wrote for each scored 0.31 to 0.68, the ones
-	// on a text's main topics at 0.5 and above; 6 to 10 of them reached 0.45,
+	// on a text's main topics at 0.5 and above; 6 to 10 of them reached 0.45
+	// (5 to 10 when measured again on 2026-11-09, on the GPU),
 	// and what fell below it was side detail (the steam for a loaf, a side
 	// salad). That is a judgment by eye on a small set, not a measured
 	// precision, and another embedder scores on another scale, so choose the
@@ -43,8 +44,10 @@ const (
 
 // Tag is one generated tag and how well it fits the text.
 type Tag struct {
-	// Name is the tag as the model wrote it, without list markers, quotes or
-	// trailing punctuation. Its case is the model's.
+	// Name is the tag as the model wrote it, without what it wrote around it:
+	// list markers, quotes, brackets, Markdown emphasis, a remark in brackets
+	// after it, trailing punctuation. Its case is the model's, except for the
+	// part of a tree tag that is an existing path (see WithTreeTags).
 	Name string
 	// Score is the cosine between the embeddings of the text and of the name:
 	// 1 for identical vectors and about 0 for unrelated ones. For a text read
@@ -85,6 +88,9 @@ type Generator struct {
 	cfg    GeneratorConfig
 	opts   generatorOptions
 	prompt string // the system prompt, built once from cfg and opts
+	// clean is how a name the model wrote is cleaned: as a tree path with
+	// WithTreeTags, mapped back to the existing paths, and as a tag otherwise
+	clean func(string) string
 }
 
 // generatorOptions are what the GeneratorOptions set.
@@ -136,6 +142,13 @@ func WithLanguageTags(lang string) GeneratorOption {
 // and to start a new top-level category only when none fits. The first ones up
 // to MaxTreeBytes in all are shown to the model; with none, it writes a tree of
 // its own.
+//
+// A tag that is one of existing, or starts with one or with its upper levels,
+// comes back with that part in the spelling given here, whatever case and
+// spacing the model wrote it in ("cooking/baking" for "Cooking / Baking"), so
+// the application can match it against its own paths as strings. That part is
+// the application's and is kept whatever its length; only the levels the
+// model adds are held to the length of a tag.
 func WithTreeTags(existing ...string) GeneratorOption {
 	return func(o *generatorOptions) {
 		o.tree = true
@@ -175,7 +188,12 @@ func NewGenerator(llm langai.Completer, emb langai.Embedder, cfg GeneratorConfig
 			return nil, o.err
 		}
 	}
-	return &Generator{llm: llm, emb: emb, cfg: cfg, opts: o, prompt: systemPrompt(cfg.Candidates, o)}, nil
+	clean := cleanTag
+	if o.tree {
+		existing := newPathIndex(o.existing)
+		clean = func(s string) string { return cleanPath(s, existing) }
+	}
+	return &Generator{llm: llm, emb: emb, cfg: cfg, opts: o, prompt: systemPrompt(cfg.Candidates, o), clean: clean}, nil
 }
 
 // systemPrompt sets the task. The text itself is the user message, so a text
@@ -189,7 +207,8 @@ func systemPrompt(candidates int, o generatorOptions) string {
 	// prompt, its example path and the existing tree pull it into English.
 	// The flat prompt in the text's language states the rule last only:
 	// stated first as well, side recall on the 24 long documents fell from
-	// 0.708 to 0.640 and precision from 0.882 to 0.853.
+	// 0.708 to 0.640 and precision from 0.882 to 0.853 (under the scoring
+	// zarf/eval used before 2026-11-09; not measured again under today's).
 	switch {
 	case o.language != "":
 		fmt.Fprintf(&b, "Every tag must be in %[1]s. The text may be in another language: translate its topics into %[1]s "+
@@ -264,6 +283,17 @@ func languageName(code string) string {
 // first GeneratorConfig.MaxBytes bytes of text are read, and a blank text asks
 // nobody. A model that writes no usable tag is not an error.
 //
+// A model call that fails, or answers with nothing at all, is made once more,
+// unless ctx has ended or the model's error wraps langai.ErrClosed, which
+// asking again cannot change. On a short text a second failure is the error
+// of Generate, wrapping the model's or ErrEmptyReply. On a long text the
+// windows that were read still count: Generate returns their tags together
+// with an error wrapping ErrPartial and the causes, so a result may hold tags
+// and an error at once; only when no window could be read does it return no
+// tags. A model that is gone is not asked about the rest of a long text: one
+// that is closed, and one that failed on the first two windows with none read
+// yet, so a model that is down costs four calls, not two per window.
+//
 // A text of at most GeneratorConfig.ChunkBytes is written about in one model
 // call and every tag is scored against the whole of it. A longer one is read
 // in windows of about 6 KB, one model call each, so that topics of later
@@ -291,11 +321,11 @@ func (g *Generator) Generate(ctx context.Context, text string, minScore float64)
 	if len(text) > g.cfg.ChunkBytes {
 		return g.generateLong(ctx, text, minScore)
 	}
-	answer, err := g.llm.Complete(ctx, g.prompt, text)
+	answer, err := g.write(ctx, text)
 	if err != nil {
 		return nil, fmt.Errorf("tagging: write tags: %w", err)
 	}
-	names := parseTags(answer, g.cfg.Candidates, g.clean())
+	names := parseTags(answer, g.cfg.Candidates, g.clean)
 	if len(names) == 0 {
 		return nil, nil
 	}
@@ -324,13 +354,49 @@ func (g *Generator) Generate(ctx context.Context, text string, minScore float64)
 	return tags, nil
 }
 
-// clean returns how a name the model wrote is cleaned: as a tree path with
-// WithTreeTags, as a tag otherwise.
-func (g *Generator) clean() func(string) string {
-	if g.opts.tree {
-		return cleanPath
+// ErrEmptyReply is wrapped by the error of a Generate whose model answered
+// with nothing to read tags from, twice: an empty reply, or one that is empty
+// once its reasoning block and code fences are gone. A model that has no tag
+// for a text says so in words, which is not an error; one that says nothing
+// has failed, and returning no tags for it would hide that.
+var ErrEmptyReply = errors.New("tagging: the model replied with nothing")
+
+// ErrPartial is wrapped by the error of a Generate over a long text when the
+// model failed on some of its windows and not on others. The tags returned
+// with it are good, and may be none: they are the ones of the windows that
+// were read, scored against the whole text as usual, so topics of the windows
+// that failed can be missing. The error also wraps each window's cause and
+// says which windows they are, and how many were not read in all: the windows
+// after one the model was closed at (langai.ErrClosed) are not asked about.
+// Test for it with errors.Is, and keep the tags or call again as suits the
+// application.
+var ErrPartial = errors.New("tagging: tags of a part of the text only")
+
+// write asks the model for the tags of text, a short text whole or one window
+// of a long one, and returns its reply. A call that fails, and a reply with
+// nothing to read (see ErrEmptyReply), is asked once more: one bad answer in
+// the many a long text takes must not cost the others. It does not ask again
+// once ctx has ended, nor a model that says it is closed (an error wrapping
+// langai.ErrClosed), which would say so again, and returns the last failure.
+func (g *Generator) write(ctx context.Context, text string) (string, error) {
+	var failure error
+	for range 2 {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		answer, err := g.llm.Complete(ctx, g.prompt, text)
+		switch {
+		case errors.Is(err, langai.ErrClosed):
+			return "", err
+		case err != nil:
+			failure = err
+		case strings.TrimSpace(stripScaffolding(answer)) == "":
+			failure = ErrEmptyReply
+		default:
+			return answer, nil
+		}
 	}
-	return cleanTag
+	return "", failure
 }
 
 // embed embeds texts as role and checks that every one was answered.

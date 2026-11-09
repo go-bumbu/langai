@@ -3,6 +3,7 @@ package onnx
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -57,7 +58,10 @@ var libs = &runtimeLoader{}
 // a failure is permanent, which matches langai.LazyEmbedder's cached-error
 // contract, and a second library is refused.
 type runtimeLoader struct {
-	once    sync.Once
+	once sync.Once
+	// mu guards the outcome below for loadedDir, which an install asks while
+	// another goroutine may be loading
+	mu      sync.Mutex
 	err     error
 	path    string
 	version string // what the loaded library reported, kept for Open's load log line
@@ -67,17 +71,21 @@ type runtimeLoader struct {
 // is the pinned release. Later calls succeed only for the same path.
 func (r *runtimeLoader) load(rt runtimeAPI, libPath string, logger *slog.Logger) error {
 	r.once.Do(func() {
-		if err := rt.load(libPath, logger); err != nil {
-			r.err = err
-			return
+		err := rt.load(libPath, logger)
+		var v string
+		if err == nil {
+			if v = rt.version(); !strings.HasPrefix(v, libMajorMinor+".") && v != libMajorMinor {
+				err = fmt.Errorf("onnxruntime at %s reports version %q but provider/onnx is pinned to %s: the Go bindings (onnxruntime_go %s) match that release's C API", libPath, v, LibVersion, pinnedBinding)
+			}
 		}
-		v := rt.version()
-		if !strings.HasPrefix(v, libMajorMinor+".") && v != libMajorMinor {
-			r.err = fmt.Errorf("onnxruntime at %s reports version %q but provider/onnx is pinned to %s: the Go bindings (onnxruntime_go %s) match that release's C API", libPath, v, LibVersion, pinnedBinding)
-			return
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.err = err; err == nil {
+			r.path, r.version = libPath, v
 		}
-		r.path, r.version = libPath, v
 	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.err != nil {
 		return r.err
 	}
@@ -85,4 +93,15 @@ func (r *runtimeLoader) load(rt runtimeAPI, libPath string, logger *slog.Logger)
 		return fmt.Errorf("onnxruntime is already loaded from %s; cannot load %s in the same process", r.path, libPath)
 	}
 	return nil
+}
+
+// loadedDir is the directory the library was loaded from, "" while it has
+// not been (or failed to).
+func (r *runtimeLoader) loadedDir() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.path == "" {
+		return ""
+	}
+	return filepath.Dir(r.path)
 }

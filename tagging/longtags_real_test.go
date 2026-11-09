@@ -42,19 +42,29 @@ func (c *longCatalog) Members(context.Context, string, string, []string) (map[st
 // catalog of one name-only tag per topic label of all of them: each document
 // should get its main and side tags and not its passing mentions, nor the
 // tags of the other documents. Its suggestions are scored with
-// eval.MatchTopics: a tag counts for a topic when the cosine of their
-// RoleDocument embeddings reaches 0.75 (or one contains the other). Gated like
+// eval.MatchTopics: a tag counts for a topic when it is the topic's label or
+// an alias, or holds one or is held by one as whole words, or when the cosine
+// of its RoleDocument embedding and an alias's reaches 0.75. Gated like
 // TestGoldenTagging:
 //
 //	SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$HOME/.cache/semsearch-yzma go test ./tagging/ -run TestTaggerLongTags -v
 //
-// Measured on 2026-11-07 with EmbeddingGemma 300M Q8_0 through llama.cpp
-// b11429, Vulkan on the iGPU of an AMD Ryzen AI 9 HX PRO 370, in 17 s: main
-// recall 0.917, side recall 0.678, mention rate 0.021 (one of 54), precision
-// 0.783, F1 0.755, 8 tags per document; the mean of the pieces, the rule
-// before, had side recall 0.583 at precision 0.780, and no ChunkBytes 0.451.
-// Main recall is short of 1 because of eval.MatchTopics: a document's main
-// label is picked for every one of them. The floors sit 0.05 under this run.
+// Measured on 2026-11-09 with EmbeddingGemma 300M Q8_0 through llama.cpp
+// b11429, Vulkan on the iGPU of an AMD Ryzen AI 9 HX PRO 370, in 16 s: main
+// recall 1.000, side recall 0.897, mention rate 0.021 (one of 54), precision
+// 0.801, mean F1 0.838 (the mean of the documents' own F1), 8.0 tags per
+// document, none without tags. Without ChunkBytes: side recall 0.653,
+// precision 0.859, mean F1 0.722, 5.5 tags. At NameMinScore 0.43: side recall
+// 0.897, precision 0.849, mean F1 0.869, 7.1 tags. The floors sit 0.05 under
+// this run, rounded down.
+//
+// The same suggestions scored 0.917, 0.678 and 0.783 (F1 of the mean precision
+// and recall 0.755) on 2026-11-07, when eval.MatchTopics gave a side tag that
+// holds a main alias ("housing cooperatives") to the main topic and counted
+// the side topic as missed; the Tagger did not change, the scoring did. The
+// comparison that chose the scoring rule was made on those numbers: the mean
+// of the pieces had side recall 0.583 at precision 0.780, and 0.753 against
+// 0.892 for this rule when scored by exact label.
 func TestTaggerLongTags(t *testing.T) {
 	if os.Getenv("SEMSEARCH_MODELS") == "" {
 		t.Skip("set SEMSEARCH_MODELS=1 to run the long tagging test with the real model")
@@ -66,9 +76,8 @@ func TestTaggerLongTags(t *testing.T) {
 	const tau = 0.75
 	ctx := context.Background()
 	emb, err := yzma.New(ctx, yzma.Config{
-		ModelsDir:     filepath.Join(dir, "models"),
-		LibDir:        filepath.Join(dir, "llama-cpp", yzma.LibTag),
-		ManagedLibDir: true,
+		Runtime:   yzma.Runtime{LibDir: filepath.Join(dir, "llama-cpp", yzma.LibTag), ManagedLibDir: true},
+		ModelsDir: filepath.Join(dir, "models"),
 	})
 	if err != nil {
 		t.Fatalf("yzma.New: %v", err)
@@ -86,7 +95,7 @@ func TestTaggerLongTags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	space := tg.Scope("long", "1")
+	space := tg.Scope(Space{"long", "1"})
 
 	vecs := map[string][]float32{} // RoleDocument vectors of tags and aliases
 	embed := func(texts []string) {
@@ -100,7 +109,7 @@ func TestTaggerLongTags(t *testing.T) {
 		if len(need) == 0 {
 			return
 		}
-		out, err := embedBatch(ctx, emb, langai.RoleDocument, need)
+		out, err := embedTexts(ctx, emb, langai.RoleDocument, need)
 		if err != nil {
 			t.Fatalf("embed names: %v", err)
 		}
@@ -126,17 +135,17 @@ func TestTaggerLongTags(t *testing.T) {
 		}
 		s := eval.MatchTopics(got, d.Topics, sim, tau)
 		scores = append(scores, s)
-		t.Logf("%s (%d bytes): main %.2f side %.2f mention %.2f prec %.2f: %s",
-			d.ID, len(d.Text), s.MainRecall, s.SideRecall, s.MentionRate, s.Precision, strings.Join(got, ", "))
+		t.Logf("%s (%d bytes): main %.2f side %.2f mention %.2f prec %.2f F1 %.2f: %s",
+			d.ID, len(d.Text), s.MainRecall, s.SideRecall, s.MentionRate, s.Precision, s.F1(), strings.Join(got, ", "))
 	}
 	m := eval.MeanLongScores(scores)
-	t.Logf("mean over %d documents: recall %.3f main %.3f side %.3f late side %.3f mention %.3f precision %.3f F1 %.3f tags %d",
-		len(docs), m.Recall, m.MainRecall, m.SideRecall, m.LateSideRecall, m.MentionRate, m.Precision, m.F1(), m.Tags)
+	t.Logf("mean over %d documents (%d without tags): recall %.3f main %.3f side %.3f late side %.3f mention %.3f precision %.3f mean F1 %.3f tags %.1f",
+		m.Documents, m.Untagged, m.Recall, m.MainRecall, m.SideRecall, m.LateSideRecall, m.MentionRate, m.Precision, m.MeanF1, m.Tags)
 
 	const (
-		minMainRecall  = 0.87
-		minSideRecall  = 0.63
-		minPrecision   = 0.73
+		minMainRecall  = 0.95
+		minSideRecall  = 0.84
+		minPrecision   = 0.75
 		maxMentionRate = 0.05
 	)
 	if m.MainRecall < minMainRecall {

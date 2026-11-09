@@ -7,7 +7,10 @@ import "context"
 type Catalog interface {
 	Tags(ctx context.Context, index, partition string) ([]CatalogTag, error)
 	// Members returns, for each of tagIDs, the texts of the items tagged with
-	// it by hand.
+	// it by hand. A rebuild, and a Tagger.Prune, ask about at most 64 tags in
+	// one call, and about each tag once, so what one call returns is all that
+	// is held in memory at a time. A panic here, or in Tags, during a rebuild
+	// becomes the error of the callers that wait for it.
 	Members(ctx context.Context, index, partition string, tagIDs []string) (map[string][]string, error)
 }
 

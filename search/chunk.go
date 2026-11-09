@@ -1,6 +1,11 @@
 package search
 
-import "strings"
+import (
+	"fmt"
+	"regexp"
+	"strings"
+	"unicode/utf8"
+)
 
 // Chunker splits a document into the pieces that get embedded individually.
 // Embedding models handle short passages far better than whole documents, so
@@ -12,10 +17,21 @@ type Chunker interface {
 // MarkdownChunker splits markdown text into heading-delimited sections and
 // packs their paragraphs into chunks of at most MaxChars. Each chunk is
 // prefixed with its heading path ("Title › Section") so the embedding keeps
-// the surrounding context even when the paragraph alone is ambiguous.
+// the surrounding context even when the paragraph alone is ambiguous; the
+// prefix counts towards MaxChars and is cut to a quarter of it. A heading
+// with no text under it and no subheading is a chunk of its heading path
+// alone, so its words stay searchable. Headings are ATX lines ("# Title")
+// indented by at most three spaces and outside fenced code blocks.
+//
+// Paragraphs are separated by blank lines, which may hold spaces or tabs;
+// CRLF and CR line endings are read as LF. A paragraph longer than a chunk
+// is split between lines, so code blocks and lists keep their structure,
+// and a line longer than a chunk between words.
 type MarkdownChunker struct {
-	// MaxChars caps the chunk size, defaulting to 1200 (roughly 300 tokens,
-	// comfortably within small embedding models' input windows).
+	// MaxChars caps the chunk size in bytes (len, not runes), defaulting to
+	// 1200 (roughly 300 tokens of English, comfortably within small
+	// embedding models' input windows). A single rune wider than a chunk
+	// still makes a chunk of its own.
 	MaxChars int
 }
 
@@ -23,24 +39,40 @@ const defaultMaxChars = 1200
 
 // Chunk implements Chunker.
 func (c *MarkdownChunker) Chunk(text string) []string {
-	maxChars := c.MaxChars
-	if maxChars <= 0 {
-		maxChars = defaultMaxChars
-	}
+	maxChars := c.maxChars()
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 
 	var out []string
 	var headings []string // heading text per level, index 0 = h1
 	var section []string  // content lines of the current section
-	inFence := false
+	var open fence        // the fenced code block the line is in, if any
+	bodiless := false     // the last heading has no text under it yet
 
+	// emitPath makes a chunk of the heading path alone, for a heading with
+	// no text of its own: its words stay searchable, in a short chunk that
+	// embeds as just that topic, instead of being lost or folded into the
+	// text of a sibling section they do not describe
+	emitPath := func() {
+		if path := strings.TrimSpace(truncate(headingPath(headings), maxChars)); path != "" {
+			out = append(out, path)
+		}
+	}
 	flush := func() {
 		body := strings.TrimSpace(strings.Join(section, "\n"))
 		section = section[:0]
 		if body == "" {
 			return
 		}
-		prefix := headingPath(headings)
-		for _, part := range packParagraphs(body, maxChars) {
+		bodiless = false
+		// the prefix is part of every chunk: cut it to a quarter of the
+		// chunk and pack the text into what is left
+		prefix := strings.TrimSpace(truncate(headingPath(headings), maxChars/4))
+		budget := maxChars
+		if prefix != "" {
+			budget -= len(prefix) + len("\n\n")
+		}
+		for _, part := range packParagraphs(body, budget) {
 			if prefix != "" {
 				part = prefix + "\n\n" + part
 			}
@@ -49,44 +81,122 @@ func (c *MarkdownChunker) Chunk(text string) []string {
 	}
 
 	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			inFence = !inFence
+		if open.char != 0 {
+			if open.closedBy(line) {
+				open = fence{}
+			}
 			section = append(section, line)
 			continue
 		}
-		if level := headingLevel(trimmed); level > 0 && !inFence {
-			flush()
-			headings = setHeading(headings, level, strings.TrimSpace(trimmed[level:]))
+		if f, ok := openingFence(line); ok {
+			open = f
+			section = append(section, line)
 			continue
 		}
-		section = append(section, line)
+		level, title := heading(line)
+		if level == 0 {
+			section = append(section, line)
+			continue
+		}
+		flush()
+		// a bodiless heading is in the path of a deeper one that follows,
+		// so only one followed by a sibling or a shallower heading needs a
+		// chunk of its own
+		if bodiless && level <= len(headings) {
+			emitPath()
+		}
+		headings = setHeading(headings, level, title)
+		bodiless = true
 	}
 	flush()
-
-	// a document of nothing but headings still deserves one searchable chunk
-	if len(out) == 0 {
-		if path := headingPath(headings); path != "" {
-			out = append(out, path)
-		}
+	if bodiless {
+		emitPath()
 	}
 	return out
 }
 
-// headingLevel returns the ATX heading level of a line, or 0 if it is not a
-// heading.
-func headingLevel(line string) int {
+// Fingerprint implements Fingerprinter: the algorithm's version and the
+// effective MaxChars, so the zero value and the default spelled out agree.
+// Version 2 gives a heading without text a chunk of its own and reads an
+// ATX heading only with at most three spaces of indent and outside fenced
+// code.
+func (c *MarkdownChunker) Fingerprint() string {
+	return fmt.Sprintf("markdown/2 max=%d", c.maxChars())
+}
+
+// maxChars is MaxChars or its default.
+func (c *MarkdownChunker) maxChars() int {
+	if c.MaxChars <= 0 {
+		return defaultMaxChars
+	}
+	return c.MaxChars
+}
+
+// maxIndent is the most spaces an ATX heading or a code fence may be
+// indented by; a line indented further (or by a tab) is indented code.
+const maxIndent = 3
+
+// unindent returns line without its leading spaces, false when there are
+// more than maxIndent of them or a tab among them.
+func unindent(line string) (string, bool) {
+	rest := strings.TrimLeft(line, " ")
+	if len(line)-len(rest) > maxIndent || strings.HasPrefix(rest, "\t") {
+		return "", false
+	}
+	return rest, true
+}
+
+// heading returns the ATX heading level of a line and its text, or 0 if it
+// is not a heading.
+func heading(line string) (int, string) {
+	line, ok := unindent(line)
+	if !ok {
+		return 0, ""
+	}
 	level := 0
 	for level < len(line) && line[level] == '#' {
 		level++
 	}
 	if level == 0 || level > 6 {
-		return 0
+		return 0, ""
 	}
 	if level == len(line) || line[level] == ' ' || line[level] == '\t' {
-		return level
+		return level, strings.TrimSpace(line[level:])
 	}
-	return 0
+	return 0, ""
+}
+
+// fence is an open fenced code block: the character of its fence (` or ~)
+// and the fence's length; the zero value is no block.
+type fence struct {
+	char byte
+	n    int
+}
+
+// openingFence returns the fence a line opens: at least three backticks or
+// tildes after at most maxIndent spaces.
+func openingFence(line string) (fence, bool) {
+	line, ok := unindent(line)
+	if !ok || len(line) < 3 || (line[0] != '`' && line[0] != '~') {
+		return fence{}, false
+	}
+	n := len(line) - len(strings.TrimLeft(line, line[:1]))
+	if n < 3 {
+		return fence{}, false
+	}
+	return fence{char: line[0], n: n}, true
+}
+
+// closedBy reports whether line closes the block: a fence of the same
+// character, at least as long, after at most maxIndent spaces and with
+// nothing but blanks after it.
+func (f fence) closedBy(line string) bool {
+	line, ok := unindent(line)
+	if !ok {
+		return false
+	}
+	rest := strings.TrimLeft(line, string(f.char))
+	return len(line)-len(rest) >= f.n && strings.TrimSpace(rest) == ""
 }
 
 // setHeading truncates the heading stack to level and records text there,
@@ -114,85 +224,90 @@ func headingPath(headings []string) string {
 	return strings.Join(parts, " › ")
 }
 
-// packParagraphs greedily joins blank-line-separated paragraphs into pieces
-// of at most maxChars, hard-splitting single paragraphs that are longer than
-// that on their own.
+// blankLine separates paragraphs: an empty line, or one of spaces and tabs.
+var blankLine = regexp.MustCompile(`\n[ \t]*\n`)
+
+// packParagraphs greedily joins the blank-line-separated paragraphs of body
+// into pieces of at most maxChars bytes, splitting a paragraph longer than
+// that between its lines.
 func packParagraphs(body string, maxChars int) []string {
-	var out []string
-	var buf strings.Builder
-	for _, para := range strings.Split(body, "\n\n") {
-		para = strings.TrimSpace(para)
-		if para == "" {
-			continue
+	var paras []string
+	for _, para := range blankLine.Split(body, -1) {
+		if para = strings.TrimSpace(para); para != "" {
+			paras = append(paras, para)
 		}
-		if buf.Len() > 0 && buf.Len()+2+len(para) > maxChars {
-			out = append(out, buf.String())
-			buf.Reset()
-		}
-		if len(para) > maxChars {
-			if buf.Len() > 0 {
-				out = append(out, buf.String())
-				buf.Reset()
-			}
-			out = append(out, splitWords(para, maxChars)...)
-			continue
-		}
-		if buf.Len() > 0 {
-			buf.WriteString("\n\n")
-		}
-		buf.WriteString(para)
 	}
-	if buf.Len() > 0 {
-		out = append(out, buf.String())
+	return pack(paras, "\n\n", maxChars, splitLines)
+}
+
+// splitLines packs the lines of an over-long paragraph, keeping their
+// indentation, and splits a line longer than maxChars between its words.
+func splitLines(para string, maxChars int) []string {
+	lines := strings.Split(para, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t")
+	}
+	return pack(lines, "\n", maxChars, splitWords)
+}
+
+// splitWords packs the words of an over-long line and cuts a word longer
+// than maxChars at rune boundaries.
+func splitWords(line string, maxChars int) []string {
+	return pack(strings.Fields(line), " ", maxChars, splitRunes)
+}
+
+// splitRunes cuts a word into pieces of at most maxChars bytes at rune
+// boundaries; a rune wider than maxChars is a piece of its own.
+func splitRunes(word string, maxChars int) []string {
+	var out []string
+	for word != "" {
+		head := truncate(word, maxChars)
+		if head == "" {
+			_, size := utf8.DecodeRuneInString(word)
+			head = word[:size]
+		}
+		out = append(out, head)
+		word = word[len(head):]
 	}
 	return out
 }
 
-// splitWords hard-splits an over-long paragraph at word boundaries, falling
-// back to a rune cut for a single "word" longer than maxChars.
-func splitWords(para string, maxChars int) []string {
+// pack greedily joins pieces with sep into parts of at most maxChars bytes;
+// a piece longer than that goes to split, whose parts are kept as they come.
+func pack(pieces []string, sep string, maxChars int, split func(string, int) []string) []string {
 	var out []string
 	var buf strings.Builder
-	for _, word := range strings.Fields(para) {
-		if buf.Len() > 0 && buf.Len()+1+len(word) > maxChars {
+	flush := func() {
+		if buf.Len() > 0 {
 			out = append(out, buf.String())
 			buf.Reset()
 		}
-		for len(word) > maxChars {
-			head, tail := runePrefix(word, maxChars)
-			out = append(out, head)
-			word = tail
+	}
+	for _, p := range pieces {
+		if len(p) > maxChars {
+			flush()
+			out = append(out, split(p, maxChars)...)
+			continue
+		}
+		if buf.Len() > 0 && buf.Len()+len(sep)+len(p) > maxChars {
+			flush()
 		}
 		if buf.Len() > 0 {
-			buf.WriteString(" ")
+			buf.WriteString(sep)
 		}
-		buf.WriteString(word)
+		buf.WriteString(p)
 	}
-	if buf.Len() > 0 {
-		out = append(out, buf.String())
-	}
+	flush()
 	return out
 }
 
-// runePrefix cuts s after the largest rune boundary within maxBytes.
-func runePrefix(s string, maxBytes int) (head, tail string) {
-	cut := 0
-	for i := range s {
-		if i > maxBytes {
-			break
-		}
-		cut = i
+// truncate cuts s to at most n bytes at a rune boundary.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	if cut == 0 { // first rune alone exceeds maxBytes; take it anyway
-		for i := range s {
-			if i > 0 {
-				cut = i
-				break
-			}
-		}
-		if cut == 0 {
-			return s, ""
-		}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
-	return s[:cut], s[cut:]
+	return s[:n]
 }

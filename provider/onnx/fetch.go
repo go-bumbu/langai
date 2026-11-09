@@ -160,99 +160,124 @@ func readInstallRecord(libDir string) (*installRecord, error) {
 	return &rec, nil
 }
 
-// writeInstallRecord records version and variant in dir.
-func writeInstallRecord(dir, variant string) error {
-	data, err := json.Marshal(installRecord{Version: LibVersion, Variant: variant})
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, installRecordFile), data, 0o600)
+// downloader is how this package's downloads are made (see fetch.Downloader):
+// through httpClient, capped at maxDownloadBytes, each logged to logger under
+// this package's component.
+func downloader(logger *slog.Logger) fetch.Downloader {
+	return fetch.Downloader{Client: httpClient, UserAgent: userAgent, Limit: maxDownloadBytes, Logger: logger.With(logComponent)}
+}
+
+// downloadContext bounds the first-use downloads: by downloadTimeout when
+// the caller's ctx has no deadline, and by the caller's own otherwise, which
+// a default must not cut short (see fetch.WithDefaultTimeout).
+func downloadContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return fetch.WithDefaultTimeout(ctx, downloadTimeout)
 }
 
 // ensureModelFile makes sure spec.File exists, downloading spec.URL into it
 // (verified against spec.SHA256 and, when set, spec.Size) when it is absent;
 // a download is logged to logger.
 func ensureModelFile(ctx context.Context, spec ModelSpec, logger *slog.Logger) error {
-	if _, err := os.Stat(spec.File); err == nil {
-		return nil
-	}
-	if spec.URL == "" {
-		return fmt.Errorf("model %q: %s does not exist and the spec has no URL to download it from", spec.Name, spec.File)
-	}
-	if err := os.MkdirAll(filepath.Dir(spec.File), 0o750); err != nil {
-		return err
-	}
 	a := asset{URL: spec.URL, SHA256: spec.SHA256, Size: spec.Size}
-	if err := fetchFile(ctx, "model "+spec.Name, a, spec.File, logger); err != nil {
-		return fmt.Errorf("download %s: %w", spec.Name, err)
+	return downloader(logger).EnsureFile(ctx, "model "+spec.Name, a, spec.File)
+}
+
+// libsWant is what ensureLibs is asked for: a directory, the runtime build
+// it should hold, and what to do with it once it does.
+type libsWant struct {
+	// plat is the first part of the libAssets key, "linux/amd64".
+	plat string
+	// dir is the absolute library directory.
+	dir string
+	// managed marks dir as owned by this package (Runtime.ManagedLibDir).
+	managed bool
+	// variant is the build dir should hold (see variantFor).
+	variant string
+	// loadedDir is the directory this process loaded the runtime from, ""
+	// while it has not; nil means it has not.
+	loadedDir func() string
+	// use loads the library from dir. It runs while a managed dir is locked,
+	// so no other process replaces it halfway; nil does nothing.
+	use func() error
+}
+
+// ensureLibs makes sure w.dir holds the ONNX Runtime build of w.variant and
+// then runs w.use on it. A managed directory is filled from libAssets when
+// it is empty or when its record names another version or variant, under
+// the directory's lock (see fetch.InstallDir), and the download and install
+// are logged to logger. It is never filled over files this package did not
+// install, and never while this process runs the library in it; a process
+// that does run it, and wants nothing else, does not wait for the lock. An
+// operator directory is only checked, never written to.
+func ensureLibs(ctx context.Context, w libsWant, logger *slog.Logger) error {
+	if !w.managed {
+		if _, err := libraryPath(w.dir); err != nil {
+			return fmt.Errorf("no %s in %s: unpack the lib/ directory of the onnxruntime %s release there (the %s build for %s), or use a managed LibDir, which gets it downloaded", libFile(), w.dir, LibVersion, w.variant, w.plat)
+		}
+		rec, err := readInstallRecord(w.dir)
+		if err != nil {
+			return err
+		}
+		if err := checkInstallRecord(w.dir, rec, w.variant); err != nil {
+			return err
+		}
+		return w.load()
 	}
-	logger.Info("downloaded model", logComponent, slog.String("path", spec.File))
-	return nil
-}
-
-// ensureLibs makes sure libDir holds the ONNX Runtime build the variant
-// needs. A managed directory (owned by this package) is filled from
-// libAssets when empty or when its record names another version or
-// variant, and the download and install are logged to logger; an operator
-// directory is only checked, never written to.
-func ensureLibs(ctx context.Context, libDir string, managed bool, variant string, logger *slog.Logger) error {
-	return ensureLibsFor(ctx, platform(), libDir, managed, variant, logger)
-}
-
-func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, variant string, logger *slog.Logger) error {
-	_, present := libraryPath(libDir)
-	rec, err := readInstallRecord(libDir)
+	record, err := json.Marshal(installRecord{Version: LibVersion, Variant: w.variant})
 	if err != nil {
 		return err
 	}
-	switch {
-	case present == nil && !managed:
-		return checkInstallRecord(libDir, rec, variant)
-	case present == nil && rec != nil && rec.Version == LibVersion && rec.Variant == variant:
+	installed, err := downloader(logger).InstallDir(ctx, fetch.DirInstall{
+		Dir: w.dir, What: "onnxruntime " + LibVersion + " (" + w.variant + ")", Archive: libAssets[w.plat+"/"+w.variant], Extract: extractLibs,
+		RecordFile: installRecordFile, Record: record,
+		Ready: func() (bool, error) { return w.ready(logger) },
+		Use:   w.load,
+		// a process that runs the library from here does not queue behind
+		// another process's download at its next open
+		Loaded: func() bool { return w.loadedDir != nil && w.loadedDir() == w.dir },
+	})
+	if installed {
+		logger.Info("installed onnxruntime "+LibVersion, logComponent, slog.String("dir", w.dir), slog.String("variant", w.variant))
+	}
+	return err
+}
+
+// load runs w.use, which may be nil.
+func (w libsWant) load() error {
+	if w.use == nil {
 		return nil
-	case present == nil:
-		logger.Info("replacing the onnxruntime install", logComponent, slog.String("dir", libDir), slog.Any("record", rec), slog.String("want", LibVersion+"/"+variant))
-	case !managed:
-		return fmt.Errorf("no %s in %s: unpack the lib/ directory of the onnxruntime %s release there (the %s build for %s), or use a managed LibDir, which gets it downloaded", libFile(), libDir, LibVersion, variant, plat)
 	}
-	a, ok := libAssets[plat+"/"+variant]
-	if !ok {
-		return fmt.Errorf("no pinned onnxruntime %s build for %s: use an unmanaged LibDir holding the release's lib/ directory", variant, plat)
-	}
-	parent := filepath.Dir(libDir)
-	if err := os.MkdirAll(parent, 0o750); err != nil {
-		return err
-	}
-	// Download and extract next to the final directory, then rename it into
-	// place: an interrupted install never leaves a half-filled libDir, and a
-	// half-filled one from an older crash (no library, see above) is replaced.
-	staging, err := os.MkdirTemp(parent, ".partial-")
+	return w.use()
+}
+
+// ready reports whether the managed w.dir can be used as it is, and
+// refuses, with an error, an install that cannot be made: of a build that
+// is not pinned for the platform, or over a library this process has
+// already loaded, which cannot be swapped under it. A loaded CUDA build
+// stays for a CPU request: it runs the CPU provider too.
+func (w libsWant) ready(logger *slog.Logger) (bool, error) {
+	rec, err := readInstallRecord(w.dir)
 	if err != nil {
-		return err
+		return false, err
 	}
-	defer func() { _ = os.RemoveAll(staging) }()
-	archive := filepath.Join(staging, "libs.tgz")
-	if err := fetchFile(ctx, "onnxruntime "+LibVersion+" ("+variant+")", a, archive, logger); err != nil {
-		return fmt.Errorf("download onnxruntime %s: %w", LibVersion, err)
+	_, missing := libraryPath(w.dir)
+	present := missing == nil
+	if present && rec != nil && rec.Version == LibVersion && rec.Variant == w.variant {
+		return true, nil
 	}
-	libs := filepath.Join(staging, "libs")
-	if err := os.Mkdir(libs, 0o750); err != nil {
-		return err
+	if w.loadedDir != nil && w.loadedDir() == w.dir {
+		if rec != nil && rec.Variant == variantCUDA && w.variant == variantCPU {
+			return true, nil
+		}
+		return false, fmt.Errorf("onnxruntime is already loaded from %s, which does not hold the %s build: a library a process has loaded cannot be replaced under it; open with that Provider first, or restart", w.dir, w.variant)
 	}
-	if err := extractLibs(archive, libs); err != nil {
-		return fmt.Errorf("extract onnxruntime %s: %w", LibVersion, err)
+	if _, ok := libAssets[w.plat+"/"+w.variant]; !ok {
+		return false, fmt.Errorf("no pinned onnxruntime %s build for %s: use an unmanaged LibDir holding the release's lib/ directory", w.variant, w.plat)
 	}
-	if err := writeInstallRecord(libs, variant); err != nil {
-		return err
+	if present {
+		logger.Info("replacing the onnxruntime install", logComponent, slog.String("dir", w.dir), slog.Any("record", rec), slog.String("want", LibVersion+"/"+w.variant))
 	}
-	if err := os.RemoveAll(libDir); err != nil {
-		return err
-	}
-	if err := os.Rename(libs, libDir); err != nil {
-		return err
-	}
-	logger.Info("installed onnxruntime "+LibVersion, logComponent, slog.String("dir", libDir), slog.String("variant", variant))
-	return nil
+	return false, nil
 }
 
 // checkInstallRecord refuses an operator directory whose record names
@@ -264,14 +289,6 @@ func checkInstallRecord(libDir string, rec *installRecord, variant string) error
 		return nil
 	}
 	return fmt.Errorf("%s holds onnxruntime %s (%s) but %s (%s) is wanted: install that build there, or use a managed LibDir", libDir, rec.Version, rec.Variant, LibVersion, variant)
-}
-
-// fetchFile downloads a to dest, verifying size and SHA-256 before the file
-// appears under its final name (see fetch.File). Since a download can take
-// minutes, it is logged (what names it) before it starts.
-func fetchFile(ctx context.Context, what string, a asset, dest string, logger *slog.Logger) error {
-	logger.Info("downloading "+what, logComponent, slog.String("url", a.URL), slog.Int64("size", a.Size), slog.String("sha256", a.SHA256), slog.String("dest", dest))
-	return fetch.File(ctx, httpClient, userAgent, a, dest, maxDownloadBytes)
 }
 
 // wantLib reports whether an archive entry is one of the runtime libraries:

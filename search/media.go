@@ -2,7 +2,6 @@ package search
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,7 +11,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -36,6 +34,23 @@ import (
 // short of what a crafted one-kilobyte PNG can claim to be.
 const maxImagePixels = 256 << 20
 
+// defaultMaxImageBytes is the most IndexImage and SearchImage read from
+// their reader unless WithMaxImageBytes says otherwise: 64 MiB, several
+// times a large camera JPEG, so that an endless or multi-gigabyte upload is
+// refused after that much instead of read whole into memory.
+const defaultMaxImageBytes = 64 << 20
+
+var (
+	// ErrTooLarge is returned by IndexImage and SearchImage for an image
+	// stream longer than the limit (WithMaxImageBytes).
+	ErrTooLarge = errors.New("search: image too large")
+	// ErrNoFrames is returned for a video the Sampler takes no frames from
+	// or the VideoEmbedder no segments, and for IndexFrames without frames:
+	// nothing is stored, so the item is tried again on the next call
+	// instead of being known and never found.
+	ErrNoFrames = errors.New("search: nothing to embed")
+)
+
 // MediaIndex is the Index for pictures: it embeds images and the sampled
 // frames of videos with a langai.ImageEmbedder, keeps the vectors in a
 // vector.Store and answers a query image or video with the indexed items that
@@ -44,21 +59,27 @@ const maxImagePixels = 256 << 20
 //
 // Every item is a set of frames, an image being one frame at time zero, and
 // each frame is one vector.Chunk whose Seq is the frame's time in
-// milliseconds. A search embeds the query's frames, asks the store for the
-// closest chunks of each and keeps the best pair per item, so a video is
-// found by the one frame that resembles the query most. The coordinates
+// milliseconds. A search embeds the query's frames (at most
+// DefaultMaxQueryVectors of them, see WithMediaMaxQueryVectors) and asks
+// the store, in one search, for the closest items, each scored by its best
+// pair of an indexed frame and a query frame, so a video is found by the
+// one frame that resembles the query most. The coordinates
 // (index, partition, collection) work as for Index; vectors of an image
 // model must not share a collection with a text model's.
 type MediaIndex struct {
-	embedder   langai.ImageEmbedder
-	sampler    media.Sampler
-	video      media.VideoEmbedder // whole segments instead of sampled frames, when set
-	text       langai.Embedder     // text queries, when set
-	store      vector.Store
-	minScore   float64
-	index      string
-	partition  string
-	collection string
+	embedder langai.ImageEmbedder
+	sampler  media.Sampler
+	video    langai.VideoEmbedder // whole segments instead of sampled frames, when set
+	text     langai.Embedder      // text queries, when set
+	store    vector.Store
+	minScore float64
+	maxQuery int // the most query vectors per search
+	coord    vector.Coord
+	model    string // the image embedder's, when it names it
+	maxBytes int64  // the most an image stream may hold
+
+	// what shapes the vectors besides the content, per route, for stamp
+	imageSettings, videoSettings, framesSettings string
 }
 
 // MediaOption customizes a MediaIndex.
@@ -78,7 +99,7 @@ func WithSampler(s media.Sampler) MediaOption {
 // must share the image embedder's space (the same model behind both) and
 // its dimensions. An index built this way must not share a collection with
 // one built on frames: the same video gets different vectors.
-func WithVideoEmbedder(v media.VideoEmbedder) MediaOption {
+func WithVideoEmbedder(v langai.VideoEmbedder) MediaOption {
 	return func(ix *MediaIndex) { ix.video = v }
 }
 
@@ -98,26 +119,70 @@ func WithMediaMinScore(min float64) MediaOption {
 	return func(ix *MediaIndex) { ix.minScore = min }
 }
 
-// NewMediaIndex returns a MediaIndex using the given embedder and store.
+// WithMediaMaxQueryVectors sets the most query vectors a search hands the
+// store, DefaultMaxQueryVectors by default (and when n <= 0): SearchIndexed
+// of an item with more stored frames or segments, and SearchVideo or
+// SearchFrames of a video with more frames or segments, search with n of
+// them, evenly spaced from the first; SearchFrames picks them before it
+// embeds anything.
+func WithMediaMaxQueryVectors(n int) MediaOption {
+	return func(ix *MediaIndex) { ix.maxQuery = n }
+}
+
+// WithMaxImageBytes sets the most IndexImage and SearchImage read from their
+// reader, 64 MiB by default (and when n <= 0); a longer stream is
+// ErrTooLarge. The pixel count is limited apart from this, before decoding.
+func WithMaxImageBytes(n int64) MediaOption {
+	return func(ix *MediaIndex) { ix.maxBytes = n }
+}
+
+// NewMediaIndex returns a MediaIndex using the given embedder and store, over
+// the collection at index, partition and collection, which match exactly as
+// for New and are checked as New checks them. When the image embedder names
+// its model (langai.Identified), the
+// store records it with the vectors written to the collection and refuses
+// another model's while the collection holds items; Reset empties it for a
+// new model.
 func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, partition, collection string, opts ...MediaOption) (*MediaIndex, error) {
 	if embedder == nil {
-		return nil, errors.New("nil embedder")
+		return nil, errors.New("search: nil embedder")
 	}
 	if store == nil {
-		return nil, errors.New("nil store")
+		return nil, errors.New("search: nil store")
+	}
+	coord := vector.Coord{Index: index, Partition: partition, Collection: collection}
+	if err := vector.CheckCoord(coord); err != nil {
+		return nil, fmt.Errorf("search: %w", err)
 	}
 	ix := &MediaIndex{
-		embedder: embedder, store: store,
-		minScore: math.Inf(-1), index: index, partition: partition, collection: collection,
+		embedder: embedder, store: store, minScore: math.Inf(-1), maxBytes: defaultMaxImageBytes, maxQuery: DefaultMaxQueryVectors,
+		coord: coord,
+		model: modelOf(embedder),
 	}
 	for _, opt := range opts {
 		opt(ix)
+	}
+	if ix.maxBytes <= 0 {
+		ix.maxBytes = defaultMaxImageBytes
+	}
+	if ix.maxQuery <= 0 {
+		ix.maxQuery = DefaultMaxQueryVectors
 	}
 	if ix.video != nil && ix.video.Dimensions() != embedder.Dimensions() {
 		return nil, fmt.Errorf("search: the video embedder's vectors have %d dimensions, the image embedder's %d: they must be one model", ix.video.Dimensions(), embedder.Dimensions())
 	}
 	if ix.text != nil && ix.text.Dimensions() != embedder.Dimensions() {
 		return nil, fmt.Errorf("search: the text embedder's vectors have %d dimensions, the image embedder's %d: they must be one model", ix.text.Dimensions(), embedder.Dimensions())
+	}
+	dims := embedder.Dimensions()
+	// image/2: JPEGs are turned upright by their EXIF orientation
+	ix.imageSettings = settings("image/2", ix.model, dims)
+	ix.framesSettings = settings("frames", ix.model, dims)
+	switch {
+	case ix.video != nil:
+		ix.videoSettings = settings("segments", ix.model, modelOf(ix.video), fingerprintOf(ix.video), dims)
+	case ix.sampler != nil:
+		ix.videoSettings = settings("sampled", ix.model, fingerprintOf(ix.sampler), dims)
 	}
 	return ix, nil
 }
@@ -136,24 +201,21 @@ type MediaMatch struct {
 // IndexImage decodes the image r holds (any registered format), embeds it and
 // stores it under docID, replacing whatever was indexed there before. It is a
 // cheap no-op when the bytes are unchanged since the last call, so it is safe
-// to call eagerly.
+// to call eagerly. A stream longer than the limit (WithMaxImageBytes) is
+// ErrTooLarge, read no further than just past the limit.
 func (ix *MediaIndex) IndexImage(ctx context.Context, docID string, r io.Reader) error {
-	if docID == "" {
-		return errors.New("empty document id")
+	if err := checkID(docID); err != nil {
+		return err
 	}
-	data, err := io.ReadAll(r)
+	data, err := ix.readImage(r, fmt.Sprintf("image %q", docID))
 	if err != nil {
-		return fmt.Errorf("search: read image %q: %w", docID, err)
+		return err
 	}
-	hash := bytesHash(data)
-	stored, err := ix.store.ContentHash(ctx, ix.index, ix.partition, ix.collection, docID)
-	if err != nil {
-		return fmt.Errorf("search: read content hash: %w", err)
+	hash := stamp(ix.imageSettings, data)
+	if same, err := ix.unchanged(ctx, docID, hash); err != nil || same {
+		return err
 	}
-	if stored == hash {
-		return nil
-	}
-	img, err := decodeImage(bytes.NewReader(data))
+	img, err := decodeImage(data)
 	if err != nil {
 		return fmt.Errorf("search: decode image %q: %w", docID, err)
 	}
@@ -165,24 +227,22 @@ func (ix *MediaIndex) IndexImage(ctx context.Context, docID string, r io.Reader)
 // VideoEmbedder when one is set (see WithVideoEmbedder), otherwise as the
 // frames the Sampler picks (see WithSampler), each embedded as an image. It
 // is a no-op when the file's bytes are unchanged since the last call;
-// hashing the file is far cheaper than decoding it.
+// hashing the file is far cheaper than decoding it. A video with no frames
+// or segments to embed is ErrNoFrames, and nothing is stored.
 func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error {
-	if docID == "" {
-		return errors.New("empty document id")
+	if err := checkID(docID); err != nil {
+		return err
 	}
 	if ix.sampler == nil && ix.video == nil {
 		return errors.New("search: no sampler: pass WithSampler or WithVideoEmbedder to NewMediaIndex to index videos")
 	}
-	hash, err := fileHash(path)
+	sum, err := fileHash(path)
 	if err != nil {
 		return fmt.Errorf("search: hash video %q: %w", docID, err)
 	}
-	stored, err := ix.store.ContentHash(ctx, ix.index, ix.partition, ix.collection, docID)
-	if err != nil {
-		return fmt.Errorf("search: read content hash: %w", err)
-	}
-	if stored == hash {
-		return nil
+	hash := stamp(ix.videoSettings, []byte(sum))
+	if same, err := ix.unchanged(ctx, docID, hash); err != nil || same {
+		return err
 	}
 	if ix.video != nil {
 		segments, err := ix.video.EmbedVideo(ctx, path)
@@ -191,15 +251,12 @@ func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error 
 		}
 		chunks := make([]vector.Chunk, len(segments))
 		for i, s := range segments {
-			if len(s.Vector) != ix.embedder.Dimensions() {
-				return fmt.Errorf("search: embed video %q: segment %d has %d dimensions, want %d", docID, i, len(s.Vector), ix.embedder.Dimensions())
+			if err := vector.Validate(s.Vector, ix.embedder.Dimensions()); err != nil {
+				return fmt.Errorf("search: embed video %q: segment %d: %w", docID, i, err)
 			}
 			chunks[i] = vector.Chunk{Seq: int(s.Start / time.Millisecond), Vector: s.Vector}
 		}
-		if err := ix.store.Upsert(ctx, ix.index, ix.partition, ix.collection, docID, hash, chunks); err != nil {
-			return fmt.Errorf("search: store %q: %w", docID, err)
-		}
-		return nil
+		return ix.put(ctx, docID, hash, chunks)
 	}
 	frames, err := ix.sampler.Sample(ctx, path)
 	if err != nil {
@@ -210,38 +267,81 @@ func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error 
 
 // IndexFrames embeds frames the caller extracted itself (its own decoder or
 // sampler) and stores them under docID. contentHash is the caller's
-// fingerprint of the source: when it equals the stored one the call is a
-// no-op, and an empty one always indexes. No frames store the hash alone, so
-// the item is known but never found.
+// fingerprint of the source and of how it extracted the frames: when it
+// equals the stored one (under the same model) the call is a no-op, and an
+// empty one always indexes. No frames is ErrNoFrames, and nothing is stored.
 func (ix *MediaIndex) IndexFrames(ctx context.Context, docID, contentHash string, frames []media.Frame) error {
-	if docID == "" {
-		return errors.New("empty document id")
+	if err := checkID(docID); err != nil {
+		return err
 	}
+	var hash string
 	if contentHash != "" {
-		stored, err := ix.store.ContentHash(ctx, ix.index, ix.partition, ix.collection, docID)
-		if err != nil {
-			return fmt.Errorf("search: read content hash: %w", err)
+		hash = stamp(ix.framesSettings, []byte(contentHash))
+		if same, err := ix.unchanged(ctx, docID, hash); err != nil || same {
+			return err
 		}
-		if stored == contentHash {
-			return nil
-		}
+	} else if err := checkModel(ctx, ix.store, ix.coord, ix.model); err != nil {
+		return err
 	}
-	return ix.indexFrames(ctx, docID, contentHash, frames)
+	return ix.indexFrames(ctx, docID, hash, frames)
 }
 
+// indexFrames embeds frames and stores them under docID with hash.
 func (ix *MediaIndex) indexFrames(ctx context.Context, docID, hash string, frames []media.Frame) error {
+	if len(frames) == 0 {
+		return fmt.Errorf("%w: %q has no frames", ErrNoFrames, docID)
+	}
 	vectors, err := ix.embed(ctx, frames)
 	if err != nil {
 		return fmt.Errorf("search: embed %q: %w", docID, err)
 	}
 	chunks := make([]vector.Chunk, len(frames))
 	for i, f := range frames {
+		if err := vector.Validate(vectors[i], ix.embedder.Dimensions()); err != nil {
+			return fmt.Errorf("search: embed %q: frame %d: %w", docID, i, err)
+		}
 		chunks[i] = vector.Chunk{Seq: int(f.At / time.Millisecond), Vector: vectors[i]}
 	}
-	if err := ix.store.Upsert(ctx, ix.index, ix.partition, ix.collection, docID, hash, chunks); err != nil {
+	return ix.put(ctx, docID, hash, chunks)
+}
+
+// put stores chunks under docID with hash; no chunks is ErrNoFrames, and
+// then nothing is stored.
+func (ix *MediaIndex) put(ctx context.Context, docID, hash string, chunks []vector.Chunk) error {
+	if len(chunks) == 0 {
+		return fmt.Errorf("%w: %q has no frames or segments", ErrNoFrames, docID)
+	}
+	if err := ix.store.Upsert(ctx, ix.coord, ix.model, vector.Doc{ID: docID, Hash: hash, Chunks: chunks}); err != nil {
 		return fmt.Errorf("search: store %q: %w", docID, err)
 	}
 	return nil
+}
+
+// readImage reads r whole, up to the limit; what names the image in errors.
+func (ix *MediaIndex) readImage(r io.Reader, what string) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, ix.maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("search: read %s: %w", what, err)
+	}
+	if int64(len(data)) > ix.maxBytes {
+		return nil, fmt.Errorf("%w: %s holds more than %d bytes", ErrTooLarge, what, ix.maxBytes)
+	}
+	return data, nil
+}
+
+// unchanged reports whether the store holds hash for docID, so indexing it
+// again would change nothing. When it does not, it checks the collection's
+// model, so that a model change fails (vector.ErrModelMismatch) before the
+// new model decodes or embeds anything.
+func (ix *MediaIndex) unchanged(ctx context.Context, docID, hash string) (bool, error) {
+	stored, err := ix.store.Hashes(ctx, ix.coord, docID)
+	if err != nil {
+		return false, fmt.Errorf("search: read content hash: %w", err)
+	}
+	if h, ok := stored[docID]; ok && h == hash {
+		return true, nil
+	}
+	return false, checkModel(ctx, ix.store, ix.coord, ix.model)
 }
 
 // embed runs the frames' images through the embedder and checks it answered
@@ -267,22 +367,15 @@ func (ix *MediaIndex) embed(ctx context.Context, frames []media.Frame) ([][]floa
 	return vectors, nil
 }
 
-// Delete removes an item and its frames. Deleting an unknown id is not an
-// error.
-func (ix *MediaIndex) Delete(ctx context.Context, docID string) error {
-	if docID == "" {
-		return errors.New("empty document id")
-	}
-	if err := ix.store.Delete(ctx, ix.index, ix.partition, ix.collection, docID); err != nil {
-		return fmt.Errorf("search: delete %q: %w", docID, err)
-	}
-	return nil
-}
-
 // SearchImage decodes the image r holds and returns the items that look most
-// like it, best first, at most limit (10 when <= 0).
+// like it, best first, at most limit (10 when <= 0). A stream longer than
+// the limit (WithMaxImageBytes) is ErrTooLarge.
 func (ix *MediaIndex) SearchImage(ctx context.Context, r io.Reader, limit int) ([]MediaMatch, error) {
-	img, err := decodeImage(r)
+	data, err := ix.readImage(r, "query image")
+	if err != nil {
+		return nil, err
+	}
+	img, err := decodeImage(data)
 	if err != nil {
 		return nil, fmt.Errorf("search: decode query image: %w", err)
 	}
@@ -318,12 +411,14 @@ func (ix *MediaIndex) SearchVideo(ctx context.Context, path string, limit int) (
 
 // SearchText returns the items that look most like what the text describes,
 // best first, at most limit (10 when <= 0). It needs the text embedder of
-// the same model (WithTextEmbedder); the text is embedded as a query.
+// the same model (WithTextEmbedder); the text is embedded as a query. A
+// blank text, or one that embeds to the zero vector, finds nothing.
 func (ix *MediaIndex) SearchText(ctx context.Context, text string, limit int) ([]MediaMatch, error) {
 	if ix.text == nil {
 		return nil, errors.New("search: no text embedder: pass WithTextEmbedder to NewMediaIndex to search by text")
 	}
-	if strings.TrimSpace(text) == "" {
+	text = strings.TrimSpace(sanitize(text))
+	if text == "" {
 		return nil, nil
 	}
 	vectors, err := ix.text.Embed(ctx, langai.RoleQuery, []string{text})
@@ -336,41 +431,40 @@ func (ix *MediaIndex) SearchText(ctx context.Context, text string, limit int) ([
 	return ix.search(ctx, []queryVector{{vector: vectors[0]}}, limit)
 }
 
-// ErrNotIndexed is returned by SearchIndexed for an id with no stored
-// vectors: never indexed, deleted, or indexed with nothing to embed.
-var ErrNotIndexed = errors.New("search: no stored vectors for this id")
-
 // SearchIndexed returns the items that look most like the already indexed
 // item docID, best first, at most limit (10 when <= 0), searching with its
 // stored vectors instead of embedding the file again: no model runs, so it
-// costs only the store lookups. For a video every stored frame or segment
-// is a query and QueryAt is its time, as with SearchVideo. The item itself
-// comes first with a score of about 1.
+// costs only one store search. For a video every stored frame or segment
+// is a query vector (at most DefaultMaxQueryVectors of them, evenly spaced,
+// see WithMediaMaxQueryVectors) and QueryAt is its time, as with
+// SearchVideo. docID itself is never among the hits; an id with nothing
+// stored is ErrNotIndexed.
 func (ix *MediaIndex) SearchIndexed(ctx context.Context, docID string, limit int) ([]MediaMatch, error) {
-	chunks, err := ix.store.Chunks(ctx, ix.index, ix.partition, ix.collection, docID)
+	chunks, err := storedVectors(ctx, ix.store, ix.coord, docID)
 	if err != nil {
-		return nil, fmt.Errorf("search: read stored vectors: %w", err)
-	}
-	if len(chunks) == 0 {
-		return nil, ErrNotIndexed
+		return nil, err
 	}
 	queries := make([]queryVector, len(chunks))
 	for i, c := range chunks {
 		queries[i] = queryVector{vector: c.Vector, at: time.Duration(c.Seq) * time.Millisecond}
 	}
-	return ix.search(ctx, queries, limit)
+	return ix.search(ctx, queries, limit, docID)
 }
 
 // SearchFrames is the search behind SearchImage and SearchVideo for frames
-// the caller extracted itself. Every frame is embedded and looked up; each
+// the caller extracted itself. The frames are embedded (at most
+// DefaultMaxQueryVectors of them, evenly spaced, see
+// WithMediaMaxQueryVectors) and searched with in one store search; each
 // item is scored by its best frame against any query frame, and the hits
 // come back best first, at most limit (10 when <= 0), those under the floor
-// (WithMediaMinScore) left out. An item that is the query itself comes
-// first with a score near 1; callers drop their own id.
+// (WithMediaMinScore) left out. An indexed item that is the query itself
+// comes first with a score near 1: to leave it out, search with its stored
+// vectors through SearchIndexed.
 func (ix *MediaIndex) SearchFrames(ctx context.Context, frames []media.Frame, limit int) ([]MediaMatch, error) {
 	if len(frames) == 0 {
 		return nil, nil
 	}
+	frames = spread(frames, ix.maxQuery)
 	vectors, err := ix.embed(ctx, frames)
 	if err != nil {
 		return nil, fmt.Errorf("search: embed query: %w", err)
@@ -389,72 +483,54 @@ type queryVector struct {
 	at     time.Duration
 }
 
-// search looks every query vector up and keeps the best pair per item, as
-// SearchFrames describes.
-func (ix *MediaIndex) search(ctx context.Context, queries []queryVector, limit int) ([]MediaMatch, error) {
+// search runs one store search with the query vectors (at most maxQuery of
+// them, evenly spaced) and keeps the best pair per item, as SearchFrames
+// describes, leaving out the ids in exclude.
+func (ix *MediaIndex) search(ctx context.Context, queries []queryVector, limit int, exclude ...string) ([]MediaMatch, error) {
 	if len(queries) == 0 {
 		return nil, nil
 	}
-	if limit <= 0 {
-		limit = 10
+	queries = spread(queries, ix.maxQuery)
+	vectors := make([][]float32, len(queries))
+	for i, q := range queries {
+		vectors[i] = q.vector
 	}
-	best := make(map[string]MediaMatch)
-	for _, q := range queries {
-		// over-fetch chunks so that several frames of the same item don't
-		// crowd other items out of the final per-item list
-		raw, err := ix.store.Search(ctx, ix.index, ix.partition, ix.collection, q.vector, limit*4)
-		if err != nil {
-			return nil, fmt.Errorf("search: search: %w", err)
-		}
-		for _, m := range raw {
-			// the store returns hits best first, so the first one below the
-			// floor ends the list
-			if m.Score < ix.minScore {
-				break
-			}
-			if cur, ok := best[m.DocID]; ok && cur.Score >= m.Score {
-				continue
-			}
-			best[m.DocID] = MediaMatch{DocID: m.DocID, Score: m.Score, At: time.Duration(m.Seq) * time.Millisecond, QueryAt: q.at}
-		}
+	hits, err := rank(ctx, ix.store, ix.coord, vector.Query{Limit: limit, Model: ix.model, Exclude: exclude}, vectors, ix.embedder.Dimensions(), ix.minScore)
+	if err != nil {
+		return nil, err
 	}
-	out := make([]MediaMatch, 0, len(best))
-	for _, m := range best {
-		out = append(out, m)
-	}
-	slices.SortFunc(out, func(a, b MediaMatch) int {
-		return cmp.Or(cmp.Compare(b.Score, a.Score), cmp.Compare(a.DocID, b.DocID))
-	})
-	if len(out) > limit {
-		out = out[:limit]
+	out := make([]MediaMatch, len(hits))
+	for i, h := range hits {
+		out[i] = MediaMatch{DocID: h.DocID, Score: h.Score, At: time.Duration(h.Seq) * time.Millisecond, QueryAt: queries[h.Query].at}
 	}
 	return out, nil
 }
 
 // decodeImage decodes one picture in any registered format, refusing one
-// that claims more than maxImagePixels before any pixel is allocated.
-func decodeImage(r io.Reader) (image.Image, error) {
-	var head bytes.Buffer
-	cfg, _, err := image.DecodeConfig(io.TeeReader(r, &head))
+// that claims more than maxImagePixels before any pixel is allocated, and
+// turns a JPEG upright by its EXIF orientation, which image/jpeg ignores: a
+// phone stores a portrait photo as landscape pixels plus that tag, and
+// embedded unturned it would match its own upright video frames less.
+func decodeImage(data []byte) (image.Image, error) {
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width*cfg.Height > maxImagePixels {
 		return nil, fmt.Errorf("image is %dx%d pixels, more than %d", cfg.Width, cfg.Height, maxImagePixels)
 	}
-	img, _, err := image.Decode(io.MultiReader(&head, r))
-	return img, err
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if format == "jpeg" {
+		img = orient(img, jpegOrientation(data))
+	}
+	return img, nil
 }
 
-// bytesHash is the fingerprint IndexImage stores: the SHA-256 of the encoded
-// image, hex.
-func bytesHash(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-// fileHash is the fingerprint IndexVideo stores: the SHA-256 of the file,
-// hex, streamed.
+// fileHash is the SHA-256 of the file, hex, streamed: the content IndexVideo
+// stamps.
 func fileHash(path string) (string, error) {
 	f, err := os.Open(path) //nolint:gosec // path is the caller's video file; it is only read and hashed
 	if err != nil {

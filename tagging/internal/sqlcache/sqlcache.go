@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-bumbu/langai"
 	"github.com/go-bumbu/langai/tagging"
@@ -42,19 +43,48 @@ var (
 	errEmptyVector = errors.New("tagging: empty vector")
 )
 
+// checkIndex refuses an index no cache takes: the empty one, and one a
+// database cannot store as text (see checkName).
+func checkIndex(index string) error {
+	if index == "" {
+		return errEmptyIndex
+	}
+	return checkName("index", index)
+}
+
+// checkName refuses an index or a model with a NUL byte or invalid UTF-8, as
+// every tagging.EmbeddingCache does: Postgres stores neither in a text column
+// and SQLite both, so the check is made here, with one message, before either
+// database is asked.
+func checkName(what, name string) error {
+	if !utf8.ValidString(name) || strings.ContainsRune(name, 0) {
+		return fmt.Errorf("tagging: %s %q holds a NUL byte or is not valid UTF-8", what, name)
+	}
+	return nil
+}
+
 // Dialect holds what differs between the SQL databases a Cache runs on. The
 // statements are written once, with ? placeholders, and are otherwise plain SQL
 // that these databases share.
 type Dialect struct {
 	Blob, Int string // vector/hash and role/time column types
 	Numbered  bool   // $1, $2… placeholders instead of ?
+	// SchemaLock, when not empty, is a statement that makes the transaction
+	// creating the schema wait for any other one doing the same.
+	SchemaLock string
 }
 
-// SQLite is the Dialect of SQLite.
+// SQLite is the Dialect of SQLite. It needs no SchemaLock: a transaction that
+// writes already waits for the one writer the database allows.
 var SQLite = Dialect{Blob: "BLOB", Int: "INTEGER"}
 
-// Postgres is the Dialect of PostgreSQL.
-var Postgres = Dialect{Blob: "BYTEA", Int: "BIGINT", Numbered: true}
+// Postgres is the Dialect of PostgreSQL. Two CREATE TABLE IF NOT EXISTS that
+// run together both find no table and one then fails on Postgres's own
+// catalog, so processes that start together take a transaction-level advisory
+// lock first; its key is the eight bytes of "autotag_" as a number, for no
+// reason but to be this table's own.
+var Postgres = Dialect{Blob: "BYTEA", Int: "BIGINT", Numbered: true,
+	SchemaLock: "SELECT pg_advisory_xact_lock(7022647215996888927)"}
 
 // Cache implements tagging.EmbeddingCache on SQL. It is safe for concurrent
 // use as far as its *sql.DB is.
@@ -79,18 +109,37 @@ func New(ctx context.Context, db *sql.DB, d Dialect, now func() time.Time) (*Cac
 		return nil, errors.New("nil clock")
 	}
 	c := &Cache{db: db, d: d, now: now}
-	for _, st := range []string{
+	if err := c.createSchema(ctx); err != nil {
+		return nil, fmt.Errorf("create autotag embeddings schema: %w", err)
+	}
+	return c, nil
+}
+
+// createSchema creates the table and its index if they are missing, in one
+// transaction that first takes the Dialect's SchemaLock, so several processes
+// starting together create them one after the other.
+func (c *Cache) createSchema(ctx context.Context) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var statements []string
+	if c.d.SchemaLock != "" {
+		statements = append(statements, c.d.SchemaLock)
+	}
+	statements = append(statements,
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 			idx TEXT NOT NULL, model TEXT NOT NULL, role %[2]s NOT NULL,
 			hash %[3]s NOT NULL, vec %[3]s NOT NULL, used %[2]s NOT NULL,
-			PRIMARY KEY (idx, model, role, hash))`, table, d.Int, d.Blob),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_used ON %s (used)`, table, table),
-	} {
-		if _, err := db.ExecContext(ctx, st); err != nil {
-			return nil, fmt.Errorf("create autotag embeddings schema: %w", err)
+			PRIMARY KEY (idx, model, role, hash))`, table, c.d.Int, c.d.Blob),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_used ON %s (used)`, table, table))
+	for _, st := range statements {
+		if _, err := tx.ExecContext(ctx, st); err != nil {
+			return err
 		}
 	}
-	return c, nil
+	return tx.Commit()
 }
 
 // q numbers the ? placeholders of a statement where the Dialect wants it.
@@ -108,46 +157,73 @@ type group struct {
 }
 
 // Get implements tagging.EmbeddingCache. Keys are grouped by model and role and
-// matched 500 at a time; the entries found older than
-// tagging.CacheRefreshAfter get their last-used time rewritten.
+// matched 500 at a time; the entries found last used
+// tagging.CacheRefreshAfter ago or longer, to the second, get their last-used
+// time rewritten, as in every backend (see cachetest). When that
+// write fails, on a read-only replica or a locked file, the vectors were read
+// all the same: Get returns all of them together with an error wrapping
+// tagging.ErrCacheWrite.
 func (c *Cache) Get(ctx context.Context, index string, keys []tagging.CacheKey) (map[tagging.CacheKey][]float32, error) {
-	if index == "" {
-		return nil, errEmptyIndex
+	if err := checkIndex(index); err != nil {
+		return nil, err
 	}
 	out := make(map[tagging.CacheKey][]float32, len(keys))
 	if len(keys) == 0 {
 		return out, nil
 	}
+	groups, err := grouped(keys)
+	if err != nil {
+		return nil, err
+	}
+	now := c.now().Unix()
+	staleAt := now - int64(tagging.CacheRefreshAfter/time.Second)
+	var notRefreshed error
+	for g, hashes := range groups {
+		for start := 0; start < len(hashes); start += chunk {
+			part := hashes[start:min(start+chunk, len(hashes))]
+			stale, err := c.read(ctx, index, g, part, staleAt, out)
+			if err != nil {
+				return nil, err
+			}
+			if notRefreshed != nil {
+				continue // the database takes no write: read the rest and say so once
+			}
+			// only the entries still stale: two readers do not rewrite a
+			// row one after the other for nothing
+			notRefreshed = c.touch(ctx, index, g, stale, now, &staleAt)
+		}
+	}
+	if notRefreshed != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return out, fmt.Errorf("%w: refresh last-used times: %w", tagging.ErrCacheWrite, notRefreshed)
+	}
+	return out, nil
+}
+
+// grouped returns the hashes of keys by model and role, each key once. It
+// refuses a model no database stores (see checkName).
+func grouped(keys []tagging.CacheKey) (map[group][][]byte, error) {
 	groups := map[group][][]byte{}
 	seen := map[tagging.CacheKey]bool{}
 	for _, k := range keys {
 		if seen[k] {
 			continue
 		}
+		if err := checkName("model", k.Model); err != nil {
+			return nil, err
+		}
 		seen[k] = true
 		g := group{k.Model, k.Role}
 		groups[g] = append(groups[g], k.Hash[:])
 	}
-	now := c.now().Unix()
-	staleBefore := now - int64(tagging.CacheRefreshAfter/time.Second)
-	for g, hashes := range groups {
-		for start := 0; start < len(hashes); start += chunk {
-			part := hashes[start:min(start+chunk, len(hashes))]
-			stale, err := c.read(ctx, index, g, part, staleBefore, out)
-			if err != nil {
-				return nil, err
-			}
-			if err := c.touch(ctx, index, g, stale, now, staleBefore); err != nil {
-				return nil, err
-			}
-		}
-	}
-	return out, nil
+	return groups, nil
 }
 
 // read adds to out the entries of hashes that the cache holds and returns the
-// hashes of those last used before staleBefore.
-func (c *Cache) read(ctx context.Context, index string, g group, hashes [][]byte, staleBefore int64, out map[tagging.CacheKey][]float32) ([][]byte, error) {
+// hashes of those last used at staleAt or before.
+func (c *Cache) read(ctx context.Context, index string, g group, hashes [][]byte, staleAt int64, out map[tagging.CacheKey][]float32) ([][]byte, error) {
 	args := append([]any{index, g.model, int64(g.role)}, bytesArgs(hashes)...)
 	rows, err := c.db.QueryContext(ctx, c.q(`SELECT hash, vec, used FROM `+table+
 		` WHERE idx = ? AND model = ? AND role = ? AND hash IN (`+placeholders(len(hashes))+`)`), args...)
@@ -172,7 +248,7 @@ func (c *Cache) read(ctx context.Context, index string, g group, hashes [][]byte
 			return nil, err
 		}
 		out[k] = v
-		if used < staleBefore {
+		if used <= staleAt {
 			stale = append(stale, hash)
 		}
 	}
@@ -182,14 +258,39 @@ func (c *Cache) read(ctx context.Context, index string, g group, hashes [][]byte
 	return stale, nil
 }
 
-// touch sets the last-used time of the stale entries to now. The used < bound
-// guard keeps two readers from rewriting a row one after the other for
-// nothing.
-func (c *Cache) touch(ctx context.Context, index string, g group, stale [][]byte, now, staleBefore int64) error {
-	for start := 0; start < len(stale); start += chunk {
-		part := stale[start:min(start+chunk, len(stale))]
-		args := append([]any{now, index, g.model, int64(g.role), staleBefore}, bytesArgs(part)...)
-		if _, err := c.db.ExecContext(ctx, c.q(`UPDATE `+table+` SET used = ? WHERE idx = ? AND model = ? AND role = ? AND used < ? AND hash IN (`+placeholders(len(part))+`)`), args...); err != nil {
+// touch sets the last-used time of the entries of hashes to now, 500 at a
+// time: of all of them, or with usedBy only of the ones last used at that
+// time or before.
+func (c *Cache) touch(ctx context.Context, index string, g group, hashes [][]byte, now int64, usedBy *int64) error {
+	for start := 0; start < len(hashes); start += chunk {
+		part := hashes[start:min(start+chunk, len(hashes))]
+		args := []any{now, index, g.model, int64(g.role)}
+		guard := ""
+		if usedBy != nil {
+			guard = ` AND used <= ?`
+			args = append(args, *usedBy)
+		}
+		args = append(args, bytesArgs(part)...)
+		if _, err := c.db.ExecContext(ctx, c.q(`UPDATE `+table+` SET used = ? WHERE idx = ? AND model = ? AND role = ?`+guard+
+			` AND hash IN (`+placeholders(len(part))+`)`), args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Touch implements tagging.EmbeddingCache.
+func (c *Cache) Touch(ctx context.Context, index string, keys []tagging.CacheKey) error {
+	if err := checkIndex(index); err != nil {
+		return err
+	}
+	groups, err := grouped(keys)
+	if err != nil {
+		return err
+	}
+	now := c.now().Unix()
+	for g, hashes := range groups {
+		if err := c.touch(ctx, index, g, hashes, now, nil); err != nil {
 			return err
 		}
 	}
@@ -201,10 +302,13 @@ func (c *Cache) touch(ctx context.Context, index string, g group, stale [][]byte
 // the primary key (see keyOrder), so concurrent Puts of the same keys do not
 // deadlock.
 func (c *Cache) Put(ctx context.Context, index string, vecs map[tagging.CacheKey][]float32) error {
-	if index == "" {
-		return errEmptyIndex
+	if err := checkIndex(index); err != nil {
+		return err
 	}
-	for _, v := range vecs {
+	for k, v := range vecs {
+		if err := checkName("model", k.Model); err != nil {
+			return err
+		}
 		if len(v) == 0 {
 			return errEmptyVector
 		}
@@ -244,8 +348,8 @@ func keyOrder(vecs map[tagging.CacheKey][]float32) []tagging.CacheKey {
 
 // DeleteIndex implements tagging.EmbeddingCache.
 func (c *Cache) DeleteIndex(ctx context.Context, index string) error {
-	if index == "" {
-		return errEmptyIndex
+	if err := checkIndex(index); err != nil {
+		return err
 	}
 	_, err := c.db.ExecContext(ctx, c.q(`DELETE FROM `+table+` WHERE idx = ?`), index)
 	return err

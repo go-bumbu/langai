@@ -58,11 +58,16 @@ type Topic struct {
 func (t Topic) Late() bool { return t.Offset > LateOffset }
 
 // LoadLong reads every *.yaml file in dir, one document per file, validates
-// them and returns them sorted by id. Unknown keys are an error.
+// them and returns them sorted by id. Unknown keys are an error, and so is a
+// directory without documents: a mistyped path must not score as a set
+// nothing was found in.
 func LoadLong(dir string) ([]LongDocument, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
 	if err != nil {
 		return nil, err
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("eval: no long documents (*.yaml) in %s", dir)
 	}
 	var docs []LongDocument
 	seen := map[string]bool{}
@@ -121,6 +126,9 @@ func (d *LongDocument) validate(seen map[string]bool) error {
 			return err
 		}
 	}
+	if a, b, name, shared := d.sharedName(); shared {
+		return fail("topics %q and %q share the name %q", a, b, name)
+	}
 	switch {
 	case c.main == 0:
 		return fail("no main topic")
@@ -132,6 +140,27 @@ func (d *LongDocument) validate(seen map[string]bool) error {
 		return fail("no side topic is late (past byte %d)", LateOffset)
 	}
 	return nil
+}
+
+// sharedName finds a label or alias that two topics of the document have in
+// common, compared word by word as MatchTopics does. A tag of that name
+// would fit both alike and go to whichever is listed first, so a document
+// must not have one.
+func (d *LongDocument) sharedName() (first, second, name string, shared bool) {
+	owner := map[string]int{}
+	for i, t := range d.Topics {
+		for _, n := range append([]string{t.Label}, t.Aliases...) {
+			key := strings.Join(words(n), " ")
+			if key == "" {
+				continue
+			}
+			if j, taken := owner[key]; taken && j != i {
+				return d.Topics[j].Label, t.Label, n, true
+			}
+			owner[key] = i
+		}
+	}
+	return "", "", "", false
 }
 
 // topicCounts tallies the topics of a document by role.

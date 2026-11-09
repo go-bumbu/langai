@@ -5,13 +5,11 @@ import (
 	"context"
 	"errors"
 	"image"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/media"
 	"github.com/go-bumbu/langai/search"
 	"github.com/go-bumbu/langai/vector"
 )
@@ -82,11 +80,13 @@ func TestSimilar_StoredVectorsRunNoModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Stored || res.Frames != 0 || res.Query == nil || res.Query.ID != "red.png" || len(res.Hits) < 2 {
+	if !res.Stored || res.Frames != 0 || res.Query == nil || res.Query.ID != "red.png" || len(res.Hits) < 1 {
 		t.Fatalf("result = %+v", res)
 	}
-	if h := res.Hits[0]; !h.Self || h.Item.ID != "red.png" || h.Score < 0.999 {
-		t.Errorf("first hit = %+v, want self with score ~1", h)
+	for _, h := range res.Hits {
+		if h.Self || h.Item.ID == "red.png" {
+			t.Errorf("hit = %+v, want the query item left out", h)
+		}
 	}
 	// a video too, by its stored frames, with no sampler either
 	f.lib.cfg.Sampler = nil
@@ -162,31 +162,6 @@ func TestSearch_Upload(t *testing.T) {
 	}
 }
 
-// segmentEmbedder is a VideoEmbedder over the fake image embedder: a
-// video's segments are the pictures listed for its base name, 10 s apart.
-type segmentEmbedder struct {
-	emb   langaitest.FakeImageEmbedder
-	clips map[string][]image.Image
-}
-
-func (s *segmentEmbedder) Dimensions() int { return s.emb.Dimensions() }
-
-func (s *segmentEmbedder) EmbedVideo(ctx context.Context, path string) ([]media.Segment, error) {
-	images, ok := s.clips[filepath.Base(path)]
-	if !ok {
-		return nil, errors.New("not a video: " + path)
-	}
-	vectors, err := s.emb.EmbedImages(ctx, images)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]media.Segment, len(images))
-	for i := range images {
-		out[i] = media.Segment{Start: time.Duration(i) * 10 * time.Second, End: time.Duration(i+1) * 10 * time.Second, Vector: vectors[i]}
-	}
-	return out, nil
-}
-
 // measuringSampler is the fixture's sampler plus a Cutter's Duration, as the
 // ffmpeg Sampler is.
 type measuringSampler struct {
@@ -207,7 +182,7 @@ func (measuringSampler) Cut(context.Context, string, time.Duration, time.Duratio
 // itself first and Frames is its segment count.
 func TestSimilar_SegmentsModeSearchesWholeSegments(t *testing.T) {
 	f := newFixture(t)
-	ve := &segmentEmbedder{clips: map[string][]image.Image{"clip.mp4": {pic(64, 48, red, red), pic(64, 48, green, blue)}}}
+	ve := &langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": {pic(64, 48, red, red), pic(64, 48, green, blue)}}}
 	ix, err := search.NewMediaIndex(f.emb, vector.NewMemStore(), "examples", "local", "media", search.WithVideoEmbedder(ve), search.WithSampler(f.sampler))
 	if err != nil {
 		t.Fatal(err)

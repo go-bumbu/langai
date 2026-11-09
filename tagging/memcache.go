@@ -27,13 +27,28 @@ type MemCache struct {
 
 // NewMemCache returns an empty MemCache.
 func NewMemCache() *MemCache {
-	return &MemCache{indexes: map[string]map[CacheKey]cacheEntry{}, now: time.Now}
+	return NewMemCacheWithClock(time.Now)
+}
+
+// NewMemCacheWithClock returns an empty MemCache that takes its last-used
+// times from now instead of time.Now, for a test that decides what time it is
+// (the conformance suite, cachetest, does). A nil now means time.Now.
+func NewMemCacheWithClock(now func() time.Time) *MemCache {
+	if now == nil {
+		now = time.Now
+	}
+	return &MemCache{indexes: map[string]map[CacheKey]cacheEntry{}, now: now}
 }
 
 // Get implements EmbeddingCache. The returned slices are copies.
 func (c *MemCache) Get(_ context.Context, index string, keys []CacheKey) (map[CacheKey][]float32, error) {
-	if index == "" {
-		return nil, errEmptyIndex
+	if err := checkIndex(index); err != nil {
+		return nil, err
+	}
+	for _, k := range keys {
+		if err := checkName("model", k.Model); err != nil {
+			return nil, err
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -56,10 +71,13 @@ func (c *MemCache) Get(_ context.Context, index string, keys []CacheKey) (map[Ca
 
 // Put implements EmbeddingCache. It keeps copies of the vectors.
 func (c *MemCache) Put(_ context.Context, index string, vecs map[CacheKey][]float32) error {
-	if index == "" {
-		return errEmptyIndex
+	if err := checkIndex(index); err != nil {
+		return err
 	}
-	for _, v := range vecs {
+	for k, v := range vecs {
+		if err := checkName("model", k.Model); err != nil {
+			return err
+		}
 		if len(v) == 0 {
 			return errEmptyVector
 		}
@@ -78,10 +96,33 @@ func (c *MemCache) Put(_ context.Context, index string, vecs map[CacheKey][]floa
 	return nil
 }
 
+// Touch implements EmbeddingCache.
+func (c *MemCache) Touch(_ context.Context, index string, keys []CacheKey) error {
+	if err := checkIndex(index); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		if err := checkName("model", k.Model); err != nil {
+			return err
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	entries := c.indexes[index]
+	for _, k := range keys {
+		if e, ok := entries[k]; ok {
+			e.used = now
+			entries[k] = e
+		}
+	}
+	return nil
+}
+
 // DeleteIndex implements EmbeddingCache.
 func (c *MemCache) DeleteIndex(_ context.Context, index string) error {
-	if index == "" {
-		return errEmptyIndex
+	if err := checkIndex(index); err != nil {
+		return err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

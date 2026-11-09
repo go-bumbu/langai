@@ -36,6 +36,7 @@ func Handler(nb *Notebook) http.Handler {
 	mux.HandleFunc("DELETE /api/notes/{id}/tags/{tag}", h.untagNote)
 	mux.HandleFunc("GET /api/notes/{id}/recommend", h.recommend)
 	mux.HandleFunc("POST /api/samples", h.samples)
+	mux.HandleFunc("POST /api/warm", h.warm)
 	return mux
 }
 
@@ -72,7 +73,9 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 func (h *handler) info(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"info": h.nb.Info(), "chat": h.nb.ChatState()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"info": h.nb.Info(), "chat": h.nb.ChatState(), "embedder": h.nb.EmbedderState(), "runsOn": h.nb.RunsOn(),
+	})
 }
 
 func (h *handler) view(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +179,17 @@ func (h *handler) recommend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// warm has the Tagger embed what its cache lacks. A note the embedder
+// cannot take fails the call, with what was done all the same.
+func (h *handler) warm(w http.ResponseWriter, r *http.Request) {
+	st, err := h.nb.Warm(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error(), "stats": st})
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 // samples imports the samples; ?hand=N puts each tag by hand on N of them.

@@ -1,18 +1,33 @@
-// Package media holds the ports for video input. Sampler turns a video file
-// into the Frames that stand for it, which search embeds as images;
-// VideoEmbedder embeds a video as whole Segments, for models that take
-// video; Cutter is the file surgery such an embedder needs. The
-// implementations live in media/ffmpeg (Sampler, Cutter, over the ffmpeg
-// binary) and in the providers (VideoEmbedder); SamplerFunc adapts a
-// function, e.g. for tests or for an application that already has its own
-// frame extraction.
+// Package media holds the ports for decoding video. Sampler turns a video
+// file into the Frames that stand for it, which search embeds as images;
+// Cutter is the file surgery a langai.VideoEmbedder needs to embed a video
+// in segments. The implementations live in media/ffmpeg, over the ffmpeg
+// binary; SamplerFunc adapts a function, e.g. for tests or for an
+// application that already has its own frame extraction. The video
+// embedding port itself, langai.VideoEmbedder, is in the root package with
+// the other embedder ports.
 package media
 
 import (
 	"context"
+	"errors"
 	"image"
 	"time"
 )
+
+// MaxDuration is the longest a video is believed to be: a week. A length is
+// read from a file's header, which can say anything, and a number that is
+// wrong by orders of magnitude must not be computed with as if it were
+// known. A Cutter reports a length beyond it as 0, unknown, and whoever
+// plans work from a length (a langai.VideoEmbedder its segments) treats one
+// beyond it the same way.
+const MaxDuration = 7 * 24 * time.Hour
+
+// ErrPastEnd is what Cutter.Cut returns, wrapped, for a stretch that starts
+// at or past the end of the video: there is nothing to cut. Match it with
+// errors.Is. A caller that walks a video in stretches stops at it, however
+// long the file's header said the video was.
+var ErrPastEnd = errors.New("media: the cut starts at or past the end of the video")
 
 // Frame is one still taken from a video: the picture and the time it was
 // taken at, from the start of the video.
@@ -38,34 +53,19 @@ func (f SamplerFunc) Sample(ctx context.Context, path string) ([]Frame, error) {
 	return f(ctx, path)
 }
 
-// Segment is one stretch of a video embedded as a whole: where it starts
-// and ends, from the start of the video, and its vector.
-type Segment struct {
-	Start, End time.Duration
-	Vector     []float32
-}
-
-// VideoEmbedder embeds a video with a model that takes video, as one vector
-// per segment of the file, in time order. The implementation decides the
-// segment length (a model reads so many frames at a time) and the frame
-// rate it samples at. The vectors are Dimensions() long and share the
-// space of the images and texts the same model embeds, so that an image or
-// a text query finds a segment. A file that cannot be read or holds no
-// video is an error, not an empty result.
-type VideoEmbedder interface {
-	EmbedVideo(ctx context.Context, path string) ([]Segment, error)
-	Dimensions() int
-}
-
-// Cutter is the file surgery a VideoEmbedder needs to work in segments:
+// Cutter is the file surgery a langai.VideoEmbedder needs to work in segments:
 // how long a video is, and a copy of one stretch of it into another file,
 // without re-encoding where the container allows. The implementation lives
 // in media/ffmpeg.
 type Cutter interface {
-	// Duration is the length of the video at path; 0 when the container
-	// does not say.
+	// Duration is the length of the video at path, of its pictures and not
+	// of a sound track that runs on after them; 0 when the file does not
+	// say, or says more than MaxDuration.
 	Duration(ctx context.Context, path string) (time.Duration, error)
-	// Cut writes the stretch of path from start for length (or to the end)
-	// into out, a file named like path.
+	// Cut writes the stretch of path from start for length (to the end when
+	// length is 0 or less) into out, whose extension names the container.
+	// out is another file than path, and holds either the whole stretch or
+	// what it held before. A start at or past the end of the video is
+	// ErrPastEnd and writes nothing.
 	Cut(ctx context.Context, path string, start, length time.Duration, out string) error
 }

@@ -2,25 +2,30 @@ package tagging
 
 import (
 	"cmp"
+	"fmt"
 	"math"
 	"slices"
 	"strings"
 )
 
-// centroid returns the unit-length mean of vecs (dims long), or nil when
-// there are none.
-func centroid(vecs [][]float32, dims int) []float32 {
+// centroid returns the unit-length mean of vecs, or nil when there are none.
+// Vectors of different lengths have no mean: they are an error, not a panic
+// on the shortest one.
+func centroid(vecs [][]float32) ([]float32, error) {
 	if len(vecs) == 0 {
-		return nil
+		return nil, nil
 	}
-	c := make([]float32, dims)
+	c := make([]float32, len(vecs[0]))
 	for _, m := range vecs {
+		if len(m) != len(c) {
+			return nil, fmt.Errorf("tagging: vectors of %d and %d dimensions have no centroid", len(c), len(m))
+		}
 		for i := range c {
 			c[i] += m[i]
 		}
 	}
 	normalize(c)
-	return c
+	return c, nil
 }
 
 // memberMean returns the mean of vecs (dims long), each made unit length
@@ -185,14 +190,23 @@ func cosine(a, b []float32) float64 {
 // slice of its own, so tags keeps its order and its vectors. With onePath, a
 // tag that reaches its cutoff but is shadowed on its path says by which tag
 // (see shadowOnPaths).
-func scoreVectors(pieces [][]float32, tags []TagVector, onePath bool) []TagScore {
+//
+// A tag whose vector is not as long as the item's is an error naming the tag,
+// and no scores: the two came from different embedding models, kept under one
+// Model name, and a cosine between them means nothing.
+func scoreVectors(pieces [][]float32, tags []TagVector, onePath bool) ([]TagScore, error) {
 	var out []TagScore
 	paths := map[string][]string{}
 	for _, tg := range tags {
 		if tg.Vec == nil {
 			continue
 		}
-		out = append(out, TagScore{ID: tg.ID, Score: itemScore(pieces, tg.Vec), Cutoff: tg.Cutoff})
+		score, err := itemScore(pieces, tg.Vec)
+		if err != nil {
+			return nil, fmt.Errorf("tagging: tag %q cannot be scored: %w: the cache or the tag index holds vectors of "+
+				"another embedding model under this Model name", tg.ID, err)
+		}
+		out = append(out, TagScore{ID: tg.ID, Score: score, Cutoff: tg.Cutoff})
 		paths[tg.ID] = tagPath(tg.Name)
 	}
 	slices.SortStableFunc(out, func(a, b TagScore) int {
@@ -201,7 +215,7 @@ func scoreVectors(pieces [][]float32, tags []TagVector, onePath bool) []TagScore
 	if onePath {
 		shadowOnPaths(out, paths)
 	}
-	return out
+	return out, nil
 }
 
 // tagPath splits a tag name into the levels of its path, "dev / go" into

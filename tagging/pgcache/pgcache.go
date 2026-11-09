@@ -25,9 +25,28 @@ import (
 	"github.com/go-bumbu/langai/tagging/internal/sqlcache"
 )
 
-// New returns an EmbeddingCache using db, creating its table if needed, and
-// checks that db is a working Postgres database.
-func New(ctx context.Context, db *sql.DB) (tagging.EmbeddingCache, error) {
+// Cache is a tagging.EmbeddingCache on Postgres, in one table of db: Get,
+// Put, Touch, DeleteIndex and Prune are the interface's. It is safe for
+// concurrent use.
+type Cache struct {
+	*cache
+}
+
+// cache names the shared SQL implementation, so that Cache embeds it under
+// an unexported field.
+type cache = sqlcache.Cache
+
+// verify the interface is actually satisfied
+var _ tagging.EmbeddingCache = (*Cache)(nil)
+
+// New returns a Cache using db, creating its table if needed, and checks
+// that db is a working Postgres database.
+func New(ctx context.Context, db *sql.DB) (*Cache, error) {
+	return open(ctx, db, time.Now)
+}
+
+// open is New on the clock now, which the tests set.
+func open(ctx context.Context, db *sql.DB, now func() time.Time) (*Cache, error) {
 	if db == nil {
 		return nil, errors.New("nil database handle")
 	}
@@ -35,5 +54,9 @@ func New(ctx context.Context, db *sql.DB) (tagging.EmbeddingCache, error) {
 	if err := db.QueryRowContext(ctx, `SELECT current_setting('server_version_num')`).Scan(&v); err != nil {
 		return nil, fmt.Errorf("postgres not available: %w", err)
 	}
-	return sqlcache.New(ctx, db, sqlcache.Postgres, time.Now)
+	c, err := sqlcache.New(ctx, db, sqlcache.Postgres, now)
+	if err != nil {
+		return nil, err
+	}
+	return &Cache{c}, nil
 }

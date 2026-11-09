@@ -105,7 +105,7 @@ func newChunkScope(t *testing.T, chunk int) *Scope {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tg.Scope("ix", "p")
+	return tg.Scope(Space{"ix", "p"})
 }
 
 func TestScope_ChunkBytesReadsTheWholeItem(t *testing.T) {
@@ -132,7 +132,7 @@ func TestNewTagger_RefusesNegativeChunkBytes(t *testing.T) {
 
 func TestItemScore_OnePieceIsItsCosine(t *testing.T) {
 	tag := []float32{1, 0}
-	if got := itemScore([][]float32{{0.6, 0.8}}, tag); math.Abs(got-0.6) > 1e-6 {
+	if got := mustItemScore(t, [][]float32{{0.6, 0.8}}, tag); math.Abs(got-0.6) > 1e-6 {
 		t.Errorf("itemScore = %v, want 0.6", got)
 	}
 }
@@ -143,12 +143,12 @@ func TestItemScore_OnePieceIsItsCosine(t *testing.T) {
 func TestItemScore_TwoPiecesTakeTheBestOfThemAndTheirMean(t *testing.T) {
 	tag := []float32{1, 1, 0}
 	halves := [][]float32{{1, 0, 1}, {0, 1, 1}} // each half has one side of the tag
-	whole := cosine(centroid(halves, 3), tag)
-	if got := itemScore(halves, tag); math.Abs(got-whole) > 1e-9 || whole <= cosine(halves[0], tag) {
+	whole := cosine(mustCentroid(t, halves), tag)
+	if got := mustItemScore(t, halves, tag); math.Abs(got-whole) > 1e-9 || whole <= cosine(halves[0], tag) {
 		t.Errorf("itemScore = %v, want the centroid's %v, above a half's %v", got, whole, cosine(halves[0], tag))
 	}
 	sharp := [][]float32{{1, 1, 0}, {0, 0, 1}} // one half is the tag
-	if got := itemScore(sharp, tag); math.Abs(got-1) > 1e-9 {
+	if got := mustItemScore(t, sharp, tag); math.Abs(got-1) > 1e-9 {
 		t.Errorf("itemScore = %v, want the matching half's 1", got)
 	}
 }
@@ -170,7 +170,7 @@ func TestItemScore_LongerTextsTakeTheMeanOfTheTwoBest(t *testing.T) {
 		{"two pieces about it", [][]float32{off, on, off, on, off, off}, 1},
 		{"the second best counts", [][]float32{near, off, on}, 0.8},
 	} {
-		if got := itemScore(c.pieces, tag); math.Abs(got-c.want) > 1e-6 {
+		if got := mustItemScore(t, c.pieces, tag); math.Abs(got-c.want) > 1e-6 {
 			t.Errorf("%s: itemScore = %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -202,7 +202,11 @@ func TestEngine_LongMemberTeachesWithItsBestPiece(t *testing.T) {
 	}
 	ctx := context.Background()
 	emb := langaitest.FakeEmbedder{}
-	nameVec, _ := embedOne(ctx, emb, langai.RoleDocument, "sourdough bread")
+	nameVecs, err := emb.Embed(ctx, langai.RoleDocument, []string{"sourdough bread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nameVec := nameVecs[0]
 	pieces := Chunk(longMember, cfg.ChunkBytes)
 	vecs, err := emb.Embed(ctx, langai.RoleQuery, pieces)
 	if err != nil {
@@ -212,7 +216,7 @@ func TestEngine_LongMemberTeachesWithItsBestPiece(t *testing.T) {
 	if !slices.Equal(cands[0].Vec, want) {
 		t.Errorf("the tag's vector is not the blend of its name and the member's best piece")
 	}
-	if mean := blend(nameVec, [][]float32{centroid(vecs, len(nameVec))}, DefaultSmoothingK); slices.Equal(want, mean) {
+	if mean := blend(nameVec, [][]float32{mustCentroid(t, vecs)}, DefaultSmoothingK); slices.Equal(want, mean) {
 		t.Fatal("test is vacuous: the best piece blends like the mean")
 	}
 }

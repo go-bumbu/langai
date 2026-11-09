@@ -9,23 +9,16 @@ import (
 	"github.com/go-bumbu/langai/tagging"
 )
 
-// cannedModel answers every prompt with the same reply.
-type cannedModel string
-
-func (m cannedModel) Complete(context.Context, string, string) (string, error) {
-	return string(m), nil
-}
-
 // This example has a model write tags for a text, then keeps the ones that
 // fit it.
 func ExampleGenerator() {
 	ctx := context.Background()
 
-	// A canned model and FakeEmbedder keep the example self-contained; an app
+	// FakeCompleter and FakeEmbedder keep the example self-contained; an app
 	// would use the yzma Completer and Embedder. FakeEmbedder only counts
 	// shared words, so its scores run lower than a real model's, and the cutoff
 	// is lowered to match.
-	model := cannedModel("sourdough bread\nbaking\ntravel\n")
+	model := &langaitest.FakeCompleter{Replies: []string{"sourdough bread\nbaking\ntravel\n"}}
 	g, err := tagging.NewGenerator(model, langaitest.FakeEmbedder{}, tagging.GeneratorConfig{})
 	if err != nil {
 		log.Fatal(err)

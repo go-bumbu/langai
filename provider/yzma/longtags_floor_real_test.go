@@ -19,22 +19,33 @@ import (
 // TestGenerateLongTags runs the default tagging.Generator on the 24 long
 // documents of zarf/eval/testdata/long (title and text, 7 to 31 KB) and scores
 // the tags it keeps at tagging.DefaultGeneratorMinScore against the labelled
-// topics with eval.MatchTopics: a tag counts for a topic when the cosine of
-// their RoleDocument embeddings reaches 0.75 (or one contains the other). It
-// downloads the models like TestGenerateTagsWithTheDefaultModels, so it only
-// runs when SEMSEARCH_MODELS is set, and takes several minutes:
+// topics with eval.MatchTopics: a tag counts for a topic when it is the
+// topic's label or an alias, or holds one or is held by one as whole words,
+// or when the cosine of its RoleDocument embedding and an alias's reaches
+// 0.75. It downloads the models like TestGenerateTagsWithTheDefaultModels, so
+// it only runs when SEMSEARCH_MODELS is set, and takes several minutes:
 //
 //	SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=~/.cache/semsearch-yzma go test ./provider/yzma/ -run TestGenerateLongTags -v -count=1 -timeout 0
 //
-// Measured on 2026-11-07 with Qwen3 4B Instruct Q4_K_M and EmbeddingGemma
+// Measured on 2026-11-09 with Qwen3 4B Instruct Q4_K_M and EmbeddingGemma
 // Q8_0 through llama.cpp b11429, Vulkan on the iGPU of an AMD Ryzen AI 9 HX PRO
-// 370: 344 s for the 24 documents, 6 to 28 s each (14.1 s on average), and the
-// means at the default cutoff: main recall 1.000, side recall 0.708, late side
-// recall 0.708, mention rate 0.000, precision 0.882, F1 0.820, 10 tags per
-// document. Without the title at the head of each window side recall was 0.656.
-// The floors were set 0.05 under the experiment's numbers and sit 0.02 to 0.05
-// under this run's, so a different llama.cpp build or backend can tip side
-// recall or precision.
+// 370: 383 s for the 24 documents, 6 to 33 s each (15.6 s on average), and the
+// means at the default cutoff: main recall 1.000, side recall 0.759, late side
+// recall 0.759, mention rate 0.000, precision 0.887, mean F1 0.822 (the mean of
+// the documents' own F1), 9.8 tags per document, none without tags. Reading
+// only the first 2 KB (MaxBytes 2048) gave side recall 0.239, precision 0.783
+// and mean F1 0.493.
+//
+// The same tags scored as on 2026-11-07, before eval.MatchTopics matched on
+// whole words and gave a tag to the topic it names, reproduce that day's
+// numbers to the third decimal (side recall 0.708, precision 0.882, F1 of the
+// mean precision and recall 0.820), so the reply parser changed since did not
+// move them: the differences are the scoring rule's. Then, without the title
+// at the head of each window, side recall was 0.656.
+//
+// The floors sit 0.05 under this run, rounded down, but for precision, kept at
+// the 0.86 it had from the experiment (0.027 under this run), so a different
+// llama.cpp build or backend can tip it.
 //
 //nolint:gocyclo // one linear gated test: generate, score, assert floors
 func TestGenerateLongTags(t *testing.T) {
@@ -52,10 +63,8 @@ func TestGenerateLongTags(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{
-		ModelsDir:     filepath.Join(dir, "models"),
-		LibDir:        filepath.Join(dir, "llama-cpp", LibTag),
-		ManagedLibDir: true,
-		Logger:        slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Runtime:   Runtime{LibDir: filepath.Join(dir, "llama-cpp", LibTag), ManagedLibDir: true, Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))},
+		ModelsDir: filepath.Join(dir, "models"),
 	}
 	emb, err := New(ctx, cfg)
 	if err != nil {
@@ -118,17 +127,17 @@ func TestGenerateLongTags(t *testing.T) {
 		}
 		s := eval.MatchTopics(names, d.Topics, sim, tau)
 		scores = append(scores, s)
-		t.Logf("%s (%d bytes) in %.1fs: main %.2f side %.2f late %.2f mention %.2f prec %.2f:%s",
-			d.ID, len(d.Text), took.Seconds(), s.MainRecall, s.SideRecall, s.LateSideRecall, s.MentionRate, s.Precision, line.String())
+		t.Logf("%s (%d bytes) in %.1fs: main %.2f side %.2f late %.2f mention %.2f prec %.2f F1 %.2f:%s",
+			d.ID, len(d.Text), took.Seconds(), s.MainRecall, s.SideRecall, s.LateSideRecall, s.MentionRate, s.Precision, s.F1(), line.String())
 	}
 	m := eval.MeanLongScores(scores)
-	t.Logf("mean over %d documents, %.1fs each: recall %.3f main %.3f side %.3f late side %.3f mention %.3f precision %.3f F1 %.3f tags %d",
-		len(docs), total.Seconds()/float64(len(docs)), m.Recall, m.MainRecall, m.SideRecall, m.LateSideRecall, m.MentionRate, m.Precision, m.F1(), m.Tags)
+	t.Logf("mean over %d documents (%d without tags), %.1fs each: recall %.3f main %.3f side %.3f late side %.3f mention %.3f precision %.3f mean F1 %.3f tags %.1f",
+		m.Documents, m.Untagged, total.Seconds()/float64(len(docs)), m.Recall, m.MainRecall, m.SideRecall, m.LateSideRecall, m.MentionRate, m.Precision, m.MeanF1, m.Tags)
 
 	const (
 		minMainRecall     = 0.95
-		minSideRecall     = 0.68
-		minLateSideRecall = 0.68
+		minSideRecall     = 0.70
+		minLateSideRecall = 0.70
 		minPrecision      = 0.86
 		maxMentionRate    = 0.05
 	)

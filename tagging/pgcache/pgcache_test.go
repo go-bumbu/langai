@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-bumbu/testdbs"
 
@@ -46,13 +48,42 @@ func newDB(t *testing.T) *sql.DB {
 }
 
 func TestConformance(t *testing.T) {
-	cachetest.Run(t, func(t *testing.T) tagging.EmbeddingCache {
-		c, err := New(t.Context(), newDB(t))
+	cachetest.Run(t, func(t *testing.T, now func() time.Time) tagging.EmbeddingCache {
+		c, err := open(t.Context(), newDB(t), now)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
 		return c
 	})
+}
+
+// TestNew_ConcurrentStartsAllSucceed: processes that start together each
+// create the table if it is missing, and Postgres lets two CREATE TABLE IF NOT
+// EXISTS collide on its catalog ("duplicate key value violates unique
+// constraint pg_type_typname_nsp_index"). Every New must still succeed.
+func TestNew_ConcurrentStartsAllSucceed(t *testing.T) {
+	db := newDB(t)
+	const rounds, starters = 5, 16
+	for round := range rounds {
+		if _, err := db.ExecContext(t.Context(), `DROP TABLE IF EXISTS autotag_embeddings`); err != nil {
+			t.Fatal(err)
+		}
+		errs := make(chan error, starters)
+		var wg sync.WaitGroup
+		for range starters {
+			wg.Go(func() {
+				_, err := New(t.Context(), db)
+				errs <- err
+			})
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: New: %v", round, err)
+			}
+		}
+	}
 }
 
 func TestNew_RejectsANilHandle(t *testing.T) {

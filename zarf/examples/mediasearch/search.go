@@ -23,9 +23,9 @@ type Hit struct {
 	// QueryAtMs is the time of the query frame that matched when the query
 	// is a video.
 	QueryAtMs int64 `json:"queryAtMs"`
-	// Self marks the hit that is the query item itself; it is kept and
-	// marked rather than dropped, since its score says what "identical"
-	// scores like with the model.
+	// Self marks the hit that is the query item itself, found when the
+	// file is embedded again; it is kept and marked rather than dropped,
+	// since its score says what "identical" scores like with the model.
 	Self bool `json:"self"`
 }
 
@@ -53,11 +53,12 @@ var ErrNotFound = errors.New("mediasearch: no such item")
 // nor a video by its extension.
 var ErrUnsupported = errors.New("mediasearch: not an image or a video")
 
-// Similar returns the items that look most like the catalog item id, the
-// item itself first and marked. limit <= 0 means the Library's default.
-// By default it searches with the vectors the scan stored, so no model
-// runs; embed embeds the file again instead, as an upload would be, which
-// shows what a query costs with the model.
+// Similar returns the items that look most like the catalog item id.
+// limit <= 0 means the Library's default. By default it searches with the
+// vectors the scan stored, so no model runs, and the item itself is left
+// out; embed embeds the file again instead, as an upload would be, which
+// shows what a query costs with the model and finds the item itself first,
+// marked.
 func (l *Library) Similar(ctx context.Context, id string, limit int, embed bool) (Result, error) {
 	it, ok := l.Item(id)
 	if !ok {

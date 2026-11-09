@@ -1,10 +1,17 @@
 package ffmpeg
 
 import (
+	"bufio"
 	"bytes"
+	"fmt"
+	"io"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-bumbu/langai/media"
 )
 
 func TestNew_FillsDefaults(t *testing.T) {
@@ -43,8 +50,8 @@ func TestGaps_RaiseTheMinimumForLongVideos(t *testing.T) {
 		duration  time.Duration
 		gap, maxI time.Duration
 	}{
-		{0, time.Second, 5 * time.Second},                 // unknown duration: the configured gaps
-		{30 * time.Second, time.Second, 5 * time.Second},  // 30/64 < 1s: the configured gaps
+		{0, time.Second, 5 * time.Second},                                    // unknown duration: the configured gaps
+		{30 * time.Second, time.Second, 5 * time.Second},                     // 30/64 < 1s: the configured gaps
 		{10 * time.Minute, 9375 * time.Millisecond, 9375 * time.Millisecond}, // 600/64: both raised
 		{2 * time.Hour, 112500 * time.Millisecond, 112500 * time.Millisecond},
 	}
@@ -83,20 +90,24 @@ func TestSelectExpr(t *testing.T) {
 
 func TestArgs(t *testing.T) {
 	s, _ := New(Config{})
-	args := strings.Join(s.args("-odd name.mp4", 10*time.Second), " ")
-	for _, want := range []string{"-i -odd name.mp4 -map 0:v:0", "-vf select='", "',scale=w='min(512,iw)':h='min(512,ih)':force_original_aspect_ratio=decrease,showinfo",
-		"-fps_mode vfr -frames:v 64 -f rawvideo -pix_fmt rgba pipe:1", "-nostdin"} {
+	args := strings.Join(s.args("-odd name.mp4", probed{duration: 10 * time.Second}), " ")
+	for _, want := range []string{"-i file:-odd name.mp4 -map 0:v:0", "-vf select='", "',scale=w='min(512,iw)':h='min(512,ih)':force_original_aspect_ratio=decrease,showinfo",
+		"-fps_mode vfr -frames:v 64 -f image2pipe -c:v pam -pix_fmt rgba pipe:1", "-nostdin"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args %q lack %q", args, want)
 		}
 	}
-	if strings.Contains(args, "-skip_frame") {
-		t.Errorf("args %q decode keyframes only without being asked", args)
+	if strings.Contains(args, "-skip_frame") || strings.Contains(args, "-pattern_type") {
+		t.Errorf("args %q decode keyframes only or set the image demuxer's option without being asked", args)
 	}
 	s, _ = New(Config{KeyframesOnly: true, MaxSide: -1})
-	args = strings.Join(s.args("clip.mp4", 0), " ")
-	if !strings.Contains(args, "-skip_frame nokey -i clip.mp4") {
+	args = strings.Join(s.args("clip.mp4", probed{}), " ")
+	if !strings.Contains(args, "-skip_frame nokey -protocol_whitelist file -i file:clip.mp4") {
 		t.Errorf("keyframes only: args %q lack the decoder option before the input", args)
+	}
+	// the image demuxer is told to read the file named, not a sequence
+	if args := strings.Join(s.args("shot%d.png", probed{image2: true}), " "); !strings.Contains(args, "-pattern_type none -protocol_whitelist file -i file:shot%d.png") {
+		t.Errorf("image: args %q lack the literal-name option before the input", args)
 	}
 	if strings.Contains(args, "scale=") {
 		t.Errorf("MaxSide -1: args %q still scale", args)
@@ -113,9 +124,90 @@ func TestParseDuration(t *testing.T) {
 		"N/A\n":       0,
 		"":            0,
 		"-3":          0,
+		// what no video is: taken for unknown, never computed with
+		"nan":                  0,
+		"inf":                  0,
+		"-inf":                 0,
+		"9223372036.854775807": 0, // the largest time.Duration, in seconds
+		"1e300":                0,
+		"3600000":              0, // a thousand hours
+		"604800":               media.MaxDuration,
+		"604800.5":             0,
 	} {
 		if got := parseDuration(in); got != want {
 			t.Errorf("parseDuration(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestPastEnd: the last out_time_us of ffmpeg's progress report decides, and
+// a report that has none decides nothing.
+func TestPastEnd(t *testing.T) {
+	for report, want := range map[string]bool{
+		"frame=50\nout_time_us=2000000\nprogress=end":                            false,
+		"out_time_us=-2000000\nprogress=end":                                     true,
+		"out_time_us=0\nprogress=end":                                            true,
+		"out_time_us=23000\nprogress=end":                                        true, // a container that starts 23 ms in
+		"out_time_us=100000\nprogress=end":                                       false,
+		"out_time_us=-5\nprogress=continue\nout_time_us=1500000\nprogress=end":   false, // the last report counts
+		"out_time_us=1500000\nprogress=continue\nout_time_us=-5\r\nprogress=end": true,
+		"out_time_us=N/A\nprogress=end":                                          false,
+		"":                                                                       false,
+		"partial":                                                                false,
+	} {
+		if got := pastEnd(report); got != want {
+			t.Errorf("pastEnd(%q) = %v, want %v", report, got, want)
+		}
+	}
+}
+
+// TestParseClock: the length a Matroska file notes per stream, as a clock
+// time.
+func TestParseClock(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"00:00:06.000000000": 6 * time.Second,
+		"01:02:03.500000000": time.Hour + 2*time.Minute + 3500*time.Millisecond,
+		"00:00:00.000000000": 0,
+		"6.5":                0, // not a clock time
+		"00:xx:06":           0,
+		"00:-1:06":           0,
+		"99999:00:00":        0, // beyond media.MaxDuration
+		"":                   0,
+	} {
+		if got := parseClock(in); got != want {
+			t.Errorf("parseClock(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestParseProbe: the length is the video stream's when ffprobe states it
+// (as a number, or as the DURATION tag Matroska keeps per stream), since the
+// container's is that of its longest stream, and the container's otherwise.
+func TestParseProbe(t *testing.T) {
+	cases := map[string]probed{
+		// the bare lines of the tests' stand-in ffprobe: the container's
+		"format_name=mov,mp4,m4a,3gp,3g2,mj2\nduration=2.000000\n": {duration: 2 * time.Second},
+		"format_name=image2\nduration=0.040000\n":                  {duration: 40 * time.Millisecond, image2: true},
+		"format_name=png_pipe\r\nduration=N/A\r\n":                 {},
+		"format_name=image2pipe\nduration=N/A\n":                   {},
+		"":                                                         {},
+		// 6 s of video under 11 s of sound
+		"[STREAM]\nduration=6.000000\n[/STREAM]\n[FORMAT]\nformat_name=mov,mp4,m4a,3gp,3g2,mj2\nduration=11.000000\n[/FORMAT]\n": {duration: 6 * time.Second},
+		// Matroska: the stream has no duration field, but a tag
+		"[STREAM]\nduration=N/A\nTAG:DURATION=00:00:06.000000000\n[/STREAM]\n[FORMAT]\nformat_name=matroska,webm\nduration=11.008000\n[/FORMAT]\n": {duration: 6 * time.Second},
+		// neither: the container's
+		"[STREAM]\nduration=N/A\n[/STREAM]\n[FORMAT]\nformat_name=matroska,webm\nduration=11.008000\n[/FORMAT]\n": {duration: 11008 * time.Millisecond},
+		// a transport stream lists the stream twice, once inside its program
+		"[PROGRAM]\n[STREAM]\nduration=6.000000\n[/STREAM]\n[/PROGRAM]\n[STREAM]\nduration=6.000000\n[/STREAM]\n[FORMAT]\nduration=9.000000\n[/FORMAT]\n": {duration: 6 * time.Second},
+		// no video stream at all: the container's, as before
+		"[FORMAT]\nformat_name=mov,mp4,m4a,3gp,3g2,mj2\nduration=1.000000\n[/FORMAT]\n": {duration: time.Second},
+		// a stream that claims what no video is: the container's; both: unknown
+		"[STREAM]\nduration=9223372036.0\n[/STREAM]\n[FORMAT]\nduration=11.000000\n[/FORMAT]\n":        {duration: 11 * time.Second},
+		"[STREAM]\nduration=nan\n[/STREAM]\n[FORMAT]\nformat_name=image2\nduration=1e300\n[/FORMAT]\n": {image2: true},
+	}
+	for out, want := range cases {
+		if got := parseProbe([]byte(out)); got != want {
+			t.Errorf("parseProbe(%q) = %+v, want %+v", out, got, want)
 		}
 	}
 }
@@ -130,61 +222,168 @@ const recordedLog = `[Parsed_showinfo_2 @ 0x79423c004900] config in time_base: 1
 [Parsed_showinfo_2 @ 0x79423c004900] n:   1 pts:  25600 pts_time:2.04    duration:    512 duration_time:0.04    fmt:yuv420p cl:left sar:1/1 s:160x120 i:P iskey:0 type:B checksum:217CA531 plane_checksum:[EFD7F182 22B45F86 B1DB541A] mean:[81 90 240] stdev:[0.0 0.0 0.0]
 `
 
-func TestParseShowinfo(t *testing.T) {
-	infos, err := parseShowinfo([]byte(recordedLog))
-	if err != nil {
-		t.Fatal(err)
-	}
+// TestFrameLog_PicksTheFrameLines: the log arrives in whatever pieces the
+// pipe hands over, so the frame lines must come out the same whether it is
+// written whole, byte by byte or in chunks that split every line.
+func TestFrameLog_PicksTheFrameLines(t *testing.T) {
 	want := []frameInfo{{at: 0, w: 320, h: 240}, {at: 2040 * time.Millisecond, w: 160, h: 120}}
-	if len(infos) != 2 || infos[0] != want[0] || infos[1] != want[1] {
-		t.Errorf("infos = %+v, want %+v", infos, want)
+	for _, chunk := range []int{len(recordedLog), 1, 7, 100} {
+		log := &frameLog{}
+		for rest := []byte(recordedLog); len(rest) > 0; rest = rest[min(chunk, len(rest)):] {
+			part := rest[:min(chunk, len(rest))]
+			if n, err := log.Write(part); n != len(part) || err != nil {
+				t.Fatalf("Write = %d, %v", n, err)
+			}
+		}
+		if log.err != nil || !slices.Equal(log.infos, want) {
+			t.Errorf("chunks of %d: infos = %+v, %v; want %+v", chunk, log.infos, log.err, want)
+		}
 	}
-	if infos, err := parseShowinfo(nil); err != nil || len(infos) != 0 {
-		t.Errorf("empty log: %v, %v", infos, err)
-	}
-	bad := strings.Replace(recordedLog, "pts_time:2.04 ", "pts_time:NOPTS", 1)
-	if _, err := parseShowinfo([]byte(bad)); err == nil || !strings.Contains(err.Error(), "timestamp") {
-		t.Errorf("a frame without a timestamp: err = %v", err)
+
+	log := &frameLog{}
+	_, _ = log.Write([]byte(strings.Replace(recordedLog, "pts_time:2.04 ", "pts_time:NOPTS", 1)))
+	if log.err == nil || !strings.Contains(log.err.Error(), "frame 1 has no timestamp") {
+		t.Errorf("a frame without a timestamp: err = %v", log.err)
 	}
 }
 
-func TestSplitFrames(t *testing.T) {
-	infos := []frameInfo{{at: 0, w: 2, h: 1}, {at: time.Second, w: 1, h: 1}}
-	data := []byte{255, 0, 0, 255, 0, 255, 0, 255 /* 2x1: red, green */, 0, 0, 255, 255 /* 1x1: blue */}
-	frames, err := splitFrames(data, infos)
+// TestFrameLog_TakesOnlyTheFiltersOwnLines: ffmpeg prints what a file says
+// about itself (its title, its chapters) into the same log, so a frame line
+// is one that starts with the showinfo filter's own prefix, and a frame the
+// filter logs stands over whatever claimed its number before.
+func TestFrameLog_TakesOnlyTheFiltersOwnLines(t *testing.T) {
+	frame := func(n int, at string, size string) string {
+		return "[Parsed_showinfo_2 @ 0x1] n:   " + strconv.Itoa(n) + " pts:  0 pts_time:" + at + " duration: 1 fmt:rgba s:" + size + " i:P\n"
+	}
+	two := []frameInfo{{at: 0, w: 320, h: 240}, {at: 5 * time.Second, w: 320, h: 240}}
+	for _, tc := range []struct {
+		name    string
+		log     string
+		want    []frameInfo
+		wantErr string
+	}{
+		{
+			name: "a title that spells a frame line",
+			log:  "    title           : showinfo n: 0 pts_time:999 s:320x240 x\n" + frame(0, "0", "320x240") + frame(1, "5", "320x240"),
+			want: two,
+		},
+		{
+			name: "a title that spells the filter's prefix too",
+			log:  "    title           : [Parsed_showinfo_2 @ 0x1] n: 0 pts:0 pts_time:999 s:1x1 x\n" + frame(0, "0", "320x240") + frame(1, "5", "320x240"),
+			want: two,
+		},
+		{
+			name: "the prefix in the middle of another filter's line",
+			log:  "[Parsed_scale_1 @ 0x2] w:320 [Parsed_showinfo_2 @ 0x1] n: 0 pts_time:999 s:1x1 x\n" + frame(0, "0", "320x240") + frame(1, "5", "320x240"),
+			want: two,
+		},
+		{
+			name: "a frame logged twice: the later line stands",
+			log:  frame(0, "999", "1x1") + frame(0, "0", "320x240") + frame(1, "5", "320x240"),
+			want: two,
+		},
+		{
+			name:    "a frame number out of turn",
+			log:     frame(0, "0", "320x240") + frame(2, "5", "320x240"),
+			wantErr: "frame 2 logged after 0",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &frameLog{}
+			_, _ = log.Write([]byte(tc.log))
+			if tc.wantErr != "" {
+				if log.err == nil || !strings.Contains(log.err.Error(), tc.wantErr) {
+					t.Errorf("err = %v, want one saying %q", log.err, tc.wantErr)
+				}
+				return
+			}
+			if log.err != nil || !slices.Equal(log.infos, tc.want) {
+				t.Errorf("infos = %+v, %v; want %+v", log.infos, log.err, tc.want)
+			}
+		})
+	}
+}
+
+// TestFrameLog_HoldsOnlyTheEndOfALongLog: megabytes of log, one line of them
+// endless, leave the frame lines, a bounded line buffer and the last words.
+func TestFrameLog_HoldsOnlyTheEndOfALongLog(t *testing.T) {
+	log := &frameLog{}
+	noise := []byte(strings.Repeat("x", 1000))
+	for range 4 << 10 {
+		_, _ = log.Write(noise) // 4 MB without a line end
+	}
+	_, _ = log.Write([]byte("\n" + recordedLog + "the last words\n"))
+	if len(log.infos) != 2 || log.err != nil {
+		t.Errorf("infos = %+v, %v; want the two frames after the endless line", log.infos, log.err)
+	}
+	if cap(log.line) > 2*maxLogLine || cap(log.tail.buf) > 4*maxLog {
+		t.Errorf("the log holds a %d-byte line and a %d-byte tail", cap(log.line), cap(log.tail.buf))
+	}
+	if got := log.tail.String(); len(got) > maxLog || !strings.HasSuffix(got, "the last words") {
+		t.Errorf("tail = %d bytes ending %q", len(got), got[max(0, len(got)-20):])
+	}
+}
+
+// pam is a PAM image as ffmpeg's encoder writes it.
+func pam(w, h int, pix ...byte) []byte {
+	return append(fmt.Appendf(nil, "P7\nWIDTH %d\nHEIGHT %d\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n", w, h), pix...)
+}
+
+func TestReadPAM(t *testing.T) {
+	// 2x1: red, green; then 1x1: blue
+	stream := slices.Concat(pam(2, 1, 255, 0, 0, 255, 0, 255, 0, 255), pam(1, 1, 0, 0, 255, 255))
+	br := bufio.NewReader(bytes.NewReader(stream))
+	first, err := readPAM(br, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(frames) != 2 {
-		t.Fatalf("got %d frames, want 2", len(frames))
+	if b := first.Bounds(); b.Dx() != 2 || b.Dy() != 1 || len(first.Pix) != 8 {
+		t.Fatalf("frame 0 is %v with %d bytes, want 2x1", b, len(first.Pix))
 	}
-	if r, g, b, _ := frames[0].Image.At(1, 0).RGBA(); r != 0 || g != 0xffff || b != 0 {
+	if r, g, b, _ := first.At(1, 0).RGBA(); r != 0 || g != 0xffff || b != 0 {
 		t.Errorf("frame 0 pixel (1,0) = %v %v %v, want green", r, g, b)
 	}
-	if frames[1].At != time.Second || frames[1].Image.Bounds().Dx() != 1 {
-		t.Errorf("frame 1 = %+v", frames[1])
+	second, err := readPAM(br, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if r, _, b, _ := frames[1].Image.At(0, 0).RGBA(); r != 0 || b != 0xffff {
-		t.Errorf("frame 1 pixel = %v %v, want blue", r, b)
+	if r, _, b, _ := second.At(0, 0).RGBA(); second.Bounds().Dx() != 1 || r != 0 || b != 0xffff {
+		t.Errorf("frame 1 = %v, pixel %v %v; want 1x1 blue", second.Bounds(), r, b)
 	}
-
-	// the filters logged a third frame ffmpeg never wrote: fine
-	more := append(infos, frameInfo{at: 2 * time.Second, w: 4, h: 4})
-	if frames, err := splitFrames(data, more); err != nil || len(frames) != 2 {
-		t.Errorf("extra log line: %d frames, %v", len(frames), err)
-	}
-	if frames, err := splitFrames(nil, infos); err != nil || len(frames) != 0 {
-		t.Errorf("no data: %d frames, %v", len(frames), err)
-	}
-	if _, err := splitFrames(data[:10], infos); err == nil || !strings.Contains(err.Error(), "short") {
-		t.Errorf("partial frame: err = %v", err)
-	}
-	if _, err := splitFrames(append(data, 1, 2, 3, 4), infos); err == nil || !strings.Contains(err.Error(), "beyond") {
-		t.Errorf("data past the log: err = %v", err)
+	if _, err := readPAM(br, 0); err != io.EOF {
+		t.Errorf("after the last frame: err = %v, want io.EOF", err)
 	}
 }
 
-func TestLimitedWriterAndTail(t *testing.T) {
+func TestReadPAM_Errors(t *testing.T) {
+	good := pam(2, 1, 1, 2, 3, 4, 5, 6, 7, 8)
+	cases := []struct {
+		name    string
+		stream  []byte
+		maxSide int
+		want    string
+	}{
+		{"pixels cut short", good[:len(good)-3], 0, "unexpected EOF"},
+		{"header cut short", good[:20], 0, "unexpected EOF"},
+		{"not PAM", []byte("RIFF....AVI \n"), 0, "not a PAM image"},
+		{"no line end", []byte("P7"), 0, "unexpected EOF"},
+		{"RGB without alpha", bytes.Replace(good, []byte("DEPTH 4"), []byte("DEPTH 3"), 1), 0, "depth 3"},
+		{"16 bits", bytes.Replace(good, []byte("MAXVAL 255"), []byte("MAXVAL 65535"), 1), 0, "maxval 65535"},
+		{"no size", []byte("P7\nDEPTH 4\nMAXVAL 255\nENDHDR\n"), 0, "0x0"},
+		{"absurd size", pam(1<<20, 1<<20), 0, "1048576x1048576"},
+		{"larger than asked for", good, 1, "larger than MaxSide 1"},
+		{"endless header", []byte("P7\n" + strings.Repeat("# comment\n", 100)), 0, "does not end"},
+		{"endless line", []byte("P7\n" + strings.Repeat("x", 1<<16)), 0, "PAM header"},
+	}
+	for _, tc := range cases {
+		_, err := readPAM(bufio.NewReader(bytes.NewReader(tc.stream)), tc.maxSide)
+		if err == nil || err == io.EOF || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want one that says %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestLimitedWriter(t *testing.T) {
 	var buf bytes.Buffer
 	w := &limitedWriter{buf: &buf, limit: 5}
 	for _, s := range []string{"abc", "def", "ghi"} {
@@ -195,8 +394,77 @@ func TestLimitedWriterAndTail(t *testing.T) {
 	if buf.String() != "abcde" {
 		t.Errorf("kept %q, want abcde", buf.String())
 	}
-	long := strings.Repeat("x", 3000) + "\nlast line\n"
-	if got := tail([]byte(long)); len(got) > 2048 || !strings.HasSuffix(got, "last line") {
-		t.Errorf("tail = %d bytes ending %q", len(got), got[max(0, len(got)-20):])
+}
+
+func TestTailWriter(t *testing.T) {
+	cases := map[string][]string{
+		"short":            {"  one line\n"},
+		"many small":       slices.Repeat([]string{"0123456789\n"}, 5000),
+		"one huge":         {strings.Repeat("x", 10*maxLog) + "\n"},
+		"huge after small": {"a\n", "b\n", strings.Repeat("x", 3*maxLog)},
+	}
+	for name, writes := range cases {
+		var w tailWriter
+		for _, s := range writes {
+			if n, err := w.Write([]byte(s)); n != len(s) || err != nil {
+				t.Fatalf("%s: Write = %d, %v; want %d", name, n, err, len(s))
+			}
+		}
+		all := strings.Join(writes, "")
+		want := strings.TrimSpace(all[max(0, len(all)-maxLog):])
+		if got := w.String(); got != want {
+			t.Errorf("%s: tail = %d bytes ending %q, want the last %d", name, len(got), got[max(0, len(got)-12):], len(want))
+		}
+		if cap(w.buf) > 4*maxLog {
+			t.Errorf("%s: the writer holds %d bytes", name, cap(w.buf))
+		}
+	}
+}
+
+// the Sampler is a search.Fingerprinter, without this package importing search
+var _ interface{ Fingerprint() string } = (*Sampler)(nil)
+
+// TestFingerprint_ChangesWithWhatChangesTheFrames: two configurations that
+// take other frames have other fingerprints, so a MediaIndex re-indexes its
+// videos after the change; two that take the same frames (a default and its
+// spelling, a scene threshold that scene detection never reads, the binary's
+// path) share one.
+func TestFingerprint_ChangesWithWhatChangesTheFrames(t *testing.T) {
+	fp := func(cfg Config) string {
+		t.Helper()
+		s, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.Fingerprint()
+	}
+	for name, pair := range map[string][2]Config{
+		"the defaults spelled out": {{}, {SceneThreshold: DefaultSceneThreshold, MinInterval: DefaultMinInterval, MaxInterval: DefaultMaxInterval, MaxFrames: DefaultMaxFrames, MaxSide: DefaultMaxSide}},
+		"another binary":           {{}, {FFmpeg: "/opt/ffmpeg/bin/ffmpeg", FFprobe: "/opt/ffmpeg/bin/ffprobe"}},
+		"scene detection off":      {{SceneThreshold: 1}, {SceneThreshold: 3}},
+		"keyframes ignore scenes":  {{KeyframesOnly: true}, {KeyframesOnly: true, SceneThreshold: 0.9}},
+		"any size kept":            {{MaxSide: -1}, {MaxSide: -7}},
+	} {
+		if a, b := fp(pair[0]), fp(pair[1]); a != b {
+			t.Errorf("%s: %q and %q, want one fingerprint", name, a, b)
+		}
+	}
+	seen := map[string]string{fp(Config{}): "the defaults"}
+	for name, cfg := range map[string]Config{
+		"scene threshold":    {SceneThreshold: 0.3},
+		"scenes off":         {SceneThreshold: 1},
+		"min interval":       {MinInterval: 2 * time.Second},
+		"max interval":       {MaxInterval: 10 * time.Second},
+		"max frames":         {MaxFrames: 16},
+		"max side":           {MaxSide: 256},
+		"original size":      {MaxSide: -1},
+		"keyframes only":     {KeyframesOnly: true},
+		"keyframes, min gap": {KeyframesOnly: true, MinInterval: 3 * time.Second},
+	} {
+		got := fp(cfg)
+		if other, dup := seen[got]; dup {
+			t.Errorf("%s and %s share the fingerprint %q", name, other, got)
+		}
+		seen[got] = name
 	}
 }

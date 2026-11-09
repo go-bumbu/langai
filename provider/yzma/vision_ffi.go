@@ -25,7 +25,8 @@ func loadMTMD() error {
 			return
 		}
 		// libmtmd narrates every picture it encodes; route it like llama.cpp's
-		// own lines, to the logger load installed (warnings and errors only)
+		// own lines, through the same callback (warnings and errors only, to
+		// wherever llamaLog points)
 		mtmd.LogSet(llamaLogCallback)
 	})
 	return mtmdLoader.err
@@ -85,8 +86,6 @@ func (ffiAPI) loadProjector(path string, model uintptr, threads int, useGPU bool
 
 func (ffiAPI) freeProjector(proj uintptr) { _ = mtmd.Free(mtmd.Context(proj)) }
 
-func (ffiAPI) marker() string { return mtmd.DefaultMarker() }
-
 func (ffiAPI) bitmapRGB(w, h int, rgb []byte) (uintptr, error) {
 	b := mtmd.BitmapInit(uint32(w), uint32(h), rgb) //nolint:gosec // picture sides, small positive ints
 	if b == 0 {
@@ -110,24 +109,33 @@ func (ffiAPI) freeBitmap(bitmap uintptr) { mtmd.BitmapFree(mtmd.Bitmap(bitmap)) 
 
 func (ffiAPI) freeVideo(video uintptr) { mtmd.VideoFree(mtmd.VideoContext(video)) }
 
-func (ffiAPI) tokenizeMedia(proj uintptr, prompt string, bitmaps []uintptr) (uintptr, int, error) {
+// tokenizeParts hands libmtmd the prompt as a list of parts
+// (mtmd_tokenize_from_parts) instead of one string with media markers: each
+// text carries its own parse-special flag, and nothing in a text can stand
+// for a bitmap. Neighbouring texts end up in one chunk, as they did when
+// the prompt was one string.
+func (ffiAPI) tokenizeParts(proj uintptr, parts []promptPart) (uintptr, int, error) {
 	chunks := mtmd.InputChunksInit()
-	bms := make([]mtmd.Bitmap, len(bitmaps))
-	for i, b := range bitmaps {
-		bms[i] = mtmd.Bitmap(b)
+	in := make([]*mtmd.InputPart, 0, len(parts))
+	for _, p := range parts {
+		if p.bitmap != 0 {
+			in = append(in, mtmd.NewInputBitmapPart(mtmd.Bitmap(p.bitmap)))
+			continue
+		}
+		// a part's own add-special flag is ignored: the call's applies
+		in = append(in, mtmd.NewInputTextPart(mtmd.NewInputText(p.text, false, p.special)))
 	}
-	// addSpecial adds the beginning-of-sequence token; parseSpecial reads
-	// the template's control tokens as such
-	text := mtmd.NewInputText(prompt, true, true)
-	if ret := mtmd.Tokenize(mtmd.Context(proj), chunks, text, bms); ret != 0 {
+	// addSpecial adds the beginning-of-sequence token where the vocabulary
+	// has one
+	if ret := mtmd.TokenizeFromParts(mtmd.Context(proj), chunks, in, true); ret != 0 {
 		mtmd.InputChunksFree(chunks)
 		switch ret {
 		case 1:
-			return 0, 0, fmt.Errorf("%d bitmaps for the markers in the prompt", len(bitmaps))
+			return 0, 0, errors.New("a prompt part is neither a text nor a bitmap")
 		case 2:
 			return 0, 0, errors.New("media preprocessing failed")
 		}
-		return 0, 0, fmt.Errorf("mtmd_tokenize returned %d", ret)
+		return 0, 0, fmt.Errorf("mtmd_tokenize_from_parts returned %d", ret)
 	}
 	n := 0
 	for i := range mtmd.InputChunksSize(chunks) {

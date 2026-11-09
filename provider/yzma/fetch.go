@@ -44,16 +44,24 @@ const (
 	// maxDownloadBytes caps any single download or extracted library; the
 	// largest evaluation candidate (bge-m3 Q8_0) is 635 MB. A download that
 	// is pinned to a larger exact size (a chat model) is capped at that size
-	// instead, see fetchFile.
+	// instead, see fetch.Downloader.
 	maxDownloadBytes = 1 << 30
-	// downloadTimeout bounds the first-use downloads as a whole.
+	// downloadTimeout bounds the first-use downloads as a whole when the
+	// caller's ctx carries no deadline of its own.
 	downloadTimeout = 15 * time.Minute
-	// completerDownloadTimeout bounds a chat model's first-use downloads as a
-	// whole: the pinned one is 2.5 GB, which takes longer than downloadTimeout
+	// completerDownloadTimeout does the same for a chat model's first-use
+	// downloads: the pinned one is 2.5 GB, which takes longer than downloadTimeout
 	// on a slow link.
 	completerDownloadTimeout = time.Hour
 	// userAgent names this package's downloads.
 	userAgent = "langai-semsearch"
+	// cudaRuntimeMajor is the CUDA runtime the pinned CUDA build (the
+	// "cuda-13.4" asset in libAssets) links against: its backend library
+	// needs libcudart.so.13 and libcublas.so.13 from the host. internal/hw
+	// only reports CUDA when the loader can find them, so a machine with the
+	// NVIDIA driver and no such runtime gets the Vulkan build instead of a
+	// CUDA build that cannot offload. Bump it with the asset.
+	cudaRuntimeMajor = 13
 )
 
 // asset is one downloadable file with its expected digest.
@@ -82,7 +90,7 @@ var defaultCompleterAsset = asset{
 // host; the macOS build has Metal built in). linux/amd64 is the release
 // target; the others are pinned because their digests are published with
 // the same release. Other platforms install the libraries with the yzma CLI
-// into an operator-supplied LibDir (see Config.ManagedLibDir). The digests
+// into an operator-supplied LibDir (see Runtime.ManagedLibDir). The digests
 // are those of the ggml-org release assets, except linux/arm64/cpu, which
 // comes from the manifest yzma verifies against.
 var libAssets = map[string]asset{
@@ -120,7 +128,9 @@ var libAssets = map[string]asset{
 
 // libRecordFile is written into a managed LibDir with the tag and backend
 // installed there, so a later request for a GPU build replaces a CPU
-// install (the GPU builds are supersets, the other way round is a no-op).
+// install (the GPU builds are supersets, the other way round is a no-op),
+// and a later version of this package, pinned to another tag, replaces
+// either.
 const libRecordFile = "langai-libs.json"
 
 // libRecord is what libRecordFile holds.
@@ -144,109 +154,154 @@ func libFile() string {
 	return "libllama.so"
 }
 
+// downloader is how this package's downloads are made (see fetch.Downloader):
+// through httpClient, capped at maxDownloadBytes, each logged to logger under
+// this package's component.
+func downloader(logger *slog.Logger) fetch.Downloader {
+	return fetch.Downloader{Client: httpClient, UserAgent: userAgent, Limit: maxDownloadBytes, Logger: logger.With(logComponent)}
+}
+
 // ensureModelFile makes sure spec.File exists, downloading spec.URL into it
 // (verified against spec.SHA256 and, when set, spec.Size) when it is absent;
 // a download is logged to logger.
 func ensureModelFile(ctx context.Context, spec ModelSpec, logger *slog.Logger) error {
-	if _, err := os.Stat(spec.File); err == nil {
+	a := asset{URL: spec.URL, SHA256: spec.SHA256, Size: spec.Size}
+	return downloader(logger).EnsureFile(ctx, "model "+spec.Name, a, spec.File)
+}
+
+// libsWant is what ensureLibs is asked for: a directory, the llama.cpp
+// build it should hold, and what to do with it once it does.
+type libsWant struct {
+	// plat is the libAssets key of the platform, "linux/amd64".
+	plat string
+	// dir is the absolute library directory.
+	dir string
+	// managed marks dir as owned by this package (Runtime.ManagedLibDir).
+	managed bool
+	// build is the build dir should hold (see chooseBackend).
+	build build
+	// explicit says the build was asked for by name (Runtime.Accel) rather
+	// than picked from the hardware.
+	explicit bool
+	// loadedDir is where this process loaded llama.cpp from, "" while it has
+	// not; nil means it has not.
+	loadedDir func() string
+	// use loads the libraries from dir. It runs while a managed dir is
+	// locked, so no other process replaces them halfway; nil does nothing.
+	use func() error
+}
+
+// ensureLibs makes sure w.dir holds the llama.cpp libraries of w.build and
+// then runs w.use on them. A managed directory is filled from libAssets when
+// it is empty, when it holds this package's CPU build and a GPU build is
+// wanted, or when its record names another llama.cpp tag than LibTag (see
+// needsReinstall), under the directory's lock (see fetch.InstallDir), and the
+// download and install are logged to logger. It is never filled over files
+// this package did not install, and never while this process runs the
+// libraries in it; a process that does run them, and wants nothing else,
+// does not wait for the lock. An operator directory is only checked, never
+// written to.
+func ensureLibs(ctx context.Context, w libsWant, logger *slog.Logger) error {
+	if !w.managed {
+		if _, err := os.Stat(filepath.Join(w.dir, libFile())); err != nil {
+			return fmt.Errorf("no %s in %s: install llama.cpp build %s there with `yzma install --lib %s` (yzma %s installs it by default), or use a managed LibDir, which gets the pinned build downloaded", libFile(), w.dir, LibTag, w.dir, pinnedYzma)
+		}
+		if err := checkInstallRecord(w.dir); err != nil {
+			return err
+		}
+		return w.load()
+	}
+	rec, err := json.Marshal(libRecord{Tag: LibTag, Backend: w.build})
+	if err != nil {
+		return err
+	}
+	installed, err := downloader(logger).InstallDir(ctx, fetch.DirInstall{
+		Dir: w.dir, What: "llama.cpp " + LibTag, Archive: libAssets[w.plat+"/"+w.build], Extract: extractLibs,
+		RecordFile: libRecordFile, Record: rec,
+		Ready: func() (bool, error) { return w.ready(logger) },
+		Use:   w.load,
+		// a process that runs the libraries from here does not queue behind
+		// another process's download at its next open
+		Loaded: func() bool { return w.loadedDir != nil && w.loadedDir() == w.dir },
+	})
+	if installed {
+		logger.Info("installed llama.cpp "+LibTag, logComponent, slog.String("dir", w.dir), slog.String("build", w.build))
+	}
+	return err
+}
+
+// load runs w.use, which may be nil.
+func (w libsWant) load() error {
+	if w.use == nil {
 		return nil
 	}
-	if spec.URL == "" {
-		return fmt.Errorf("model %q: %s does not exist and the spec has no URL to download it from", spec.Name, spec.File)
-	}
-	if err := os.MkdirAll(filepath.Dir(spec.File), 0o750); err != nil {
-		return err
-	}
-	a := asset{URL: spec.URL, SHA256: spec.SHA256, Size: spec.Size}
-	if err := fetchFile(ctx, "model "+spec.Name, a, spec.File, logger); err != nil {
-		return fmt.Errorf("download %s: %w", spec.Name, err)
-	}
-	logger.Info("downloaded model", logComponent, slog.String("path", spec.File))
-	return nil
+	return w.use()
 }
 
-// ensureLibs makes sure libDir holds the llama.cpp libraries of the given
-// build (see chooseBackend). A managed directory (owned by this package) is
-// filled from libAssets when empty or when it holds the CPU build and a GPU
-// build is wanted, and the download and install are logged to logger; an
-// operator directory is only checked, never written to.
-func ensureLibs(ctx context.Context, libDir string, managed bool, b build, logger *slog.Logger) error {
-	return ensureLibsFor(ctx, platform(), libDir, managed, b, logger)
-}
-
-func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, b build, logger *slog.Logger) error {
-	if _, err := os.Stat(filepath.Join(libDir, libFile())); err == nil {
-		if !managed {
-			return checkInstallRecord(libDir)
+// ready reports whether the managed w.dir can be used as it is, and
+// refuses, with an error, an install that cannot be made: of a build that
+// is not pinned for the platform, or over libraries this process has
+// already loaded. Those cannot be swapped under it; when the build was only
+// picked from the hardware the process carries on with what it loaded.
+func (w libsWant) ready(logger *slog.Logger) (bool, error) {
+	_, err := os.Stat(filepath.Join(w.dir, libFile()))
+	present := err == nil
+	if present && !needsReinstall(w.dir, w.build) {
+		return true, nil
+	}
+	if w.loadedDir != nil && w.loadedDir() == w.dir {
+		if !w.explicit {
+			logger.Warn("llama.cpp is already loaded from a build without the "+w.build+" backend; keeping it for this process", logComponent, slog.String("dir", w.dir))
+			return true, nil
 		}
-		if !needsReinstall(libDir, b) {
-			return nil
-		}
-		logger.Info("replacing llama.cpp "+LibTag+" with its "+b+" build", logComponent, slog.String("dir", libDir))
-	} else if !managed {
-		return fmt.Errorf("no %s in %s: install llama.cpp build %s there with `yzma install --lib %s` (yzma %s installs it by default), or use a managed LibDir, which gets the pinned build downloaded", libFile(), libDir, LibTag, libDir, pinnedYzma)
+		return false, fmt.Errorf("llama.cpp is already loaded from %s, which does not hold the %s build: libraries a process has loaded cannot be replaced under it; open with that Accel first, or restart", w.dir, w.build)
 	}
-	a, ok := libAssets[plat+"/"+b]
-	if !ok {
-		return fmt.Errorf("no pinned llama.cpp %s build for %s: use an unmanaged LibDir populated with `yzma install`", b, plat)
+	if _, ok := libAssets[w.plat+"/"+w.build]; !ok {
+		return false, fmt.Errorf("no pinned llama.cpp %s build for %s: use an unmanaged LibDir populated with `yzma install`", w.build, w.plat)
 	}
-	parent := filepath.Dir(libDir)
-	if err := os.MkdirAll(parent, 0o750); err != nil {
-		return err
+	if present {
+		rec, _ := readLibRecord(w.dir)
+		logger.Info("replacing the llama.cpp install with the "+w.build+" build of "+LibTag, logComponent,
+			slog.String("dir", w.dir), slog.String("installed_tag", rec.Tag), slog.String("installed_build", rec.Backend))
 	}
-	// Download and extract next to the final directory, then rename it into
-	// place: an interrupted install never leaves a half-filled libDir, and a
-	// half-filled one from an older crash (no libFile, see above) is replaced.
-	staging, err := os.MkdirTemp(parent, ".partial-")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(staging) }()
-	archive := filepath.Join(staging, "libs.tar.gz")
-	if err := fetchFile(ctx, "llama.cpp "+LibTag, a, archive, logger); err != nil {
-		return fmt.Errorf("download llama.cpp %s: %w", LibTag, err)
-	}
-	libs := filepath.Join(staging, "libs")
-	if err := os.Mkdir(libs, 0o750); err != nil {
-		return err
-	}
-	if err := extractLibs(archive, libs); err != nil {
-		return fmt.Errorf("extract llama.cpp %s: %w", LibTag, err)
-	}
-	rec, err := json.Marshal(libRecord{Tag: LibTag, Backend: b})
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(libs, libRecordFile), rec, 0o600); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(libDir); err != nil {
-		return err
-	}
-	if err := os.Rename(libs, libDir); err != nil {
-		return err
-	}
-	logger.Info("installed llama.cpp "+LibTag, logComponent, slog.String("dir", libDir), slog.String("build", b))
-	return nil
+	return false, nil
 }
 
-// needsReinstall reports whether a managed libDir must be replaced to serve
-// build b: it holds the CPU build (or predates the record and so is one)
-// and b is a GPU build. A GPU build also serves the CPU, so the reverse
-// request keeps what is there.
-func needsReinstall(libDir string, b build) bool {
-	if b == "cpu" {
-		return false
-	}
+// readLibRecord returns the record a managed install left in libDir; ok is
+// false when there is none that can be read.
+func readLibRecord(libDir string) (rec libRecord, ok bool) {
 	data, err := os.ReadFile(filepath.Join(libDir, libRecordFile)) //nolint:gosec // libDir is this package's own directory and libRecordFile a fixed name; the content is only parsed as JSON
 	if err != nil {
-		return true
+		return libRecord{}, false
 	}
-	var rec libRecord
 	if err := json.Unmarshal(data, &rec); err != nil {
+		return libRecord{}, false
+	}
+	return rec, true
+}
+
+// needsReinstall reports whether a managed libDir that holds libraries must
+// be replaced to serve build b. With a record it must when the record names
+// another tag than LibTag, whatever the backend (the install of an older
+// version of this package: its libraries fail the version check at load,
+// and would for as long as the process lives), and when b is a GPU build
+// the record does not name; a GPU build also serves the CPU, so that
+// request keeps what is there. Without a record that can be read, a
+// directory with no record file serves the CPU as it is (libraries someone
+// put there, checked by version after load) and is no GPU build, and one
+// whose record file is broken is replaced.
+func needsReinstall(libDir string, b build) bool {
+	rec, ok := readLibRecord(libDir)
+	if !ok {
+		if _, err := os.Lstat(filepath.Join(libDir, libRecordFile)); err == nil {
+			return true
+		}
+		return b != "cpu"
+	}
+	if rec.Tag != LibTag {
 		return true
 	}
-	return rec.Backend != b
+	return b != "cpu" && rec.Backend != b
 }
 
 // installRecord is the subset of `yzma install`'s record this package reads.
@@ -275,28 +330,6 @@ func checkInstallRecord(libDir string) error {
 		return nil
 	}
 	return fmt.Errorf("%s holds llama.cpp %s (upstream %q) but provider/yzma is pinned to build %s: reinstall it there with yzma %s's default version, or use a managed LibDir", libDir, rec.Tag, rec.UpstreamTag, LibTag, pinnedYzma)
-}
-
-// fetchFile downloads a to dest, verifying size and SHA-256 before the file
-// appears under its final name (see fetch.File). Since a download can take
-// minutes, it is logged (what names it) before it starts. The download is
-// capped at maxDownloadBytes, or at the asset's exact size when that is
-// larger.
-func fetchFile(ctx context.Context, what string, a asset, dest string, logger *slog.Logger) error {
-	logger.Info("downloading "+what, logComponent, slog.String("url", a.URL), slog.Int64("size", a.Size), slog.String("sha256", a.SHA256), slog.String("dest", dest))
-	return fetch.File(ctx, httpClient, userAgent, a, dest, maxDownloadBytes)
-}
-
-// Download fetches url into dest with nothing to verify it against and
-// returns the SHA-256 and size of what it wrote, so a new model can be pinned
-// in the evaluation command's models file. Open never calls it: a ModelSpec
-// with a URL must carry the digest.
-func Download(ctx context.Context, url, dest string, logger *slog.Logger) (string, int64, error) {
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
-	}
-	logger.Info("downloading unpinned file", logComponent, slog.String("url", url), slog.String("dest", dest))
-	return fetch.Unpinned(ctx, httpClient, userAgent, url, dest, maxDownloadBytes)
 }
 
 // wantLib reports whether an archive entry (by base name) is one of the

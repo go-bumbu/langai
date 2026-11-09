@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>langai · overview</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="assets/base.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <nav id="nav" data-root="./" data-page=""><a class="home" href="./">Home</a></nav>
+  <h1>Overview</h1>
+  <div id="info" class="info">loading…</div>
+  <div class="actions">
+    <button id="refresh" class="button">refresh</button>
+  </div>
+</header>
+<main>
+  <dl id="setup" class="setup"></dl>
+
+  <div class="tabs" role="tablist" aria-label="overview">
+    <button class="tab" role="tab" id="tab-features" aria-controls="features" data-tab="features">Features</button>
+    <button class="tab" role="tab" id="tab-models" aria-controls="models" data-tab="models">Models <span class="count" id="models-count"></span></button>
+    <button class="tab" role="tab" id="tab-collections" aria-controls="collections" data-tab="collections">Collections <span class="count" id="collections-count"></span></button>
+    <button class="tab" role="tab" id="tab-cache" aria-controls="cache" data-tab="cache" hidden>Embedding cache</button>
+  </div>
+
+  <section class="panel" role="tabpanel" id="features" aria-labelledby="tab-features">
+    <p class="hint">Each feature has a page of its own: open one to try it on the media and documents below.</p>
+    <div id="pages" class="pages"></div>
+  </section>
+
+  <section class="panel" role="tabpanel" id="models" aria-labelledby="tab-models" hidden>
+    <p class="hint">A model behind one of the library's lazy loaders (<code>langai.LazyEmbedder</code>, <code>LazyImageEmbedder</code>, <code>LazyCompleter</code>) loads on the first call that needs it. Its identity and dimensions come from its spec, so the stores are set up before anything loads. <b>load now</b> calls <code>Load</code>.</p>
+    <div id="model-rows"></div>
+  </section>
+
+  <section class="panel" role="tabpanel" id="collections" aria-labelledby="tab-collections" hidden>
+    <p class="hint">Every index a feature keeps, with the model the store recorded its vectors under (<code>vector.Store.Model</code>). A collection that records another model than its page runs refuses writes and searches (<code>vector.ErrModelMismatch</code>) until <b>reset</b> empties it; the page's next scan builds it again.</p>
+    <div id="collection-rows"></div>
+  </section>
+
+  <section class="panel" role="tabpanel" id="cache" aria-labelledby="tab-cache" hidden>
+    <p class="hint">The Tagger keeps every embedding it makes in a <code>tagging.EmbeddingCache</code>, keyed by model and text. <code>Tagger.Prune</code> removes what was not used for a while, after marking what the notebook's tags are built from as used.</p>
+    <div id="cache-rows"></div>
+  </section>
+</main>
+<script src="assets/ui.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

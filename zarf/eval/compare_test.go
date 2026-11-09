@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/langai/internal/fetch"
 	"github.com/go-bumbu/langai/provider/yzma"
+	"github.com/go-bumbu/langai/zarf/eval"
 )
 
 // TestCompareModels compares GGUF embedding models on the golden set (or any
@@ -131,6 +132,12 @@ func envOr(name, def string) string {
 	return def
 }
 
+// unpinned downloads a candidate that has no digest yet, capped at 1 GiB as
+// the provider caps its own downloads, and reports what to pin.
+func unpinned(logger *slog.Logger) fetch.Downloader {
+	return fetch.Downloader{UserAgent: "langai-semeval", Limit: 1 << 30, Logger: logger}
+}
+
 // evaluate opens one model (downloading an unpinned one first and reporting
 // its digest), runs the dataset through it and closes it again. Any failure
 // becomes the row's error so the other models still run.
@@ -139,7 +146,7 @@ func evaluate(ctx context.Context, e entry, rt yzma.Runtime, modelsDir string, d
 	spec := e.spec(modelsDir)
 	if spec.URL != "" && spec.SHA256 == "" {
 		if _, err := os.Stat(spec.File); err != nil {
-			sum, size, err := yzma.Download(ctx, spec.URL, spec.File, logger)
+			sum, size, err := unpinned(logger).Unpinned(ctx, spec.URL, spec.File)
 			if err != nil {
 				r.Err = err.Error()
 				return r

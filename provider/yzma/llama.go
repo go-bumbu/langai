@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/ebitengine/purego"
 	"github.com/hybridgroup/yzma/pkg/llama"
@@ -24,11 +27,11 @@ var (
 // what remains here are thin calls that need the native libraries to run.
 type ffiAPI struct{}
 
-func (ffiAPI) load(dir string, logger *slog.Logger) error {
+func (ffiAPI) load(dir string) error {
 	if err := llama.Load(dir); err != nil {
 		return fmt.Errorf("load llama.cpp libraries from %s: %w (they need libgomp1 and libstdc++6 installed; libffi8 is required by the Go bindings)", dir, err)
 	}
-	llamaLogCallback = logCallback(logger)
+	llamaLogCallback = logCallback()
 	llama.LogSet(llamaLogCallback)
 	if err := llama.Init(); err != nil {
 		return fmt.Errorf("init llama.cpp backends from %s: %w", dir, err)
@@ -74,7 +77,7 @@ func (ffiAPI) freeModel(model uintptr) { _ = llama.ModelFree(llama.Model(model))
 
 func (ffiAPI) nCtxTrain(model uintptr) int32 { return llama.ModelNCtxTrain(llama.Model(model)) }
 
-func (ffiAPI) nEmbd(model uintptr) int32 { return llama.ModelNEmbd(llama.Model(model)) }
+func (ffiAPI) nEmbdOut(model uintptr) int32 { return llama.ModelNEmbdOut(llama.Model(model)) }
 
 // poolingTypes maps this package's pooling names onto llama.cpp's; openLlama
 // validates the name first, so a lookup never misses.
@@ -143,6 +146,72 @@ func (ffiAPI) decode(ctx uintptr, tokens []int32) (int32, error) {
 		}
 	}
 	return llama.Decode(llama.Context(ctx), batch)
+}
+
+// setAbort installs llama.cpp's abort callback on ctx, or removes it. The
+// bindings keep one C callback for all contexts and look the Go function up
+// by context, so nothing is allocated per call that would never be freed.
+func (ffiAPI) setAbort(ctx uintptr, stop func() bool) {
+	if stop == nil {
+		llama.SetAbortCallback(llama.Context(ctx), nil)
+		untrackAbort(ctx)
+		return
+	}
+	llama.SetAbortCallback(llama.Context(ctx), llama.AbortFunc(trackAbort(ctx, stop)))
+}
+
+// cancelling counts the evaluations whose abort callback has told llama.cpp
+// to stop and whose callback has not been taken away yet: while it is not
+// zero, the lines llama.cpp and libmtmd log about a failed decode are what
+// the caller's cancellation caused (see cancelLine).
+var cancelling atomic.Int32
+
+// aborted holds, per llama.cpp context with an abort callback, whether that
+// callback has said stop.
+var aborted sync.Map // uintptr -> *atomic.Bool
+
+// trackAbort wraps stop, the abort callback of ctx, so that the first time
+// it says stop the evaluation counts as cancelling until untrackAbort.
+func trackAbort(ctx uintptr, stop func() bool) func() bool {
+	fired := new(atomic.Bool)
+	aborted.Store(ctx, fired)
+	return func() bool {
+		if !stop() {
+			return false
+		}
+		if fired.CompareAndSwap(false, true) {
+			cancelling.Add(1)
+		}
+		return true
+	}
+}
+
+// untrackAbort ends what trackAbort began for ctx once its evaluation has
+// returned.
+func untrackAbort(ctx uintptr) {
+	if v, ok := aborted.LoadAndDelete(ctx); ok && v.(*atomic.Bool).Load() {
+		cancelling.Add(-1)
+	}
+}
+
+// abortStatus matches llama.cpp's error lines that carry the status of an
+// aborted computation: llama_decode's ret 2 and ggml's GGML_STATUS_ABORTED
+// (1). Only an abort callback aborts, and this package's only answer stop
+// when the caller's context has ended, so these are never a genuine failure.
+var abortStatus = regexp.MustCompile(`(failed to decode, ret = 2|failed to compute graph, compute status: 1|graph_compute_async failed with error 1)$`)
+
+// decodeFailed matches the lines libmtmd logs when a decode under it fails,
+// for whatever reason: they say nothing of the cause.
+var decodeFailed = regexp.MustCompile(`^(failed to decode text|failed to decode (image|audio|video)\b.*|failed to eval chunk \d+)$`)
+
+// cancelLine reports whether an error line of llama.cpp or libmtmd is the
+// direct, expected consequence of a caller's cancellation, which forwardLog
+// demotes to Debug: a status that says aborted, or libmtmd's failed decode
+// while an abort is in flight (cancelling). A decode that fails with any
+// other status, or libmtmd's line while nothing is being cancelled, stays an
+// error.
+func cancelLine(msg string, cancelling bool) bool {
+	return abortStatus.MatchString(msg) || (cancelling && decodeFailed.MatchString(msg))
 }
 
 func (ffiAPI) embeddings(ctx uintptr, n int32) ([]float32, error) {
@@ -246,30 +315,44 @@ func expectedWarning(msg string) bool {
 	return strings.Contains(msg, "embeddings required but some input tokens were not marked as outputs")
 }
 
-// logCallback forwards llama.cpp warnings and errors to logger. Everything
-// else (progress, model metadata dumps) is dropped: llama.cpp is chatty, and
-// the lines an operator needs are the ones explaining a failed load, which
-// the bindings' own "failed to load model" error does not carry.
-func logCallback(logger *slog.Logger) uintptr {
-	if logger == nil {
-		return llama.LogSilent()
-	}
+// logCallback is the one log callback the libraries get for the life of the
+// process. It hands every line to forwardLog, which looks up where lines go
+// at that moment (llamaLog), so the destination can change after the
+// libraries loaded; while there is none the line is not even copied.
+func logCallback() uintptr {
 	return purego.NewCallback(func(level int32, text *byte, _ uintptr) uintptr {
-		if text == nil {
-			return 0
-		}
-		msg := strings.TrimSpace(utils.BytePtrToString(text))
-		if msg == "" || expectedWarning(msg) {
-			return 0
-		}
-		switch llama.LogLevel(level) {
-		case llama.LogLevelWarn:
-			logger.Warn(msg, slog.String("component", "llama.cpp"))
-		case llama.LogLevelError:
-			logger.Error(msg, slog.String("component", "llama.cpp"))
+		if text != nil && llamaLog.Load() != nil {
+			forwardLog(level, utils.BytePtrToString(text))
 		}
 		return 0
 	})
+}
+
+// forwardLog forwards a llama.cpp warning or error to the logger llamaLog
+// points at. Everything else (progress, model metadata dumps) is dropped:
+// llama.cpp is chatty, and the lines an operator needs are the ones
+// explaining a failed load, which the bindings' own "failed to load model"
+// error does not carry. The errors a caller's cancellation causes (see
+// cancelLine) go out at Debug: the caller has its context's error already.
+func forwardLog(level int32, text string) {
+	logger := llamaLog.Load()
+	if logger == nil {
+		return
+	}
+	msg := strings.TrimSpace(text)
+	if msg == "" || expectedWarning(msg) {
+		return
+	}
+	switch llama.LogLevel(level) {
+	case llama.LogLevelWarn:
+		logger.Warn(msg, slog.String("component", "llama.cpp"))
+	case llama.LogLevelError:
+		if cancelLine(msg, cancelling.Load() > 0) {
+			logger.Debug(msg, slog.String("component", "llama.cpp"), slog.Bool("cancelled", true))
+			return
+		}
+		logger.Error(msg, slog.String("component", "llama.cpp"))
+	}
 }
 
 // defaultThreads keeps an embedder working in the background (a tagger, say)

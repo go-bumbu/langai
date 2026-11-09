@@ -1,12 +1,14 @@
 package yzma
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // runtimeAPI is what loading llama.cpp takes. The embedder (llamaAPI) and the
@@ -14,8 +16,8 @@ import (
 // the process whichever opens first.
 type runtimeAPI interface {
 	// load loads the shared libraries from dir, routes llama.cpp's log lines
-	// to logger and initializes the backends.
-	load(dir string, logger *slog.Logger) error
+	// to wherever llamaLog points and initializes the backends.
+	load(dir string) error
 	// version is the version string the loaded libraries report.
 	version() string
 	// devices lists the ggml devices the loaded backends registered, in
@@ -33,7 +35,10 @@ type llamaAPI interface {
 	loadModel(path string, gpuLayers int32) (model uintptr, err error)
 	freeModel(model uintptr)
 	nCtxTrain(model uintptr) int32
-	nEmbd(model uintptr) int32
+	// nEmbdOut is the length of the vectors the model puts out (n_embd_out):
+	// the size of a pooled embedding, which is not the hidden size (n_embd)
+	// for a model that ends in a projection to another width.
+	nEmbdOut(model uintptr) int32
 	// newContext creates an embedding context whose context, batch and
 	// micro-batch sizes are all nCtx, so one text of up to nCtx tokens fits a
 	// single batch (required for encoder models), pooling token outputs the
@@ -47,6 +52,11 @@ type llamaAPI interface {
 	memoryClear(mem uintptr) error
 	// decode runs one batch; ret is llama_decode's return value (0 = ok).
 	decode(ctx uintptr, tokens []int32) (ret int32, err error)
+	// setAbort makes the decodes of ctx ask stop as they compute and give up
+	// when it says so; nil takes the question away again. llama.cpp asks
+	// between the steps of a computation on the CPU; a GPU backend finishes
+	// the batch it is in.
+	setAbort(ctx uintptr, stop func() bool)
 	// embeddings returns the pooled vector of sequence 0 as a view into
 	// llama.cpp memory that the next decode overwrites; nil when absent.
 	embeddings(ctx uintptr, n int32) ([]float32, error)
@@ -60,16 +70,33 @@ var libs = &runtimeLoader{}
 // outcome: a failure is permanent, which matches langai.LazyEmbedder's
 // cached-error contract, and a second directory is refused.
 type runtimeLoader struct {
-	once    sync.Once
+	once sync.Once
+	// mu guards the outcome below for loadedDir, which an install asks while
+	// another goroutine may be loading
+	mu      sync.Mutex
 	err     error
 	dir     string
 	version string   // what the loaded libraries reported, kept for Open's load log line
 	devices []device // what the loaded backends registered, read once after load
 }
 
+// llamaLog is where the lines llama.cpp and libmtmd log go. The libraries
+// have one log callback for the whole process, installed when they load; it
+// reads this pointer for every line, so the destination is not fixed by
+// whoever opened first: each open that brings a logger points the lines at
+// it. While it is nil they are dropped.
+var llamaLog atomic.Pointer[slog.Logger]
+
 // load loads the libraries in libDir through api on first call and checks
 // they are the pinned build. Later calls succeed only for the same directory.
+// A logger that is not nil becomes where llama.cpp's own lines go from here
+// on (see llamaLog); nil leaves that as it is.
 func (r *runtimeLoader) load(api runtimeAPI, libDir string, logger *slog.Logger) error {
+	if logger != nil {
+		// before the load: the lines that explain a failed one are the ones
+		// an operator needs
+		llamaLog.Store(logger)
+	}
 	r.once.Do(func() {
 		// On an assertion failure ggml forks gdb/lldb to print a backtrace
 		// before aborting; in a multithreaded server that can hang instead
@@ -77,17 +104,24 @@ func (r *runtimeLoader) load(api runtimeAPI, libDir string, logger *slog.Logger)
 		if os.Getenv("GGML_NO_BACKTRACE") == "" {
 			_ = os.Setenv("GGML_NO_BACKTRACE", "1")
 		}
-		if err := api.load(libDir, logger); err != nil {
-			r.err = err
-			return
+		err := api.load(libDir)
+		var v string
+		var devs []device
+		if err == nil {
+			if v = api.version(); !strings.HasPrefix(v, libVersion) {
+				err = fmt.Errorf("llama.cpp in %s reports version %q but provider/yzma is pinned to %s (build %s): the Go bindings only match that build", libDir, v, libVersion, LibTag)
+			} else {
+				devs = api.devices()
+			}
 		}
-		v := api.version()
-		if !strings.HasPrefix(v, libVersion) {
-			r.err = fmt.Errorf("llama.cpp in %s reports version %q but provider/yzma is pinned to %s (build %s): the Go bindings only match that build", libDir, v, libVersion, LibTag)
-			return
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.err = err; err == nil {
+			r.dir, r.version, r.devices = libDir, v, devs
 		}
-		r.dir, r.version, r.devices = libDir, v, api.devices()
 	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.err != nil {
 		return r.err
 	}
@@ -95,6 +129,14 @@ func (r *runtimeLoader) load(api runtimeAPI, libDir string, logger *slog.Logger)
 		return fmt.Errorf("llama.cpp is already loaded from %s; cannot load %s in the same process", r.dir, libDir)
 	}
 	return nil
+}
+
+// loadedDir is the directory the libraries were loaded from, "" while they
+// have not been (or failed to).
+func (r *runtimeLoader) loadedDir() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dir
 }
 
 // llamaBackend is the backend over one loaded model and one llama.cpp
@@ -161,7 +203,7 @@ func openLlama(api llamaAPI, rt *runtimeLoader, libDir, modelPath string, thread
 		model: model,
 		ctx:   ctx,
 		mem:   mem,
-		embd:  api.nEmbd(model),
+		embd:  api.nEmbdOut(model),
 		lim:   lim,
 		accel: used,
 	}, nil
@@ -177,7 +219,9 @@ func (l *llamaBackend) limit() int { return l.lim }
 
 func (l *llamaBackend) tokenize(text string) []int32 { return l.api.tokenize(l.model, text) }
 
-func (l *llamaBackend) embed(tokens []int32) ([]float32, error) {
+// embed runs one batch through the model. A ctx that ends while llama.cpp
+// computes stops the decode (see llamaAPI.setAbort) and is the error.
+func (l *llamaBackend) embed(ctx context.Context, tokens []int32) ([]float32, error) {
 	// llama.cpp asserts (and aborts the process) on a batch larger than
 	// n_ubatch; Embedder truncates, this is the last line of defense.
 	if len(tokens) == 0 || len(tokens) > l.lim {
@@ -188,7 +232,16 @@ func (l *llamaBackend) embed(tokens []int32) ([]float32, error) {
 			return nil, fmt.Errorf("clear kv cache: %w", err)
 		}
 	}
+	if ctx.Done() != nil {
+		l.api.setAbort(l.ctx, func() bool { return ctx.Err() != nil })
+		defer l.api.setAbort(l.ctx, nil)
+	}
 	ret, err := l.api.decode(l.ctx, tokens)
+	if err != nil || ret != 0 {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}

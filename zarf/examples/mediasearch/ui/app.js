@@ -47,11 +47,46 @@
     info = d.info;
     const scan = d.lastScan && d.lastScan.at && !d.lastScan.at.startsWith('0001')
       ? ` · scan ${ms(d.lastScan.elapsedMs)}: ${d.lastScan.indexed} indexed, ${d.lastScan.skipped} unchanged, ${d.lastScan.failed} failed, ${d.lastScan.removed} removed`
-      : '';
+      : (d.scanning ? ' · scanning…' : '');
+    const model = d.modelState ? ` · model ${d.modelState}` : '';
     const videos = info.mode === 'segments' ? `videos as ${ms(info.segmentMs)} segments` : 'videos as sampled frames';
-    infoEl.innerHTML = `<b>${info.model}</b> · ${info.dimensions} dims · ${info.provider} · ${videos} · min score ${info.minScore} · limit ${d.limit}<br>` +
+    infoEl.innerHTML = `<b title="${info.id || ''}">${info.model}</b> · ${info.dimensions} dims · ${info.provider}${model} · ${videos} · min score ${info.minScore} · limit ${d.limit}<br>` +
       `<b>${d.images}</b> images, <b>${d.videos}</b> videos in ${d.dir}${scan}`;
     $('#textsearch').hidden = !info.text;
+    banner(d);
+    return d;
+  }
+
+  // banner offers the reset when the database was built by another model:
+  // vectors of two models never mix, so nothing is indexed or searched
+  // until the collection is emptied
+  function banner(d) {
+    const b = $('#banner');
+    const legacy = d.lastScan && d.lastScan.legacy;
+    b.hidden = !(d.lastScan && (d.lastScan.mismatch || legacy));
+    if (b.hidden) return;
+    const btn = el('button', { class: 'button danger' }, 'reset the index and rescan');
+    btn.addEventListener('click', async () => {
+      if (!confirm(legacy ? 'Drop the index\'s old tables and embed every file again?' : 'Empty the index and embed every file again with the model that runs now?')) return;
+      btn.disabled = true;
+      try {
+        await api('api/reset', { method: 'POST' });
+        toast('index emptied; scanning…');
+        const s = await api('api/rescan', { method: 'POST' });
+        toast(`rescan: ${s.indexed} indexed, ${s.skipped} unchanged, ${s.failed} failed, ${s.removed} removed in ${ms(s.elapsedMs)}`);
+      } catch (err) {
+        toast(err.message);
+      }
+      await Promise.all([loadInfo(), loadItems()]).catch(() => {});
+    });
+    if (legacy) {
+      b.replaceChildren(el('div', { class: 'what' }, el('b', {}, 'The index is in the tables of an older version. '),
+        'The store refuses every read and write of it (vector.ErrLegacySchema). The reset drops those tables (Store.DeleteIndex), and the rescan embeds every file again.'), btn);
+      return;
+    }
+    b.replaceChildren(el('div', { class: 'what' }, el('b', {}, 'The index was built by another model. '),
+      d.storedModel ? `The database holds this collection's vectors under ${d.storedModel}; ` : 'The database holds this collection under another model; ',
+      `the page runs ${info.id || info.model}. Vectors of two models never mix, so nothing is indexed or searched until the collection is emptied (MediaIndex.Reset).`), btn);
   }
 
   // segmentOf names the segment a time falls in, in the segments mode
@@ -66,7 +101,7 @@
     const c = el('div', { class: 'card' + (active === it.id ? ' active' : ''), title: it.id, onclick: () => open(it.id) },
       el('img', { src: 'thumb/' + enc(it.id), loading: 'lazy', alt: it.name }),
       it.kind === 'video' ? el('span', { class: 'badge video' }, 'video') : null,
-      it.error ? el('span', { class: 'badge error', title: it.error }, 'failed') : null,
+      it.error ? el('span', { class: 'badge ' + (it.reason ? 'skipped' : 'error'), title: it.error }, it.reason || 'failed') : null,
       el('div', { class: 'name' }, it.name));
     c.dataset.id = it.id;
     return c;
@@ -103,7 +138,7 @@
   function facts(it) {
     const rows = [['path', it.id], ['kind', it.kind], ['size', bytes(it.size)],
       ['indexed in', it.indexedMs + ' ms' + (it.skipped ? ' (unchanged, no-op)' : '')]];
-    if (it.error) rows.push(['error', it.error]);
+    if (it.error) rows.push([it.reason ? 'not indexed' : 'error', it.error]);
     const f = el('div', { class: 'facts' });
     for (const [k, v] of rows) f.append(el('span', {}, k), el('b', { class: k === 'error' ? 'error' : '' }, v));
     return f;
@@ -205,10 +240,18 @@
       await Promise.all([loadInfo(), loadItems()]);
     } catch (err) {
       toast(err.message);
+      // a scan that met another model's vectors: show the reset
+      await Promise.all([loadInfo(), loadItems()]).catch(() => {});
     } finally {
       e.target.disabled = false;
     }
   });
 
-  Promise.all([loadInfo(), loadItems()]).catch((e) => toast(e.message));
+  // while the startup scan runs, the catalog fills: look again until it is
+  // done
+  async function start() {
+    const [d] = await Promise.all([loadInfo(), loadItems()]);
+    if (d.scanning) setTimeout(() => start().catch(() => {}), 2000);
+  }
+  start().catch((e) => toast(e.message));
 })();

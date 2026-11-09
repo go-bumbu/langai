@@ -52,13 +52,15 @@ type fakeAPI struct {
 	embeddingsErr error   // embeddings fails with it
 	nilEmbeddings bool    // embeddings returns no vector
 	// buf is the one buffer every embeddings call returns, standing in for
-	// the llama.cpp memory the real view aliases; nEmbd is its length.
+	// the llama.cpp memory the real view aliases; nEmbdOut is its length.
 	buf []float32
 
 	// backtraceAtLoad is GGML_NO_BACKTRACE as load saw it.
 	backtraceAtLoad string
 	calls           []fakeCall
-	devs            []device // what devices reports
+	devs            []device    // what devices reports
+	onDecode        func()      // called when a decode starts
+	stop            func() bool // the abort callback setAbort installed
 }
 
 // verify the fake actually satisfies the interface
@@ -110,7 +112,7 @@ func (f *fakeAPI) only(t *testing.T, name string) []any {
 	return nil
 }
 
-func (f *fakeAPI) load(dir string, _ *slog.Logger) error {
+func (f *fakeAPI) load(dir string) error {
 	f.record("load", dir)
 	f.backtraceAtLoad = os.Getenv("GGML_NO_BACKTRACE")
 	return f.loadErr
@@ -144,8 +146,8 @@ func (f *fakeAPI) nCtxTrain(model uintptr) int32 {
 	return f.trainCtx
 }
 
-func (f *fakeAPI) nEmbd(model uintptr) int32 {
-	f.record("nEmbd", model)
+func (f *fakeAPI) nEmbdOut(model uintptr) int32 {
+	f.record("nEmbdOut", model)
 	return int32(len(f.buf))
 }
 
@@ -170,9 +172,22 @@ func (f *fakeAPI) memoryClear(mem uintptr) error {
 	return nil
 }
 
+// decode fails like llama.cpp does (return value 2) when the abort callback
+// says stop.
 func (f *fakeAPI) decode(ctx uintptr, tokens []int32) (int32, error) {
 	f.record("decode", ctx, len(tokens))
+	if f.onDecode != nil {
+		f.onDecode()
+	}
+	if f.stop != nil && f.stop() {
+		return 2, nil
+	}
 	return f.decodeRet, f.decodeErr
+}
+
+func (f *fakeAPI) setAbort(ctx uintptr, stop func() bool) {
+	f.record("setAbort", ctx, stop != nil)
+	f.stop = stop
 }
 
 func (f *fakeAPI) embeddings(ctx uintptr, n int32) ([]float32, error) {
@@ -400,14 +415,14 @@ func TestLlamaBackend_EmbedRefusesOversizedAndEmptyBatch(t *testing.T) {
 	f.trainCtx, f.grantedLimit = 4, 4
 	b := openFake(t, f)
 	for _, toks := range [][]int32{{1, 2, 3, 4, 5}, {}} {
-		if _, err := b.embed(toks); err == nil {
+		if _, err := b.embed(context.Background(), toks); err == nil {
 			t.Errorf("embed accepted %d tokens with a limit of 4", len(toks))
 		}
 	}
 	if len(f.calls) != 0 {
 		t.Fatalf("a refused batch reached llama.cpp: %v", f.names())
 	}
-	if _, err := b.embed([]int32{1, 2, 3, 4}); err != nil {
+	if _, err := b.embed(context.Background(), []int32{1, 2, 3, 4}); err != nil {
 		t.Fatalf("a batch of exactly the limit must pass: %v", err)
 	}
 }
@@ -418,7 +433,7 @@ func TestLlamaBackend_EmbedRefusesOversizedAndEmptyBatch(t *testing.T) {
 func TestLlamaBackend_EmbedSkipsMemoryClearWithoutMemory(t *testing.T) {
 	f := newFakeAPI()
 	b := openFake(t, f)
-	if _, err := b.embed([]int32{1, 2}); err != nil {
+	if _, err := b.embed(context.Background(), []int32{1, 2}); err != nil {
 		t.Fatal(err)
 	}
 	if n := f.count("memoryClear"); n != 0 {
@@ -428,7 +443,7 @@ func TestLlamaBackend_EmbedSkipsMemoryClearWithoutMemory(t *testing.T) {
 	f = newFakeAPI()
 	f.mem = 7
 	b = openFake(t, f)
-	if _, err := b.embed([]int32{1, 2}); err != nil {
+	if _, err := b.embed(context.Background(), []int32{1, 2}); err != nil {
 		t.Fatal(err)
 	}
 	if args := f.only(t, "memoryClear"); args[0] != uintptr(7) {
@@ -445,11 +460,11 @@ func TestLlamaBackend_EmbedSkipsMemoryClearWithoutMemory(t *testing.T) {
 func TestLlamaBackend_EmbedCopiesTheView(t *testing.T) {
 	f := newFakeAPI()
 	b := openFake(t, f)
-	first, err := b.embed([]int32{1, 2})
+	first, err := b.embed(context.Background(), []int32{1, 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := b.embed([]int32{3, 4})
+	second, err := b.embed(context.Background(), []int32{3, 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +503,7 @@ func TestLlamaBackend_EmbedReportsDecodeFailure(t *testing.T) {
 			f := newFakeAPI()
 			b := openFake(t, f)
 			c.set(f)
-			vec, err := b.embed([]int32{1, 2})
+			vec, err := b.embed(context.Background(), []int32{1, 2})
 			if !c.check(err) || vec != nil {
 				t.Fatalf("embed = %v, %v", vec, err)
 			}
@@ -496,6 +511,37 @@ func TestLlamaBackend_EmbedReportsDecodeFailure(t *testing.T) {
 				t.Fatalf("embeddings read %d times, want %d", n, c.reads)
 			}
 		})
+	}
+}
+
+// TestLlamaBackend_EmbedStopsWhenTheContextEnds: a ctx cancelled while the
+// model computes stops the decode and is the error, and the abort callback
+// is removed again; a context that cannot end installs none.
+func TestLlamaBackend_EmbedStopsWhenTheContextEnds(t *testing.T) {
+	f := newFakeAPI()
+	b := openFake(t, f)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.onDecode = cancel
+	if _, err := b.embed(ctx, []int32{1, 2}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if got := strings.Join(f.names(), ","); got != "setAbort,decode,setAbort" || f.stop != nil {
+		t.Errorf("calls = %s, want the callback installed around the decode and removed", got)
+	}
+	f.calls, f.onDecode = nil, nil
+	if _, err := b.embed(context.Background(), []int32{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if f.count("setAbort") != 0 {
+		t.Error("an abort callback was installed for a context without Done")
+	}
+	// a decode that fails on its own keeps its error under a live context
+	f.decodeRet = 1
+	live, stop := context.WithCancel(context.Background())
+	defer stop()
+	if _, err := b.embed(live, []int32{1, 2}); err == nil || !strings.Contains(err.Error(), "decode returned 1") {
+		t.Errorf("err = %v, want the decode's own", err)
 	}
 }
 
@@ -531,12 +577,17 @@ func TestNew_LoadsThroughTheAPI(t *testing.T) {
 		api, libs = origAPI, origLibs
 	})
 
-	tmp := t.TempDir()
+	// the library directory is known by its real path (a temp directory is
+	// behind a link on some systems)
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	modelsDir := filepath.Join(tmp, "models")
 	modelPath := filepath.Join(modelsDir, defaultModelFile)
 	libDir := filepath.Join(tmp, "llama-cpp", LibTag)
 	var logs bytes.Buffer
-	e, err := New(context.Background(), Config{ModelsDir: modelsDir, LibDir: libDir, ManagedLibDir: true, Threads: 2, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	e, err := New(context.Background(), Config{Runtime: Runtime{LibDir: libDir, ManagedLibDir: true, Threads: 2, Logger: slog.New(slog.NewTextHandler(&logs, nil))}, ModelsDir: modelsDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +607,7 @@ func TestNew_LoadsThroughTheAPI(t *testing.T) {
 		{"downloading llama.cpp " + LibTag, []string{"url=" + libAsset.URL, fmt.Sprintf("size=%d", libAsset.Size), "sha256=" + libAsset.SHA256, "dest="}},
 		{"installed llama.cpp " + LibTag, []string{"dir=" + libDir}},
 		{"downloading model " + DefaultModel, []string{"url=" + modelAsset.URL, fmt.Sprintf("size=%d", modelAsset.Size), "sha256=" + modelAsset.SHA256, "dest=" + modelPath}},
-		{"downloaded model", []string{"path=" + modelPath}},
+		{"downloaded model " + DefaultModel, []string{"path=" + modelPath}},
 		{"llama.cpp loaded", []string{"dir=" + libDir, "version=" + libVersion, "threads=2", "model=" + DefaultModel}},
 	})
 	// the load line reuses the version the loader read: no second FFI call
@@ -675,11 +726,16 @@ func TestLlamaBackend_CloseFreesContextThenModel(t *testing.T) {
 	}
 }
 
-// fakeRuntime serves the pinned libraries from an httptest server, routes
+// fakeRuntime serves the pinned libraries from an httptest server (the only
+// kind of server the test can then reach), makes the host look like a plain
+// CPU machine so that the cpu build is the one asked for, routes
 // llama.cpp calls to f, and returns a managed library directory under tmp;
 // the globals are restored when the test ends.
 func fakeRuntime(t *testing.T, f *fakeAPI, tmp string) Runtime {
 	t.Helper()
+	// nothing but the test servers, and the cpu build whatever the host has
+	offline(t)
+	cpuOnly(t)
 	_, libAsset := serve(t, tarGz(t, "llama-b11429", releaseLibs()))
 	plat := platform()
 	origLib, hadLib := libAssets[plat+"/cpu"]

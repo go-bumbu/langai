@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,21 @@ func serve(t *testing.T, body []byte) (*httptest.Server, asset) {
 }
 
 func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// writeInstallRecord records version and variant in dir, as an install does.
+func writeInstallRecord(dir, variant string) error {
+	data, err := json.Marshal(installRecord{Version: LibVersion, Variant: variant})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, installRecordFile), data, 0o600)
+}
+
+// ensureLibsFor asks ensureLibs for a variant in libDir on plat, in a
+// process that has loaded nothing and loads nothing.
+func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, variant string, logger *slog.Logger) error {
+	return ensureLibs(ctx, libsWant{plat: plat, dir: libDir, managed: managed, variant: variant}, logger)
+}
 
 type tarEntry struct {
 	name, link string // link set = symlink to link
@@ -177,11 +193,15 @@ func TestEnsureLibsFor_ManagedInstallsAndRefillsOnAnotherVariant(t *testing.T) {
 	t.Cleanup(func() { delete(libAssets, "test/arch/cpu"); delete(libAssets, "test/arch/cuda") })
 
 	libDir := filepath.Join(t.TempDir(), "onnxruntime", LibVersion)
-	// a directory left behind by an interrupted install (no library) is replaced
+	// a directory of this package's that lost its library (it has the record,
+	// no library) is replaced
 	if err := os.MkdirAll(libDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(libDir, "stale"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInstallRecord(libDir, variantCPU); err != nil {
 		t.Fatal(err)
 	}
 	if err := ensureLibsFor(context.Background(), "test/arch", libDir, true, variantCPU, discardLogger()); err != nil {
@@ -191,14 +211,15 @@ func TestEnsureLibsFor_ManagedInstallsAndRefillsOnAnotherVariant(t *testing.T) {
 		t.Fatalf("library missing after install: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(libDir, "stale")); err == nil {
-		t.Fatal("the interrupted install's leftovers survived")
+		t.Fatal("the broken install's leftovers survived")
 	}
 	rec, err := readInstallRecord(libDir)
 	if err != nil || rec == nil || rec.Version != LibVersion || rec.Variant != variantCPU {
 		t.Fatalf("record = %+v, %v", rec, err)
 	}
-	if entries, _ := os.ReadDir(filepath.Dir(libDir)); len(entries) != 1 {
-		t.Fatalf("staging directory left behind: %v", entries)
+	// the directory and its lock file: no archive, no staging
+	if entries, _ := os.ReadDir(filepath.Dir(libDir)); len(entries) != 2 {
+		t.Fatalf("staging left behind: %v", entries)
 	}
 	// installed libraries are reused: the second call must not need the network
 	libAssets["test/arch/cpu"] = asset{URL: "http://127.0.0.1:1/unreachable", SHA256: cpu.SHA256}
@@ -215,13 +236,96 @@ func TestEnsureLibsFor_ManagedInstallsAndRefillsOnAnotherVariant(t *testing.T) {
 	if rec, _ := readInstallRecord(libDir); rec == nil || rec.Variant != variantCUDA {
 		t.Errorf("record after refill = %+v", rec)
 	}
-	// so does a directory without a record (not installed by this package)
-	if err := os.Remove(filepath.Join(libDir, installRecordFile)); err != nil {
+}
+
+// TestEnsureLibsFor_ManagedDirectoryWithoutRecord: a library without a
+// record was not installed by this package: it is neither trusted to be the
+// wanted build nor replaced.
+func TestEnsureLibsFor_ManagedDirectoryWithoutRecord(t *testing.T) {
+	_, a := serve(t, tarGz(t, "ort", releaseLibs()))
+	libAssets["test/arch/cuda"] = a
+	t.Cleanup(func() { delete(libAssets, "test/arch/cuda") })
+	libDir := t.TempDir()
+	lib := filepath.Join(libDir, libFile())
+	if err := os.WriteFile(lib, []byte("someone's build"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	libAssets["test/arch/cuda"] = asset{URL: "http://127.0.0.1:1/unreachable", SHA256: cuda.SHA256}
-	if err := ensureLibsFor(context.Background(), "test/arch", libDir, true, variantCUDA, discardLogger()); err == nil {
-		t.Error("a managed directory without a record must be reinstalled (here: fail to download)")
+	err := ensureLibsFor(context.Background(), "test/arch", libDir, true, variantCUDA, discardLogger())
+	if err == nil || !strings.Contains(err.Error(), "refusing to replace") || !strings.Contains(err.Error(), installRecordFile) {
+		t.Errorf("a managed directory without a record: err = %v, want a refusal", err)
+	}
+	if got, _ := os.ReadFile(lib); string(got) != "someone's build" {
+		t.Error("the directory without a record was replaced")
+	}
+}
+
+// TestEnsureLibs_NeverReplacesALoadedLibrary: once the process runs the
+// library of a directory it stays. A loaded CUDA build also serves the CPU;
+// a loaded CPU build cannot become the CUDA one.
+func TestEnsureLibs_NeverReplacesALoadedLibrary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks")
+	}
+	for _, c := range []struct {
+		loaded, wanted string
+		ok             bool
+	}{
+		{variantCPU, variantCUDA, false},
+		{variantCUDA, variantCPU, true},
+		{variantCPU, variantCPU, true},
+	} {
+		_, first := serve(t, tarGz(t, "ort", releaseLibs()))
+		libAssets["test/arch/"+c.loaded] = first
+		if c.wanted != c.loaded {
+			libAssets["test/arch/"+c.wanted] = asset{URL: "http://127.0.0.1:1/unreachable", SHA256: first.SHA256}
+		}
+		libDir := filepath.Join(t.TempDir(), "onnxruntime", LibVersion)
+		loader := &runtimeLoader{}
+		f := &fakeAPI{}
+		want := libsWant{plat: "test/arch", dir: libDir, managed: true, variant: c.loaded, loadedDir: loader.loadedDir,
+			use: func() error { return loader.load(f, filepath.Join(libDir, libFile()), discardLogger()) }}
+		if err := ensureLibs(context.Background(), want, discardLogger()); err != nil {
+			t.Fatal(err)
+		}
+		if loader.loadedDir() != libDir {
+			t.Fatalf("loaded from %q", loader.loadedDir())
+		}
+		want.variant = c.wanted
+		err := ensureLibs(context.Background(), want, discardLogger())
+		if c.ok && err != nil {
+			t.Errorf("%s after %s: %v", c.wanted, c.loaded, err)
+		}
+		if !c.ok && (err == nil || !strings.Contains(err.Error(), "already loaded") || !strings.Contains(err.Error(), c.wanted)) {
+			t.Errorf("%s after %s: err = %v, want a refusal", c.wanted, c.loaded, err)
+		}
+		if rec, _ := readInstallRecord(libDir); rec == nil || rec.Variant != c.loaded {
+			t.Errorf("%s after %s: the directory now holds %+v", c.wanted, c.loaded, rec)
+		}
+		if len(f.loads) != 1 {
+			t.Errorf("%s after %s: %d loads", c.wanted, c.loaded, len(f.loads))
+		}
+		delete(libAssets, "test/arch/cpu")
+		delete(libAssets, "test/arch/cuda")
+	}
+}
+
+// TestEnsureLibsFor_ManagedNeverWipesForeignFiles: ManagedLibDir on a
+// directory that holds something else must not delete it.
+func TestEnsureLibsFor_ManagedNeverWipesForeignFiles(t *testing.T) {
+	_, a := serve(t, tarGz(t, "ort", releaseLibs()))
+	libAssets["test/arch/cpu"] = a
+	t.Cleanup(func() { delete(libAssets, "test/arch/cpu") })
+	app := t.TempDir()
+	precious := filepath.Join(app, "app.conf")
+	if err := os.WriteFile(precious, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := ensureLibsFor(context.Background(), "test/arch", app, true, variantCPU, discardLogger())
+	if err == nil || !strings.Contains(err.Error(), "refusing to replace") {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	if got, _ := os.ReadFile(precious); string(got) != "precious" {
+		t.Fatal("the directory's own file is gone")
 	}
 }
 
@@ -276,7 +380,8 @@ func TestEnsureLibsFor_DownloadFailureLeavesNothing(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("err = %v, want the HTTP status", err)
 	}
-	if entries, _ := os.ReadDir(filepath.Dir(libDir)); len(entries) != 0 {
+	// nothing but the directory's lock file
+	if entries, _ := os.ReadDir(filepath.Dir(libDir)); len(entries) != 1 || entries[0].Name() != "libs.lock" {
 		t.Fatalf("something left behind: %v", entries)
 	}
 }

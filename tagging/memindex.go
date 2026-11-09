@@ -18,15 +18,12 @@ const DefaultMemIndexBytes = 256 << 20
 // The engine's states are hex digests, so none starts with a NUL.
 const unrecordedPrefix = "\x00unrecorded "
 
-// spaceKey identifies one space of a MemIndex.
-type spaceKey struct{ index, partition string }
-
 // memSpace is the tags and state of one space. tags and fingerprints are built
 // anew at every Apply and never changed after, so State and Candidates hand
 // them out without a sort or a copy: a Suggest at an unchanged revision holds
 // the index's one mutex for no longer than a map lookup.
 type memSpace struct {
-	key          spaceKey
+	key          Space
 	state        string            // never empty: see TagIndex.State
 	tags         []TagVector       // ordered by id
 	fingerprints map[string]string // by id
@@ -48,9 +45,9 @@ type MemIndex struct {
 	mu         sync.Mutex
 	budget     int64
 	total      int64
-	spaces     map[spaceKey]*list.Element // values are *memSpace
-	lru        *list.List                 // front is the most recently used
-	unrecorded int64                      // how many unrecorded states were handed out
+	spaces     map[Space]*list.Element // values are *memSpace
+	lru        *list.List              // front is the most recently used
+	unrecorded int64                   // how many unrecorded states were handed out
 }
 
 // NewMemIndex returns an empty MemIndex holding at most about budgetBytes; a
@@ -60,7 +57,7 @@ func NewMemIndex(budgetBytes int64) *MemIndex {
 	if budgetBytes <= 0 {
 		budgetBytes = DefaultMemIndexBytes
 	}
-	return &MemIndex{budget: budgetBytes, spaces: map[spaceKey]*list.Element{}, lru: list.New()}
+	return &MemIndex{budget: budgetBytes, spaces: map[Space]*list.Element{}, lru: list.New()}
 }
 
 // State implements TagIndex. The returned map is the space's own: Apply replaces
@@ -71,7 +68,7 @@ func (m *MemIndex) State(_ context.Context, index, partition string) (string, ma
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	sp := m.touch(spaceKey{index, partition})
+	sp := m.touch(Space{index, partition})
 	if sp == nil {
 		return "", nil, false, nil
 	}
@@ -85,7 +82,7 @@ func (m *MemIndex) Apply(_ context.Context, index, partition, from, state string
 	if index == "" {
 		return errEmptyIndex
 	}
-	key := spaceKey{index, partition}
+	key := Space{index, partition}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sp := m.touch(key)
@@ -154,7 +151,7 @@ func (m *MemIndex) Candidates(_ context.Context, index, partition string, _ []fl
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	sp := m.touch(spaceKey{index, partition})
+	sp := m.touch(Space{index, partition})
 	if sp == nil {
 		return nil, nil
 	}
@@ -163,7 +160,7 @@ func (m *MemIndex) Candidates(_ context.Context, index, partition string, _ []fl
 
 // touch returns the space and marks it most recently used, or nil when it is
 // unknown. The caller holds the mutex.
-func (m *MemIndex) touch(key spaceKey) *memSpace {
+func (m *MemIndex) touch(key Space) *memSpace {
 	el, ok := m.spaces[key]
 	if !ok {
 		return nil
@@ -173,7 +170,7 @@ func (m *MemIndex) touch(key spaceKey) *memSpace {
 }
 
 // remove forgets a space. The caller holds the mutex.
-func (m *MemIndex) remove(key spaceKey) {
+func (m *MemIndex) remove(key Space) {
 	el, ok := m.spaces[key]
 	if !ok {
 		return
@@ -185,7 +182,7 @@ func (m *MemIndex) remove(key spaceKey) {
 
 // evict drops least-recently-used spaces while over budget, never the space
 // just used. The caller holds the mutex.
-func (m *MemIndex) evict(keep spaceKey) {
+func (m *MemIndex) evict(keep Space) {
 	for m.total > m.budget {
 		el := m.lru.Back()
 		if el == nil {

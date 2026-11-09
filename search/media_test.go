@@ -192,8 +192,8 @@ func TestMediaIndex_UpdateReplacesAndDeleteRemoves(t *testing.T) {
 	if hits, _ = ix.SearchImage(ctx, bytes.NewReader(a), 10); len(hits) != 0 {
 		t.Errorf("after Delete: hits = %+v", hits)
 	}
-	if h, _ := store.ContentHash(ctx, "t", "p", "c", "x"); h != "" {
-		t.Errorf("after Delete the hash is still stored: %q", h)
+	if h, _ := store.Hashes(ctx, vector.Coord{Index: "t", Partition: "p", Collection: "c"}, "x"); len(h) != 0 {
+		t.Errorf("after Delete the hash is still stored: %v", h)
 	}
 	if err := ix.Delete(ctx, "never-indexed"); err != nil {
 		t.Errorf("deleting an unknown id: %v", err)
@@ -212,6 +212,29 @@ func clipFrames() []media.Frame {
 	}
 }
 
+// checkClipChunks checks what IndexVideo stored for clipFrames: one chunk per
+// frame, Seq in milliseconds, and a store search that finds the clip once,
+// by its frame closest to the query.
+func checkClipChunks(t *testing.T, store vector.Store, emb langai.ImageEmbedder) {
+	t.Helper()
+	ctx := context.Background()
+	coord := vector.Coord{Index: "t", Partition: "p", Collection: "c"}
+	chunks, err := store.Chunks(ctx, coord, "clip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 3 || chunks[0].Seq != 0 || chunks[1].Seq != 4000 || chunks[2].Seq != 8000 || chunks[1].Text != "" {
+		t.Errorf("stored chunks = %+v, want 3 at Seq 0, 4000 and 8000", chunks)
+	}
+	raw, err := store.Search(ctx, coord, vector.Query{Vectors: [][]float32{mustEmbed(t, emb, pic(64, 48, green, red))}, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 1 || raw[0].Seq != 4000 {
+		t.Errorf("store search = %+v, want the clip once, by its frame at Seq 4000", raw)
+	}
+}
+
 func TestMediaIndex_ImageQueryFindsTheVideoFrame(t *testing.T) {
 	sampler := &countingSampler{frames: clipFrames()}
 	ix, emb, store := newMediaIndex(t, WithSampler(sampler))
@@ -220,14 +243,7 @@ func TestMediaIndex_ImageQueryFindsTheVideoFrame(t *testing.T) {
 	if err := ix.IndexVideo(ctx, "clip", path); err != nil {
 		t.Fatal(err)
 	}
-	// one chunk per frame, Seq in milliseconds
-	raw, err := store.Search(ctx, "t", "p", "c", mustEmbed(t, emb, pic(64, 48, green, red)), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(raw) != 3 || raw[0].Seq != 4000 || raw[0].Text != "" {
-		t.Errorf("stored chunks = %+v, want 3 with the best at Seq 4000", raw)
-	}
+	checkClipChunks(t, store, emb)
 	// the image query is the second shot at another size
 	hits, err := ix.SearchImage(ctx, bytes.NewReader(encoded(t, pic(128, 96, green, red))), 10)
 	if err != nil {
@@ -318,16 +334,16 @@ func TestMediaIndex_SearchIndexedReusesTheStoredVectors(t *testing.T) {
 	}
 	calls := emb.calls.Load()
 
-	// an image: itself first, then the clip by its frame at 4 s
+	// an image: the clip first by its frame at 4 s, the image itself left out
 	hits, err := ix.SearchIndexed(ctx, "a", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 3 || hits[0].DocID != "a" || hits[0].Score < 0.999 {
-		t.Fatalf("hits = %+v, want a itself first of 3", hits)
+	if len(hits) != 2 || hits[0].DocID != "clip" || hits[0].Score < 0.999 {
+		t.Fatalf("hits = %+v, want clip first of 2, a left out", hits)
 	}
-	if hits[1].DocID != "clip" || hits[1].At != 4*time.Second || hits[1].QueryAt != 0 {
-		t.Errorf("hits[1] = %+v, want clip by its 4 s frame", hits[1])
+	if hits[0].At != 4*time.Second || hits[0].QueryAt != 0 {
+		t.Errorf("hits[0] = %+v, want clip by its 4 s frame", hits[0])
 	}
 
 	// a video: every stored frame is a query, QueryAt its time
@@ -339,8 +355,8 @@ func TestMediaIndex_SearchIndexedReusesTheStoredVectors(t *testing.T) {
 	for _, h := range hits {
 		byID[h.DocID] = h
 	}
-	if h := byID["clip"]; h.Score < 0.999 {
-		t.Errorf("clip = %+v, want itself at ~1", h)
+	if h, ok := byID["clip"]; ok {
+		t.Errorf("clip = %+v, want the query item left out", h)
 	}
 	if h := byID["a"]; h.Score < 0.999 || h.QueryAt != 4*time.Second {
 		t.Errorf("a = %+v, want found by the query frame at 4 s", h)
@@ -378,7 +394,7 @@ func TestMediaIndex_MinScoreLimitAndEmptyQueries(t *testing.T) {
 }
 
 func TestMediaIndex_IndexFramesHonoursTheCallersHash(t *testing.T) {
-	ix, emb, store := newMediaIndex(t)
+	ix, emb, _ := newMediaIndex(t)
 	ctx := context.Background()
 	frames := clipFrames()[:1]
 	for range 2 {
@@ -396,19 +412,6 @@ func TestMediaIndex_IndexFramesHonoursTheCallersHash(t *testing.T) {
 	}
 	if emb.calls.Load() != 3 {
 		t.Errorf("empty hash: %d embed calls, want 3", emb.calls.Load())
-	}
-	// no frames: the hash is kept, nothing is found
-	if err := ix.IndexFrames(ctx, "empty", "h2", nil); err != nil {
-		t.Fatal(err)
-	}
-	if h, _ := store.ContentHash(ctx, "t", "p", "c", "empty"); h != "h2" {
-		t.Errorf("stored hash = %q, want h2", h)
-	}
-	hits, _ := ix.SearchFrames(ctx, frames, 10)
-	for _, h := range hits {
-		if h.DocID == "empty" {
-			t.Errorf("an item without frames was found: %+v", hits)
-		}
 	}
 }
 
@@ -494,11 +497,11 @@ func hugePNG() []byte {
 }
 
 func TestDecodeImage_RefusesHugePictures(t *testing.T) {
-	if _, err := decodeImage(bytes.NewReader(hugePNG())); err == nil || !strings.Contains(err.Error(), "pixels") {
+	if _, err := decodeImage(hugePNG()); err == nil || !strings.Contains(err.Error(), "pixels") {
 		t.Errorf("err = %v, want a pixel-count refusal", err)
 	}
 	// a real picture still decodes whole after the config pass
-	img, err := decodeImage(bytes.NewReader(encoded(t, pic(300, 200, red, blue))))
+	img, err := decodeImage(encoded(t, pic(300, 200, red, blue)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,37 +517,6 @@ func mustEmbed(t *testing.T, emb langai.ImageEmbedder, img image.Image) []float3
 		t.Fatal(err)
 	}
 	return vecs[0]
-}
-
-// segmentEmbedder is a VideoEmbedder over the fake image embedder: a "video"
-// file's segments are the pictures listed for its base name, 10 s apart.
-type segmentEmbedder struct {
-	emb   langaitest.FakeImageEmbedder
-	clips map[string][]image.Image
-	calls int
-	err   error
-}
-
-func (s *segmentEmbedder) Dimensions() int { return s.emb.Dimensions() }
-
-func (s *segmentEmbedder) EmbedVideo(ctx context.Context, path string) ([]media.Segment, error) {
-	s.calls++
-	if s.err != nil {
-		return nil, s.err
-	}
-	images, ok := s.clips[filepath.Base(path)]
-	if !ok {
-		return nil, errors.New("not a video: " + path)
-	}
-	vectors, err := s.emb.EmbedImages(ctx, images)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]media.Segment, len(images))
-	for i := range images {
-		out[i] = media.Segment{Start: time.Duration(i) * 10 * time.Second, End: time.Duration(i+1) * 10 * time.Second, Vector: vectors[i]}
-	}
-	return out, nil
 }
 
 // colourText is a text Embedder in the fake image space: a text names a
@@ -566,7 +538,7 @@ func (c colourText) Embed(ctx context.Context, _ langai.Role, texts []string) ([
 // is its segments, found by an image at the segment's start time, and a
 // video query says which of its segments matched.
 func TestMediaIndex_VideoEmbedderStoresSegments(t *testing.T) {
-	ve := &segmentEmbedder{clips: map[string][]image.Image{
+	ve := &langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{
 		"clip.mp4":  {pic(64, 48, red, red), pic(64, 48, green, green)},
 		"query.mp4": {pic(64, 48, blue, blue), pic(64, 48, green, green)},
 	}}
@@ -576,11 +548,11 @@ func TestMediaIndex_VideoEmbedderStoresSegments(t *testing.T) {
 	if err := ix.IndexVideo(ctx, "clip", clip); err != nil {
 		t.Fatal(err)
 	}
-	if ve.calls != 1 || emb.calls.Load() != 0 {
-		t.Errorf("video embedder called %d times, image embedder %d; want 1 and 0", ve.calls, emb.calls.Load())
+	if ve.Calls() != 1 || emb.calls.Load() != 0 {
+		t.Errorf("video embedder called %d times, image embedder %d; want 1 and 0", ve.Calls(), emb.calls.Load())
 	}
-	if err := ix.IndexVideo(ctx, "clip", clip); err != nil || ve.calls != 1 {
-		t.Errorf("unchanged video was embedded again (%d calls, %v)", ve.calls, err)
+	if err := ix.IndexVideo(ctx, "clip", clip); err != nil || ve.Calls() != 1 {
+		t.Errorf("unchanged video was embedded again (%d calls, %v)", ve.Calls(), err)
 	}
 	if err := ix.IndexImage(ctx, "green", bytes.NewReader(encoded(t, pic(64, 48, green, green)))); err != nil {
 		t.Fatal(err)
@@ -615,7 +587,7 @@ func TestMediaIndex_VideoEmbedderStoresSegments(t *testing.T) {
 // TestMediaIndex_SearchText: a text in the model's space finds the segment
 // that shows it; a blank text finds nothing.
 func TestMediaIndex_SearchText(t *testing.T) {
-	ve := &segmentEmbedder{clips: map[string][]image.Image{"clip.mp4": {pic(64, 48, red, red), pic(64, 48, green, green)}}}
+	ve := &langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": {pic(64, 48, red, red), pic(64, 48, green, green)}}}
 	ix, _, _ := newMediaIndex(t, WithVideoEmbedder(ve), WithTextEmbedder(colourText{}))
 	ctx := context.Background()
 	if err := ix.IndexVideo(ctx, "clip", tempFile(t, "clip.mp4", []byte("clip"))); err != nil {
@@ -646,7 +618,7 @@ func TestMediaIndex_VideoEmbedderErrors(t *testing.T) {
 	if _, err := ix.SearchText(ctx, "red", 10); err == nil || !strings.Contains(err.Error(), "WithTextEmbedder") {
 		t.Errorf("no text embedder: %v", err)
 	}
-	ve := &segmentEmbedder{err: errors.New("boom")}
+	ve := &langaitest.FakeVideoEmbedder{Err: errors.New("boom")}
 	ix, _, _ = newMediaIndex(t, WithVideoEmbedder(ve))
 	clip := tempFile(t, "clip.mp4", []byte("clip"))
 	if err := ix.IndexVideo(ctx, "clip", clip); err == nil || !strings.Contains(err.Error(), "boom") {
@@ -656,7 +628,7 @@ func TestMediaIndex_VideoEmbedderErrors(t *testing.T) {
 		t.Errorf("search embed error: %v", err)
 	}
 	// a segment of the wrong width is refused
-	bad := &segmentEmbedder{clips: map[string][]image.Image{"clip.mp4": {pic(8, 8, red, red)}}}
+	bad := &langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": {pic(8, 8, red, red)}}}
 	ix, _, _ = newMediaIndex(t, WithVideoEmbedder(wrongWidth{bad}))
 	if err := ix.IndexVideo(ctx, "clip", clip); err == nil || !strings.Contains(err.Error(), "dimensions") {
 		t.Errorf("wrong width: %v", err)
@@ -667,15 +639,15 @@ func TestMediaIndex_VideoEmbedderErrors(t *testing.T) {
 type dims struct{ n int }
 
 func (d dims) Dimensions() int { return d.n }
-func (dims) EmbedVideo(context.Context, string) ([]media.Segment, error) {
+func (dims) EmbedVideo(context.Context, string) ([]langai.Segment, error) {
 	return nil, errors.New("unexpected call")
 }
 
 // wrongWidth claims the right width but answers short vectors.
-type wrongWidth struct{ *segmentEmbedder }
+type wrongWidth struct{ *langaitest.FakeVideoEmbedder }
 
-func (w wrongWidth) EmbedVideo(ctx context.Context, path string) ([]media.Segment, error) {
-	segs, err := w.segmentEmbedder.EmbedVideo(ctx, path)
+func (w wrongWidth) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
+	segs, err := w.FakeVideoEmbedder.EmbedVideo(ctx, path)
 	for i := range segs {
 		segs[i].Vector = segs[i].Vector[:2]
 	}

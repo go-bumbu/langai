@@ -39,11 +39,9 @@ func realConfig(t *testing.T) Config {
 		t.Skip("SEMSEARCH_ONNX_TEST_DIR not set; skipping real-model test")
 	}
 	return Config{
-		ModelsDir:     filepath.Join(dir, "models"),
-		Model:         os.Getenv("SEMSEARCH_ONNX_MODEL"),
-		LibDir:        filepath.Join(dir, "onnxruntime", LibVersion),
-		ManagedLibDir: true,
-		Logger:        slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Runtime:   Runtime{LibDir: filepath.Join(dir, "onnxruntime", LibVersion), ManagedLibDir: true, Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))},
+		ModelsDir: filepath.Join(dir, "models"),
+		Model:     os.Getenv("SEMSEARCH_ONNX_MODEL"),
 	}
 }
 
@@ -129,7 +127,7 @@ func TestEmbedImagesReal(t *testing.T) {
 		original,
 		resized(original, 160),
 		recompressed(t, original, 40),
-		scene(512, red, 60),                          // the same scene, shifted
+		scene(512, red, 60),                         // the same scene, shifted
 		scene(512, color.RGBA{40, 60, 200, 255}, 0), // another colour
 		checker(512),                                // something else entirely
 	}
@@ -195,8 +193,9 @@ func BenchmarkEmbedImagesReal(b *testing.B) {
 	}
 	dir := os.Getenv("SEMSEARCH_ONNX_TEST_DIR")
 	emb, err := New(context.Background(), Config{
-		ModelsDir: filepath.Join(dir, "models"), Model: os.Getenv("SEMSEARCH_ONNX_MODEL"),
-		LibDir: filepath.Join(dir, "onnxruntime", LibVersion), ManagedLibDir: true,
+		Runtime:   Runtime{LibDir: filepath.Join(dir, "onnxruntime", LibVersion), ManagedLibDir: true},
+		ModelsDir: filepath.Join(dir, "models"),
+		Model:     os.Getenv("SEMSEARCH_ONNX_MODEL"),
 	})
 	if err != nil {
 		b.Fatal(err)

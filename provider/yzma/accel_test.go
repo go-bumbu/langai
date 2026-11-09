@@ -1,9 +1,11 @@
 package yzma
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -244,7 +246,7 @@ func TestRuntime_PrepareInstallsTheBuildTheHardwareNeeds(t *testing.T) {
 	})
 	libDir := filepath.Join(t.TempDir(), "llama-cpp", LibTag)
 	rt := Runtime{LibDir: libDir, ManagedLibDir: true}
-	got, _, err := (&rt).prepare(context.Background())
+	got, _, err := (&rt).prepare(context.Background(), newFakeAPI(), &runtimeLoader{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,22 +258,126 @@ func TestRuntime_PrepareInstallsTheBuildTheHardwareNeeds(t *testing.T) {
 	}
 
 	bad := Runtime{LibDir: libDir, Accel: Accel("opencl")}
-	if _, _, err := (&bad).prepare(context.Background()); err == nil || !strings.Contains(err.Error(), "opencl") {
+	if _, _, err := (&bad).prepare(context.Background(), newFakeAPI(), &runtimeLoader{}); err == nil || !strings.Contains(err.Error(), "opencl") {
 		t.Errorf("bad accel: %v", err)
 	}
 	none := Runtime{}
-	if _, _, err := (&none).prepare(context.Background()); err == nil {
+	if _, _, err := (&none).prepare(context.Background(), newFakeAPI(), &runtimeLoader{}); err == nil {
 		t.Error("no LibDir: want error")
 	}
 	// an unmanaged directory with libraries passes whatever the hardware says
 	unmanaged := Runtime{LibDir: libDir}
-	if _, _, err := (&unmanaged).prepare(context.Background()); err != nil {
+	if _, _, err := (&unmanaged).prepare(context.Background(), newFakeAPI(), &runtimeLoader{}); err != nil {
 		t.Errorf("unmanaged: %v", err)
 	}
 	// an unmanaged, empty directory still fails as before
 	empty := Runtime{LibDir: t.TempDir()}
-	if _, _, err := (&empty).prepare(context.Background()); err == nil || !errors.Is(err, err) {
+	if _, _, err := (&empty).prepare(context.Background(), newFakeAPI(), &runtimeLoader{}); err == nil || !errors.Is(err, err) {
 		t.Errorf("unmanaged empty: %v", err)
+	}
+}
+
+// TestRuntime_PrepareResolvesALinkedLibDir: a managed LibDir that is a
+// symbolic link (to another disk, say) is installed where it points and
+// stays a link, and the directory the libraries were loaded from is known
+// by its real path, so naming it through the link in one open and directly
+// in the next is one directory, not two.
+func TestRuntime_PrepareResolvesALinkedLibDir(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the pinned archives hold Linux .so files")
+	}
+	_, cpuAsset := serve(t, tarGz(t, "llama-b11429", releaseLibs()))
+	cpuOnly(t)
+	key := platform() + "/cpu"
+	orig, had := libAssets[key]
+	libAssets[key] = cpuAsset
+	t.Cleanup(func() {
+		if had {
+			libAssets[key] = orig
+		} else {
+			delete(libAssets, key)
+		}
+	})
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "bigdisk", "llama")
+	link := filepath.Join(root, "home", "llama")
+	for _, dir := range []string{target, filepath.Dir(link)} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	loader, f := &runtimeLoader{}, newFakeAPI()
+	for _, libDir := range []string{link, target, link} {
+		rt := Runtime{LibDir: libDir, ManagedLibDir: true}
+		got, _, err := (&rt).prepare(context.Background(), f, loader)
+		if err != nil {
+			t.Fatalf("prepare with LibDir %s: %v", libDir, err)
+		}
+		if got != target || loader.loadedDir() != target {
+			t.Errorf("prepare with LibDir %s: the directory is %q and the libraries are loaded from %q, want %q", libDir, got, loader.loadedDir(), target)
+		}
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link was replaced (%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "libllama.so")); err != nil {
+		t.Errorf("the libraries are not where the link points: %v", err)
+	}
+	if f.count("load") != 1 {
+		t.Errorf("the libraries were loaded %d times", f.count("load"))
+	}
+}
+
+// TestRuntime_PrepareWarnsWhenTheGPUBuildFindsNoGPU: a GPU build that was
+// installed because the hardware looked like it has a GPU, and then
+// registers none, runs every model on the CPU. That must not be silent.
+func TestRuntime_PrepareWarnsWhenTheGPUBuildFindsNoGPU(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the pinned archives hold Linux .so files")
+	}
+	_, gpuAsset := serve(t, tarGz(t, "llama-b11429", append(releaseLibs(), tarEntry{name: "libggml-vulkan.so", body: "vulkan"})))
+	key := platform() + "/vulkan"
+	orig, had := libAssets[key]
+	libAssets[key] = gpuAsset
+	origDetect := detectHW
+	detectHW = func() hw.Report { return report(hw.Vulkan, hw.CPU) }
+	offline(t)
+	t.Cleanup(func() {
+		if had {
+			libAssets[key] = orig
+		} else {
+			delete(libAssets, key)
+		}
+		detectHW = origDetect
+	})
+	gpu := device{name: "Vulkan0", backend: "Vulkan", description: "GPU", gpu: true}
+	for _, c := range []struct {
+		name  string
+		devs  []device
+		accel Accel
+		warns bool
+	}{
+		{"the GPU registered", []device{gpu, {name: "CPU", backend: "CPU"}}, AccelAuto, false},
+		{"only the CPU registered", []device{{name: "CPU", backend: "CPU"}}, AccelAuto, true},
+		{"only a software renderer registered", []device{{name: "Vulkan0", backend: "Vulkan", description: "llvmpipe (LLVM 21)", gpu: true}}, AccelAuto, true},
+	} {
+		var logs bytes.Buffer
+		f := newFakeAPI()
+		f.devs = c.devs
+		rt := Runtime{LibDir: filepath.Join(t.TempDir(), "llama-cpp", LibTag), ManagedLibDir: true, Accel: c.accel, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+		if _, _, err := (&rt).prepare(context.Background(), f, &runtimeLoader{}); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		warned := strings.Contains(logs.String(), "level=WARN") && strings.Contains(logs.String(), "registered no GPU device")
+		if warned != c.warns {
+			t.Errorf("%s: warned %v, want %v:\n%s", c.name, warned, c.warns, logs.String())
+		}
 	}
 }
 

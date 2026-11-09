@@ -1,6 +1,9 @@
-# The example service: `make prepare` fetches sample media, `make run` indexes
-# it and serves the pages. Run from this directory.
+# The example service: `make prepare` fetches sample media and writes sample
+# documents, `make run` indexes them and serves the pages. Run from this
+# directory.
 MEDIA_DIR  ?= data/media
+# the .md and .txt documents of the text search page
+DOCS_DIR   ?= data/docs
 DATA_DIR   ?= data
 # the ONNX models and runtime, shared with `make test-images` at the root so
 # the ~380 MB download happens once
@@ -19,22 +22,33 @@ MIN_SCORE  ?= 0
 LIMIT      ?= 12
 # the cutoff of the auto tagging page's recommended tags
 TAG_MIN_SCORE ?= 0.45
+# the floor of the text search page's hits; 0 shows everything
+TEXT_MIN_SCORE ?= 0
+# the most the media index reads of an image; 0 is the library's 64 MiB
+MAX_IMAGE_BYTES ?= 0
+# a Postgres database with pgvector for the vectors and the tagging cache,
+# e.g. postgres://user:pass@localhost:5432/langai; empty keeps them in
+# SQLite files under DATA_DIR
+POSTGRES ?=
+# the least a record needs to be logged: debug, info, warn or error
+LOG_LEVEL ?= info
 
 default: help
 
-prepare: ## download sample photos and render sample clips into data/media (needs curl and ffmpeg)
-	@./prepare.sh "$(MEDIA_DIR)"
+prepare: ## download sample photos and render sample clips into data/media, write sample documents into data/docs (needs curl and ffmpeg)
+	@./prepare.sh "$(MEDIA_DIR)" "$(DOCS_DIR)"
 
-run: ## index data/media and serve the pages on http://127.0.0.1:8085 (first run downloads the model)
-	@go run . -addr "$(ADDR)" -media "$(MEDIA_DIR)" -data "$(DATA_DIR)" -models "$(MODELS_DIR)" \
+run: ## index data/media and data/docs and serve the pages on http://127.0.0.1:8085 (first run downloads the models)
+	@go run . -addr "$(ADDR)" -media "$(MEDIA_DIR)" -docs "$(DOCS_DIR)" -data "$(DATA_DIR)" -models "$(MODELS_DIR)" \
 		-llama "$(LLAMA_DIR)" -model "$(MODEL)" -provider "$(PROVIDER)" -accel "$(ACCEL)" -segment "$(SEGMENT)" -min-score "$(MIN_SCORE)" -limit "$(LIMIT)" \
-		-tag-min-score "$(TAG_MIN_SCORE)"
+		-tag-min-score "$(TAG_MIN_SCORE)" -text-min-score "$(TEXT_MIN_SCORE)" -max-image-bytes "$(MAX_IMAGE_BYTES)" \
+		-postgres "$(POSTGRES)" -log-level "$(LOG_LEVEL)"
 
-clean: ## remove the index and tag databases, the catalogs and the thumbnail cache; the media, the notebook and the models stay
+clean: ## remove the index and tag databases, the catalogs and the thumbnail cache; the media, the documents, the notebook and the models stay
 	@rm -rf "$(DATA_DIR)"/index-* "$(DATA_DIR)"/autotag-* "$(DATA_DIR)"/thumbs
 
 .PHONY: default prepare run clean help
 help: # Display this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
-	@printf "\nSettings (environment or make arguments):\n  MEDIA_DIR=%s DATA_DIR=%s MODELS_DIR=%s\n  MODEL=%s PROVIDER=%s ACCEL=%s SEGMENT=%s LLAMA_DIR=%s\n  ADDR=%s MIN_SCORE=%s LIMIT=%s TAG_MIN_SCORE=%s\n\n" \
-		"$(MEDIA_DIR)" "$(DATA_DIR)" "$(MODELS_DIR)" "$(MODEL)" "$(PROVIDER)" "$(ACCEL)" "$(SEGMENT)" "$(LLAMA_DIR)" "$(ADDR)" "$(MIN_SCORE)" "$(LIMIT)" "$(TAG_MIN_SCORE)"
+	@printf "\nSettings (environment or make arguments):\n  MEDIA_DIR=%s DOCS_DIR=%s DATA_DIR=%s MODELS_DIR=%s\n  MODEL=%s PROVIDER=%s ACCEL=%s SEGMENT=%s LLAMA_DIR=%s\n  ADDR=%s MIN_SCORE=%s LIMIT=%s TAG_MIN_SCORE=%s TEXT_MIN_SCORE=%s MAX_IMAGE_BYTES=%s LOG_LEVEL=%s\n\n" \
+		"$(MEDIA_DIR)" "$(DOCS_DIR)" "$(DATA_DIR)" "$(MODELS_DIR)" "$(MODEL)" "$(PROVIDER)" "$(ACCEL)" "$(SEGMENT)" "$(LLAMA_DIR)" "$(ADDR)" "$(MIN_SCORE)" "$(LIMIT)" "$(TAG_MIN_SCORE)" "$(TEXT_MIN_SCORE)" "$(MAX_IMAGE_BYTES)" "$(LOG_LEVEL)"

@@ -1,8 +1,12 @@
 package search
 
 import (
+	"fmt"
+	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestMarkdownChunkerSections(t *testing.T) {
@@ -94,4 +98,194 @@ func TestMarkdownChunkerIgnoresHeadingsInCodeFences(t *testing.T) {
 	if !strings.Contains(joined, "# not a heading") {
 		t.Fatalf("fenced content should stay in the chunk body: %#v", got)
 	}
+}
+
+// TestMarkdownChunker_BodilessHeadings: a heading with no text of its own
+// under it and no subheading is still searchable, as a chunk of its heading
+// path; a heading followed by a subheading is already in that subheading's
+// path and makes no chunk of its own.
+func TestMarkdownChunker_BodilessHeadings(t *testing.T) {
+	c := &MarkdownChunker{}
+	for _, tc := range []struct {
+		name, text string
+		want       []string
+	}{
+		{"list of headings", "# Shopping\n## Milk\n## Eggs\n## Bread\nbuy on Friday",
+			[]string{"Shopping › Milk", "Shopping › Eggs", "Shopping › Bread\n\nbuy on Friday"}},
+		{"siblings at the top", "# A\n# B\n# C", []string{"A", "B", "C"}},
+		{"nested only", "# A\n## B", []string{"A › B"}},
+		{"bodiless then a shallower heading", "# A\n## B\n# C\ntext", []string{"A › B", "C\n\ntext"}},
+		{"bodiless last", "# A\ntext\n## B", []string{"A\n\ntext", "A › B"}},
+		{"blank body", "# A\n\n   \n# B\nb", []string{"A", "B\n\nb"}},
+	} {
+		if got := c.Chunk(tc.text); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: %q\nwant %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestMarkdownChunker_HeadingsNeedATXIndent: an ATX heading has at most three
+// spaces before its #; a line indented further is indented code, and any
+// line inside a fenced block is code, however it is indented.
+func TestMarkdownChunker_HeadingsNeedATXIndent(t *testing.T) {
+	c := &MarkdownChunker{}
+	for _, tc := range []struct {
+		name, text string
+		want       []string
+	}{
+		{"three spaces", "# A\n   ## B\ntext", []string{"A › B\n\ntext"}},
+		{"indented code", "# A\n\n    # comment\n    x = 1", []string{"A\n\n# comment\n    x = 1"}},
+		{"tab indent", "# A\n\n\t# comment", []string{"A\n\n# comment"}},
+		{"fenced, indented", "# A\n\n```sh\n  # comment\n    # more\n```", []string{"A\n\n```sh\n  # comment\n    # more\n```"}},
+		{"tilde fence holds backticks", "# A\n\n~~~\n```\n# comment\n~~~\n# B\nb", []string{"A\n\n~~~\n```\n# comment\n~~~", "B\n\nb"}},
+		{"longer closing fence", "# A\n\n````\n```\n# comment\n`````\n# B\nb", []string{"A\n\n````\n```\n# comment\n`````", "B\n\nb"}},
+	} {
+		if got := c.Chunk(tc.text); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: %q\nwant %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestMarkdownChunker_FingerprintVersion: the chunks changed with version 2
+// (bodiless headings, indented and fenced pseudo-headings), so the
+// fingerprint says so and stored collections are indexed again.
+func TestMarkdownChunker_FingerprintVersion(t *testing.T) {
+	if got := (&MarkdownChunker{}).Fingerprint(); got != "markdown/2 max=1200" {
+		t.Fatalf("Fingerprint = %q", got)
+	}
+}
+
+// TestMarkdownChunker_LineEndingsAndBlankLines: CRLF line endings and blank
+// lines holding spaces or tabs separate paragraphs exactly as plain blank
+// lines do, so such a document is chunked like its LF twin.
+func TestMarkdownChunker_LineEndingsAndBlankLines(t *testing.T) {
+	c := &MarkdownChunker{MaxChars: 40}
+	lf := "# Title\n\nfirst paragraph with some words\n\nsecond paragraph with more words\n\n- a list item\n- another item"
+	want := c.Chunk(lf)
+	for name, text := range map[string]string{
+		"CRLF":             strings.ReplaceAll(lf, "\n", "\r\n"),
+		"CR":               strings.ReplaceAll(lf, "\n", "\r"),
+		"spaces and tabs":  strings.ReplaceAll(lf, "\n\n", "\n \t \n"),
+		"several blanks":   strings.ReplaceAll(lf, "\n\n", "\n\n  \n\n"),
+		"CRLF with spaces": strings.ReplaceAll(strings.ReplaceAll(lf, "\n\n", "\n  \n"), "\n", "\r\n"),
+	} {
+		if got := c.Chunk(text); !slices.Equal(got, want) {
+			t.Errorf("%s: %q\nwant %q", name, got, want)
+		}
+	}
+	if len(want) < 3 || !strings.Contains(want[len(want)-1], "- a list item\n- another item") {
+		t.Errorf("the list lost its lines: %q", want)
+	}
+}
+
+// TestMarkdownChunker_LongHeadingCountsTowardsMaxChars: the heading path
+// prefixed to every chunk is part of the chunk's size, and a heading longer
+// than a quarter of MaxChars is cut, so it cannot crowd out the text.
+func TestMarkdownChunker_LongHeadingCountsTowardsMaxChars(t *testing.T) {
+	c := &MarkdownChunker{MaxChars: 120}
+	heading := strings.Repeat("überlange Überschrift ", 20)
+	body := strings.Repeat("some words in a paragraph. ", 20)
+	got := c.Chunk("# " + heading + "\n\n" + body)
+	if len(got) < 2 {
+		t.Fatalf("got %d chunks, want the body split", len(got))
+	}
+	for _, chunk := range got {
+		if len(chunk) > 120 {
+			t.Errorf("chunk of %d bytes exceeds MaxChars: %q", len(chunk), chunk)
+		}
+		if !utf8.ValidString(chunk) {
+			t.Errorf("chunk cut inside a rune: %q", chunk)
+		}
+		prefix, _, _ := strings.Cut(chunk, "\n\n")
+		if len(prefix) > 30 || !strings.HasPrefix(heading, prefix) {
+			t.Errorf("heading prefix %q is not the heading cut to a quarter of MaxChars", prefix)
+		}
+	}
+}
+
+// TestMarkdownChunker_LongCodeBlockKeepsItsLines: a fenced block too long
+// for one chunk is split between lines, not flattened into words.
+func TestMarkdownChunker_LongCodeBlockKeepsItsLines(t *testing.T) {
+	c := &MarkdownChunker{MaxChars: 80}
+	var code strings.Builder
+	code.WriteString("```go\n")
+	for i := range 10 {
+		fmt.Fprintf(&code, "\tx%d := compute(%d)\n", i, i)
+	}
+	code.WriteString("```")
+	got := c.Chunk(code.String())
+	if len(got) < 2 {
+		t.Fatalf("got %q, want the block split", got)
+	}
+	for _, chunk := range got {
+		if len(chunk) > 80 {
+			t.Errorf("chunk exceeds MaxChars: %q", chunk)
+		}
+	}
+	if !strings.Contains(got[0], "```go\n\tx0 := compute(0)\n\tx1 := compute(1)") {
+		t.Errorf("the code lost its line structure: %q", got[0])
+	}
+}
+
+// TestMarkdownChunker_Properties: over generated documents and sizes, no
+// chunk exceeds MaxChars (in bytes, the unit the chunker documents) and
+// every word of the text, headings aside, is in the chunks in order.
+func TestMarkdownChunker_Properties(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	words := []string{"go", "channel", "über", "naïve", "日本語", "x", "routine", "a", "longerword", "-", "*", "1."}
+	pick := func() string { return words[rng.IntN(len(words))] }
+	for doc := range 200 {
+		var text, body strings.Builder
+		for range 1 + rng.IntN(12) {
+			switch rng.IntN(4) {
+			case 0:
+				fmt.Fprintf(&text, "%s %s\n", strings.Repeat("#", 1+rng.IntN(3)), pick())
+			case 1:
+				text.WriteString("```\n")
+				for range 1 + rng.IntN(6) {
+					line := "    " + pick() + " " + pick() + "\n"
+					text.WriteString(line)
+					body.WriteString(line)
+				}
+				text.WriteString("```\n")
+			default:
+				for range 1 + rng.IntN(30) {
+					w := pick()
+					text.WriteString(w + []string{" ", " ", "\n", "\t"}[rng.IntN(4)])
+					body.WriteString(w + " ")
+				}
+			}
+			text.WriteString([]string{"\n", "\r\n", "\n  \n", "\n\t\n"}[rng.IntN(4)])
+		}
+		for _, maxChars := range []int{16, 40, 100, 1200} {
+			c := &MarkdownChunker{MaxChars: maxChars}
+			got := c.Chunk(text.String())
+			for _, chunk := range got {
+				if len(chunk) > maxChars {
+					t.Fatalf("doc %d, MaxChars %d: chunk of %d bytes: %q", doc, maxChars, len(chunk), chunk)
+				}
+			}
+			if missing := missingWord(strings.Fields(body.String()), strings.Fields(strings.Join(got, " "))); missing != "" {
+				t.Fatalf("doc %d, MaxChars %d: %q lost from %q\nchunks %q", doc, maxChars, missing, text.String(), got)
+			}
+		}
+	}
+}
+
+// missingWord returns the first of want not found, in order, in got, or ""
+// when every word is there. Headings prefixed to chunks add words to got,
+// never remove any, so an in-order search is the right check; the generated
+// words are all shorter than the smallest chunk, so none is ever cut.
+func missingWord(want, got []string) string {
+	i := 0
+	for _, w := range want {
+		for i < len(got) && got[i] != w {
+			i++
+		}
+		if i == len(got) {
+			return w
+		}
+		i++
+	}
+	return ""
 }

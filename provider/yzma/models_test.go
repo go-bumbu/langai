@@ -54,9 +54,19 @@ func TestNew_RunsTheSelectedModel(t *testing.T) {
 	if err := os.WriteFile(modelPath, []byte("GGUF fake model"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// a file of another length than the pin's is a truncated download, which
+	// New would fetch again: the stand-in is as long as the real one, sparse
+	spec, err := LookupSpec("intfloat/multilingual-e5-small", modelsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(modelPath, spec.Size); err != nil {
+		t.Fatal(err)
+	}
 	e, err := New(context.Background(), Config{
-		Model: "intfloat/multilingual-e5-small", ModelsDir: modelsDir,
-		LibDir: rt.LibDir, ManagedLibDir: rt.ManagedLibDir, Threads: rt.Threads,
+		Runtime:   Runtime{LibDir: rt.LibDir, ManagedLibDir: rt.ManagedLibDir, Threads: rt.Threads},
+		Model:     "intfloat/multilingual-e5-small",
+		ModelsDir: modelsDir,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +103,7 @@ func TestSpec_DescribesEachModelAsItsAuthorsTrainedIt(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			spec, err := Spec(c.name, "/data/models")
+			spec, err := LookupSpec(c.name, "/data/models")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -110,7 +120,7 @@ func TestSpec_DescribesEachModelAsItsAuthorsTrainedIt(t *testing.T) {
 // TestSpec_EmptyNameIsTheDefaultModel: Config.Model's zero value runs the
 // default model, EmbeddingGemma, from the default directory.
 func TestSpec_EmptyNameIsTheDefaultModel(t *testing.T) {
-	spec, err := Spec("", "")
+	spec, err := LookupSpec("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +132,7 @@ func TestSpec_EmptyNameIsTheDefaultModel(t *testing.T) {
 // TestSpec_UnknownModelListsTheAvailableOnes: a misspelt model is refused
 // with the names that would have worked.
 func TestSpec_UnknownModelListsTheAvailableOnes(t *testing.T) {
-	_, err := Spec("org/unknown", "")
+	_, err := LookupSpec("org/unknown", "")
 	if err == nil || !strings.Contains(err.Error(), DefaultModel) || !strings.Contains(err.Error(), "BAAI/bge-m3") {
 		t.Fatalf("err = %v, want a refusal listing the available models", err)
 	}

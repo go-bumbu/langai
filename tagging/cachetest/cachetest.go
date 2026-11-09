@@ -3,8 +3,14 @@
 // same way:
 //
 //	func TestConformance(t *testing.T) {
-//		cachetest.Run(t, func(t *testing.T) tagging.EmbeddingCache { return open(t) })
+//		cachetest.Run(t, func(t *testing.T, now func() time.Time) tagging.EmbeddingCache { return open(t, now) })
 //	}
+//
+// The suite runs on a clock of its own, which it moves by hand: a cache
+// records when an entry was last used, and what a Get or a Prune does a day
+// later can only be checked by a suite that decides what time it is. So a
+// backend must be able to take its last-used times from the clock it is
+// handed.
 package cachetest
 
 import (
@@ -36,31 +42,86 @@ var (
 	k2 = tagging.KeyFor("m", langai.RoleQuery, "two")
 )
 
+// clock is the time the cache under test runs on. It starts at a whole second,
+// since a SQL backend keeps its times in seconds, and moves only when a test
+// advances it.
+type clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+// newClock returns a clock at a fixed time.
+func newClock() *clock {
+	return &clock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
+}
+
+// Now is the clock's time: what the cache under test is handed as its now.
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+// advance moves the clock forward by d.
+func (c *clock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// timeless adapts a test that never looks at the time.
+func timeless(run func(*testing.T, tagging.EmbeddingCache)) func(*testing.T, tagging.EmbeddingCache, *clock) {
+	return func(t *testing.T, c tagging.EmbeddingCache, _ *clock) { run(t, c) }
+}
+
 // Run runs the suite against the cache newCache returns. Each subtest calls
 // newCache with its own t, so a backend can tie what it opens to t.Cleanup, and
-// the cache it returns must hold nothing yet.
-func Run(t *testing.T, newCache func(t *testing.T) tagging.EmbeddingCache) {
+// with the clock of that subtest: the cache it returns must hold nothing yet,
+// and must take every last-used time from now, never from time.Now.
+func Run(t *testing.T, newCache func(t *testing.T, now func() time.Time) tagging.EmbeddingCache) {
 	cases := []struct {
 		name string
-		run  func(t *testing.T, c tagging.EmbeddingCache)
+		run  func(t *testing.T, c tagging.EmbeddingCache, clk *clock)
 	}{
-		{"VectorsRoundTrip", vectorsRoundTrip},
-		{"MissingKeysAreAbsent", missingKeysAreAbsent},
-		{"EmptyKeysReturnEmpty", emptyKeysReturnEmpty},
-		{"PutReplaces", putReplaces},
-		{"KeysDifferByModelAndRole", keysDifferByModelAndRole},
-		{"IndexesAreIsolated", indexesAreIsolated},
-		{"EmptyIndexIsAnError", emptyIndexIsAnError},
-		{"EmptyVectorIsAnError", emptyVectorIsAnError},
-		{"SlicesAreCopies", slicesAreCopies},
-		{"DeleteIndexDropsOnlyThatIndex", deleteIndexDropsOnlyThatIndex},
+		{"VectorsRoundTrip", timeless(vectorsRoundTrip)},
+		{"MissingKeysAreAbsent", timeless(missingKeysAreAbsent)},
+		{"EmptyKeysReturnEmpty", timeless(emptyKeysReturnEmpty)},
+		{"DuplicateKeysCountOnce", timeless(duplicateKeysCountOnce)},
+		{"PutReplaces", timeless(putReplaces)},
+		{"KeysDifferByModelAndRole", timeless(keysDifferByModelAndRole)},
+		{"IndexesAreIsolated", timeless(indexesAreIsolated)},
+		{"EmptyIndexIsAnError", timeless(emptyIndexIsAnError)},
+		{"NamesNoDatabaseStoresAreErrors", timeless(namesNoDatabaseStoresAreErrors)},
+		{"EmptyVectorIsAnError", timeless(emptyVectorIsAnError)},
+		{"SlicesAreCopies", timeless(slicesAreCopies)},
+		{"DeleteIndexDropsOnlyThatIndex", timeless(deleteIndexDropsOnlyThatIndex)},
 		{"PruneDeletesUnused", pruneDeletesUnused},
+		{"PruneKeepsWhatWasUsedAtTheCutoff", pruneKeepsWhatWasUsedAtTheCutoff},
+		{"GetRefreshesStaleEntries", getRefreshesStaleEntries},
+		{"GetRefreshesAtExactlyCacheRefreshAfter", getRefreshesAtExactlyCacheRefreshAfter},
+		{"GetDoesNotRefreshEarlier", getDoesNotRefreshEarlier},
+		{"TouchKeepsWhatPruneWouldDrop", touchKeepsWhatPruneWouldDrop},
+		{"TouchIgnoresMissingKeys", touchIgnoresMissingKeys},
+		{"TouchIsPerIndex", touchIsPerIndex},
 		{"LargeBatchesRoundTrip", largeBatchesRoundTrip},
-		{"ConcurrentPutsAllLand", concurrentPutsAllLand},
-		{"OverlappingConcurrentPutsAllLand", overlappingConcurrentPutsAllLand},
+		{"ConcurrentPutsAllLand", timeless(concurrentPutsAllLand)},
+		{"OverlappingConcurrentPutsAllLand", timeless(overlappingConcurrentPutsAllLand)},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) { c.run(t, newCache(t)) })
+		t.Run(c.name, func(t *testing.T) {
+			clk := newClock()
+			c.run(t, newCache(t, clk.Now), clk)
+		})
+	}
+}
+
+// prune removes what was last used before cutoff and fails the test unless
+// that was want entries.
+func prune(t *testing.T, c tagging.EmbeddingCache, cutoff time.Time, want int64) {
+	t.Helper()
+	n, err := c.Prune(context.Background(), cutoff)
+	if err != nil || n != want {
+		t.Fatalf("Prune = %d, %v; want %d, nil", n, err, want)
 	}
 }
 
@@ -143,8 +204,45 @@ func emptyIndexIsAnError(t *testing.T, c tagging.EmbeddingCache) {
 	if err := c.Put(ctx, "", map[tagging.CacheKey][]float32{k1: v1}); err == nil {
 		t.Error("Put with an empty index: no error")
 	}
+	if err := c.Touch(ctx, "", []tagging.CacheKey{k1}); err == nil {
+		t.Error("Touch with an empty index: no error")
+	}
 	if err := c.DeleteIndex(ctx, ""); err == nil {
 		t.Error("DeleteIndex with an empty index: no error")
+	}
+}
+
+// namesNoDatabaseStoresAreErrors: an index or a model with a NUL byte, or one
+// that is not valid UTF-8, is refused by every backend, not only by the
+// database that cannot store it as text, and nothing is stored under it.
+func namesNoDatabaseStoresAreErrors(t *testing.T, c tagging.EmbeddingCache) {
+	ctx := context.Background()
+	for name, bad := range map[string]string{"a NUL byte": "ten\x00ant", "invalid UTF-8": "ten\xffant"} {
+		if _, err := c.Get(ctx, bad, []tagging.CacheKey{k1}); err == nil {
+			t.Errorf("Get with an index holding %s: no error", name)
+		}
+		if err := c.Put(ctx, bad, map[tagging.CacheKey][]float32{k1: v1}); err == nil {
+			t.Errorf("Put with an index holding %s: no error", name)
+		}
+		if err := c.DeleteIndex(ctx, bad); err == nil {
+			t.Errorf("DeleteIndex with an index holding %s: no error", name)
+		}
+		if err := c.Touch(ctx, bad, []tagging.CacheKey{k1}); err == nil {
+			t.Errorf("Touch with an index holding %s: no error", name)
+		}
+		k := tagging.KeyFor(bad, langai.RoleQuery, "one")
+		if err := c.Touch(ctx, idx, []tagging.CacheKey{k1, k}); err == nil {
+			t.Errorf("Touch with a model holding %s: no error", name)
+		}
+		if _, err := c.Get(ctx, idx, []tagging.CacheKey{k1, k}); err == nil {
+			t.Errorf("Get with a model holding %s: no error", name)
+		}
+		if err := c.Put(ctx, idx, map[tagging.CacheKey][]float32{k1: v1, k: v2}); err == nil {
+			t.Errorf("Put with a model holding %s: no error", name)
+		}
+	}
+	if got := get(t, c, idx, k1); len(got) != 0 {
+		t.Errorf("a refused Put stored %v, want nothing", got)
 	}
 }
 
@@ -192,20 +290,13 @@ func deleteIndexDropsOnlyThatIndex(t *testing.T, c tagging.EmbeddingCache) {
 
 // pruneDeletesUnused: Prune removes what was last used before the cutoff, of
 // every index, and counts it.
-func pruneDeletesUnused(t *testing.T, c tagging.EmbeddingCache) {
-	ctx := context.Background()
+func pruneDeletesUnused(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
 	k3 := tagging.KeyFor("m", langai.RoleQuery, "three")
 	put(t, c, "a", map[tagging.CacheKey][]float32{k1: v1, k2: v2})
 	put(t, c, "b", map[tagging.CacheKey][]float32{k3: v1})
 
-	n, err := c.Prune(ctx, time.Now().Add(-time.Hour))
-	if err != nil || n != 0 {
-		t.Fatalf("Prune of nothing unused = %d, %v; want 0, nil", n, err)
-	}
-	n, err = c.Prune(ctx, time.Now().Add(time.Hour))
-	if err != nil || n != 3 {
-		t.Fatalf("Prune of everything = %d, %v; want 3, nil", n, err)
-	}
+	prune(t, c, clk.Now().Add(-time.Hour), 0)
+	prune(t, c, clk.Now().Add(time.Hour), 3)
 	if got := get(t, c, "a", k1, k2); len(got) != 0 {
 		t.Errorf("index a after Prune = %v, want empty", got)
 	}
@@ -214,9 +305,137 @@ func pruneDeletesUnused(t *testing.T, c tagging.EmbeddingCache) {
 	}
 }
 
+// pruneKeepsWhatWasUsedAtTheCutoff: the cutoff is "last used before", so an
+// entry last used at that very time stays, and goes a second later.
+func pruneKeepsWhatWasUsedAtTheCutoff(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1})
+	prune(t, c, clk.Now(), 0)
+	if got := get(t, c, idx, k1); len(got) != 1 {
+		t.Fatal("an entry last used at the cutoff was pruned")
+	}
+	prune(t, c, clk.Now().Add(time.Second), 1)
+}
+
+// getRefreshesStaleEntries: a Get of an entry last used CacheRefreshAfter ago
+// or longer rewrites its last-used time, so a Prune that follows keeps what is
+// still read, while an entry nobody read keeps its old time and goes. A
+// backend that skips the refresh passes every other test and then loses the
+// vectors in use.
+func getRefreshesStaleEntries(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1, k2: v2})
+	clk.advance(tagging.CacheRefreshAfter + time.Hour)
+	if got := get(t, c, idx, k1); !reflect.DeepEqual(got[k1], v1) {
+		t.Fatalf("k1 = %v, want %v", got[k1], v1)
+	}
+	// k1 was read a moment ago; k2 not since it was stored, a day and an hour ago
+	prune(t, c, clk.Now().Add(-time.Hour), 1)
+	if got := get(t, c, idx, k1, k2); len(got) != 1 || !reflect.DeepEqual(got[k1], v1) {
+		t.Errorf("after Prune = %v, want only k1: the Get refreshed its last-used time", got)
+	}
+}
+
+// getRefreshesAtExactlyCacheRefreshAfter: the refresh begins when an entry was
+// last used exactly CacheRefreshAfter ago, not a moment later. Every backend
+// draws the line at the same place, since Tagger.Prune's guarantee is counted
+// from it: what was read in the last (age of the cutoff - CacheRefreshAfter)
+// stays.
+func getRefreshesAtExactlyCacheRefreshAfter(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1, k2: v2})
+	stored := clk.Now()
+	clk.advance(tagging.CacheRefreshAfter)
+	if got := get(t, c, idx, k1); !reflect.DeepEqual(got[k1], v1) {
+		t.Fatalf("k1 = %v, want %v", got[k1], v1)
+	}
+	// k2 was last used when it was stored; k1 now, if the Get refreshed it
+	prune(t, c, stored.Add(time.Second), 1)
+	if got := get(t, c, idx, k1, k2); len(got) != 1 || !reflect.DeepEqual(got[k1], v1) {
+		t.Errorf("after Prune = %v, want only k1: a Get exactly CacheRefreshAfter after the last use refreshes it", got)
+	}
+}
+
+// getDoesNotRefreshEarlier: a second before CacheRefreshAfter has passed a Get
+// leaves the last-used time alone, so reads do not turn into writes, and the
+// entry goes with a Prune of what was unused since just after it was stored.
+func getDoesNotRefreshEarlier(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1, k2: v2})
+	stored := clk.Now()
+	clk.advance(tagging.CacheRefreshAfter - time.Second)
+	if got := get(t, c, idx, k1); !reflect.DeepEqual(got[k1], v1) {
+		t.Fatalf("k1 = %v, want %v", got[k1], v1)
+	}
+	prune(t, c, stored.Add(time.Second), 2)
+	if got := get(t, c, idx, k1, k2); len(got) != 0 {
+		t.Errorf("after Prune = %v, want nothing: a Get a second short of CacheRefreshAfter refreshes nothing", got)
+	}
+}
+
+// touchKeepsWhatPruneWouldDrop: Touch sets the last-used time of the keys it
+// is given to now, whatever it was, also where a Get would not: an hour after
+// the Put the entries are not CacheRefreshAfter old. The others keep theirs.
+func touchKeepsWhatPruneWouldDrop(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1, k2: v2})
+	clk.advance(time.Hour)
+	if got := get(t, c, idx, k1, k2); len(got) != 2 {
+		t.Fatalf("Get = %v, want both entries", got)
+	}
+	if err := c.Touch(context.Background(), idx, []tagging.CacheKey{k1, k1}); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	prune(t, c, clk.Now().Add(-time.Minute), 1)
+	if got := get(t, c, idx, k1, k2); len(got) != 1 || !reflect.DeepEqual(got[k1], v1) {
+		t.Errorf("after Touch and Prune = %v, want only k1, unchanged", got)
+	}
+}
+
+// touchIgnoresMissingKeys: touching a key the cache does not hold, or no key
+// at all, is not an error and stores nothing.
+func touchIgnoresMissingKeys(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	ctx := context.Background()
+	for name, keys := range map[string][]tagging.CacheKey{"nil": nil, "empty": {}, "missing": {k1, k2}} {
+		if err := c.Touch(ctx, idx, keys); err != nil {
+			t.Errorf("Touch with %s keys: %v", name, err)
+		}
+	}
+	if got := get(t, c, idx, k1, k2); len(got) != 0 {
+		t.Errorf("Touch stored %v, want nothing", got)
+	}
+	prune(t, c, clk.Now().Add(time.Hour), 0)
+}
+
+// touchIsPerIndex: a Touch in one index leaves the same key of another alone.
+func touchIsPerIndex(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
+	put(t, c, "a", map[tagging.CacheKey][]float32{k1: v1})
+	put(t, c, "b", map[tagging.CacheKey][]float32{k1: v2})
+	clk.advance(time.Hour)
+	if err := c.Touch(context.Background(), "a", []tagging.CacheKey{k1}); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	prune(t, c, clk.Now().Add(-time.Minute), 1)
+	if got := get(t, c, "a", k1); !reflect.DeepEqual(got[k1], v1) {
+		t.Errorf("index a = %v, want its touched entry", got)
+	}
+	if got := get(t, c, "b", k1); len(got) != 0 {
+		t.Errorf("index b = %v, want empty: nobody touched it", got)
+	}
+}
+
+// duplicateKeysCountOnce: a key listed several times in one Get is one entry,
+// and does not disturb the others.
+func duplicateKeysCountOnce(t *testing.T, c tagging.EmbeddingCache) {
+	put(t, c, idx, map[tagging.CacheKey][]float32{k1: v1, k2: v2})
+	got := get(t, c, idx, k1, k2, k1, k1)
+	if len(got) != 2 || !reflect.DeepEqual(got[k1], v1) || !reflect.DeepEqual(got[k2], v2) {
+		t.Errorf("Get with a key listed three times = %v, want k1 and k2", got)
+	}
+	missing := tagging.KeyFor("m", langai.RoleQuery, "missing")
+	if got := get(t, c, idx, missing, missing); len(got) != 0 {
+		t.Errorf("Get with a missing key listed twice = %v, want empty", got)
+	}
+}
+
 // largeBatchesRoundTrip: a batch bigger than any per-statement limit a SQL
-// backend has still lands whole.
-func largeBatchesRoundTrip(t *testing.T, c tagging.EmbeddingCache) {
+// backend has still lands whole, and is touched whole.
+func largeBatchesRoundTrip(t *testing.T, c tagging.EmbeddingCache, clk *clock) {
 	const n = 3000
 	vecs := make(map[tagging.CacheKey][]float32, n)
 	keys := make([]tagging.CacheKey, 0, n)
@@ -235,6 +454,11 @@ func largeBatchesRoundTrip(t *testing.T, c tagging.EmbeddingCache) {
 			t.Fatalf("entry %x = %v, want %v", k.Hash[:4], got[k], want)
 		}
 	}
+	clk.advance(time.Hour)
+	if err := c.Touch(context.Background(), idx, keys); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	prune(t, c, clk.Now().Add(-time.Minute), 0)
 }
 
 // concurrentPutsAllLand: writers on one index lose nothing to each other.

@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -167,6 +168,40 @@ func TestRun_EmptyQuerySetIsZero(t *testing.T) {
 	}
 	if same := res.SameLanguage; same.Queries != 1 || !near(same.MRR, 1) {
 		t.Errorf("same-language = %+v, want the one query, found at rank 1", same)
+	}
+}
+
+// TestRun_EmptyDatasetIsZero: a dataset with no documents, or with documents
+// and no queries, scores zeros. json.Marshal refuses a NaN or an infinity, so
+// it checks every number of the result at once.
+func TestRun_EmptyDatasetIsZero(t *testing.T) {
+	noQueries := inlineDataset()
+	noQueries.Queries = nil
+	cases := []struct {
+		name string
+		ds   *Dataset
+		docs int
+	}{
+		{"nothing at all", &Dataset{}, 0},
+		{"tags without documents", &Dataset{Tags: []string{"dev / go"}}, 0},
+		{"documents without queries", noQueries, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res, err := Run(context.Background(), vocabEmbedder{vocab: vocab}, c.ds, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := json.Marshal(res); err != nil {
+				t.Errorf("result holds a number JSON cannot carry: %v\n%+v", err, res)
+			}
+			if res.SameLanguage.Queries != 0 || res.SameLanguage.MRR != 0 || res.CrossLingual.NDCG10 != 0 {
+				t.Errorf("retrieval over no queries = %+v, %+v; want zeros", res.SameLanguage, res.CrossLingual)
+			}
+			if tg := res.Tagging; tg.Documents != c.docs || (c.docs == 0 && (tg.Top1 != 0 || tg.Best.F1 != 0 || tg.AtFloor.F1 != 0)) {
+				t.Errorf("tagging = %+v, want %d documents and zeros when there are none", tg, c.docs)
+			}
+		})
 	}
 }
 

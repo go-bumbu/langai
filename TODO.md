@@ -38,35 +38,18 @@ and `todo list --json` cover the common actions — run `todo --help`.
   that matches neither well. Keep up to 3 sub-centroids per tag, chosen by an
   eval scenario that includes parent-tag merges.
 - [ ] use rejections as negative evidence
-  A caller can keep a rejected tag off one document, but the Tagger learns
-  nothing from it, so a wrong tag can return on similar documents. A document
-  that fits no tag gets one at most about 1 time in 4 (0.75 stay untagged on
-  the golden set, TestGoldenTagging, with only the document's own tags removed:
-  an upper bound, as some of the picks are related tags from its family).
+  A caller can keep a rejected tag off one document, but the Tagger learns nothing from it, so a wrong tag can return on similar documents. Re-measured 2026-11-09: with the whole tag family removed no golden document gets a wrong tag (0 of 84); with only its own tags removed 0.64 stay untagged and 0.81 get none but an ancestor. So on the golden set the wrong picks are related tags, and negative evidence would have to be judged on real rejections.
 - [ ] real multi-tag documents in the golden set
   TestGoldenTagging's two-topic check stitches pairs of single-tag documents
   into one page (60 of 102 got both tags), which only stands in for a real
   page about two topics. Add real documents that carry several tags and drop
   the stitching.
-- [ ] make the "fits no tag" scenario drop the whole tag family
-  TestGoldenTagging's untagged scenario removes only a document's own tags, so
-  the rest of its tag family (parent, siblings or children) stays in the scope
-  and some of the picks are related tags, not unrelated ones. Remove the whole
-  family, re-measure, and only then quote the result as a wrong-tag rate and
-  set a new floor; until then 0.75 untagged only bounds that rate from above
-  (at most about 1 document in 4 gets a wrong tag).
-- [ ] cachetest: check that Get refreshes the last-used time
-  The conformance suite never checks that Get rewrites an entry's last-used time once it is older than CacheRefreshAfter, so a backend that skips it still passes, and Prune then drops vectors still in use and they get embedded again. Needs an injectable clock or a time-shifted Prune cutoff in the suite.
-- [x] per-chunk scoring for the Tagger's side topics
-  Done 2026-11-07 (docs/superpowers/specs/2026-11-07-tagger-long-items-results.md): with ChunkBytes an item of 3+ pieces scores by the mean of its two best pieces, one of 2 by the best of its halves and their centroid, and a long member enters its tag's blend as its piece closest to the name. Long set: side 0.68 vs 0.58 (mean), precision 0.78 both, mention 0.02; pure max found 0.74 but 3.5 off-label tags a doc vs 2.0, and lost stitched two-topic pages (0.77 vs 0.80). Title-per-chunk added nothing. Cutoffs 0.42/0.58 hold; floors in TestTaggerLongTags.
 - [ ] try Generator windows of 8-12 KB
-  6 KB windows beat 2 KB ones (F1 0.84 vs 0.74) with fewer calls; larger windows need a bigger chat context and were not measured.
-- [ ] eval.MatchTopics: containment sends side tags to the main topic
-  A tag that contains a main alias ("housing cooperatives" holds "cooperatives") scores 1 against the main topic and ties go to the first topic, so a side topic picked by its exact label counts as missed: de-genossenschaften and es-cafe score side 0.00 with every side label picked. By exact label the Tagger's side recall is 0.89, not 0.68. Prefer the topic whose own label or alias is the longer containment match; re-measure the Generator and Tagger floors after.
+  6 KB windows beat 2 KB ones (F1 0.84 vs 0.74 under the scoring before 2026-11-09) with fewer calls; larger windows need a bigger chat context and were not measured.
 - [ ] re-measure NameMinScore at 0.43
-  Short essences (names only 0.81 vs 0.79, mixed 0.868 vs 0.860) and long items (F1 +0.02) both score a little better at 0.43; stitched two-topic pages lose 0.04 (0.83 vs 0.87 with ChunkBytes) and long-member pages 0.03. Weigh it on real data before moving the default.
+  Short essences (names only 0.81 vs 0.79, mixed 0.868 vs 0.860) and long items (mean F1 0.87 vs 0.84 under the 2026-11-09 scoring) both score a little better at 0.43; stitched two-topic pages lose 0.04 (0.83 vs 0.87 with ChunkBytes) and long-member pages 0.03. Weigh it on real data before moving the default.
 - [ ] turn ChunkBytes on by default
-  Every golden essence is one piece at 2000 bytes, so the short numbers do not move, two-topic pages gain (0.80 to 0.87) and long items find side topics (0.45 to 0.68). Costs a re-embed of long items for current users, and a default that depends on the embedder's window.
+  Every golden essence is one piece at 2000 bytes, so the short numbers do not move, two-topic pages gain (0.80 to 0.87) and long items find side topics (0.65 to 0.90 under the 2026-11-09 scoring). Costs a re-embed of long items for current users, and a default that depends on the embedder's window.
 
 ## upstream
 
@@ -83,57 +66,13 @@ and `todo list --json` cover the common actions — run `todo --help`.
 
 ## image/vide
 
-- [x] image to image proximity search
-  Done: langai.ImageEmbedder, provider/onnx (ONNX Runtime through
-  yalue/onnxruntime_go, cgo; SigLIP 2 base pinned as the default, DINOv2 base
-  as the other pinned model) and search.MediaIndex over the existing Store.
-  Not for a commercial app: OpenAI CLIP (card puts deployed use out of scope),
-  DINOv3 (custom license, needs legal review).
-- [x] video to vide proximiuty search
-  Done the cheap way: media/ffmpeg samples frames (scene cuts plus an
-  interval, or keyframes only), each is embedded with the image model as one
-  Chunk (Seq = milliseconds), and an item is scored by its best frame against
-  any query frame, so images and videos share one index and find each other.
-  Store still has no get-vector-by-docID, so a query that is itself indexed
-  comes back first and the caller drops its own id. Video-native models
-  (Qwen3-VL-Embedding 2B, V-JEPA 2, X-CLIP, InternVideo2) remain an option
-  for whole-clip matching; their Go runtime was not checked. For exact
-  near-duplicates DINOv2 or a perceptual hash fits better than SigLIP.
-  Not for a commercial app: VideoMAE v2 (CC-BY-NC-4.0).
-- [ ] honour EXIF orientation when embedding JPEGs
-  Go's image/jpeg ignores the orientation tag, so a phone photo stored
-  rotated is embedded rotated and matches its upright video frames less. A
-  small APP1/TIFF parser for tag 0x0112 plus a rotate before embedding, in
-  search's decodeImage.
 - [ ] run provider/onnx on a GPU
   The CUDA (gpu_cuda12 build, device_id) and CoreML paths are wired but were
   only unit-tested with a fake session; the real-model tests ran on a CPU.
   Check the CUDA provider loads, that batches speed up, and the yalue note on
   CUDA overwriting Go's signal handlers (onnxruntime_go issue 140).
-- [ ] perceptual hash for exact and near-exact duplicates
-  A 64-bit dHash/pHash as a second, model-free ImageEmbedder (±1 per bit, so
-  cosine = 1 - 2·hamming/64 and the same Store works) for de-duplication
-  jobs that should not pay for a model.
-- [x] text to image / video proximity search
-  Done with Qwen3-VL-Embedding-2B (Qwen/Qwen3-VL-Embedding-2B, Apache-2.0,
-  2048-d) as yzma.Vision over llama.cpp's libmtmd: text, images and video
-  segments in one space, MediaIndex.SearchText and WithVideoEmbedder. The
-  pinned GGUF is DevQuasar's Q8_0 with the f16 projector (no official GGUF).
-  Upstream llama.cpp's Qwen3-VL vision path sits at about 0.97 cosine to the
-  Hugging Face reference (a community fork claims 0.9999 with extra patches);
-  fine within one index, not for vectors made elsewhere. The SigLIP 2 text
-  tower (text_model.onnx, SentencePiece tokenizer in Go) stays an option for a
-  lighter text-to-image route on the ONNX side. Adult content: neither the
-  paper nor the card mentions filtering; quality on explicit material is
-  untested.
 - [ ] vision model follow-ups
-  Matryoshka: the model's vectors can be cut to 64..2048 and re-normalized;
-  a VisionConfig.Dims would shrink the store. The 8B model (MMEB-V2 77.8 vs
-  73.2) and the Qwen3-VL-Reranker as a second stage are untried. The
-  instruction is one per Vision; per-call instructions (a query instruction
-  that differs from the document one) would need a second prompt path.
-  ImageMaxTokens did not change the token count in the spike (484 for
-  800x600, 1,437 for 1080x1350): check what the projector's bounds do.
+  Matryoshka: the model's vectors can be cut to 64..2048 and re-normalized; a VisionOptions setting for the output size would shrink the store (the model id already carries dims). The 8B model (MMEB-V2 77.8 vs 73.2) and the Qwen3-VL-Reranker as a second stage are untried. The instruction is one per Vision; per-call instructions (a query instruction that differs from the document one) would need a second prompt path. ImageMaxTokens did not change the token count in the spike (484 for 800x600, 1,437 for 1080x1350): check what the projector's bounds do. Short videos go to libmtmd's own ffmpeg, which has no protocol whitelist: routing them through the Cutter would close that.
 - [ ] run provider/yzma on CUDA and on macOS
   Accel auto picks the build from the hardware and offloads to the GPU that
   registers; Vulkan on an AMD 890M iGPU was run (1.5 s per photo vs 7 s on
@@ -188,23 +127,55 @@ and `todo list --json` cover the common actions — run `todo --help`.
 - [ ] move to kronk sdk as provider
 - [ ] make it possible to use local models or remote subscriptions
 
+## features
+
+- [ ] hybrid search: keywords next to embeddings
+  Search is embeddings only, which misses exact names, error codes, version numbers, rare words and one-word queries (ErrModelMismatch, pgx). Both backends have a keyword engine (FTS5 in SQLite, tsvector in Postgres): the store keeps a keyword index of the chunks it already holds, and Index.Search merges the two rankings with reciprocal rank fusion, which needs no score tuning. Covered by vectortest; shown on the text search page.
+- [ ] topic discovery: clusters of untagged items as tag suggestions
+  The Tagger learns only from tags people made and the Generator works one text at a time; nothing looks across the corpus ("14 untagged notes about sourdough: tag them cooking / bread?"). Cluster the stored vectors of untagged items, let the Completer name each cluster, check the name against the members as the Tagger blends name and members. Works for photos too (trips, events), as the duplicates page groups by hash. Eases the cold start SmoothingK only softens.
+- [ ] grounded answers over indexed documents
+  Retrieve with Index.Search, have the Completer answer only from those chunks, cite doc ids and heading paths. A capability next to tagging.Generator that takes a Completer and an Index. Keep it small: no agents, no conversation memory.
+- [ ] query-time filters on document metadata
+  Scoping a search by date, type or folder needs an allow-list of ids today, which does not scale. Small per-document attributes, filtered inside the store's one search ("photos from 2024", "only PDFs"). Wait for a consumer that needs it.
+
 # expected fetaures
 
-- [ ] text => existing tags
-  - kronk + embedding model (EmbeddingGemma 300M)
-  - optional: kronk + reranker model to check the shortlist
-- [ ] text => new tags
-  - kronk + LLM (Qwen3 4B Instruct) writes candidate tags
-  - kronk + embedding model drops candidates too close to existing tags
-- [x] image / video => proximity image / vide
-  - onnxruntime (cgo) + SigLIP 2 base; kronk can't embed images
-  - video: ffmpeg samples frames, each embedded as an image; best frame wins
 - [ ] image / video => description
   - kronk + vision LLM + mmproj (Qwen3-VL-2B-Instruct)
   - video: ffmpeg pulls keyframes, sent as images (kronk doesn't decode video)
 - [ ] image / video => tags
   - describe it (kronk vision LLM), then reuse the text => tags stacks
   - optional, skip the caption: SigLIP 2 scores the image against tag names
-- [ ] text => similar image video
-  - onnxruntime + SigLIP 2: the query text lands in the image/frame space
-  - kronk only: embedding model over the descriptions (meaning, not looks)
+
+# review 2026-11-09
+
+## architecture
+
+- [ ] one Chunker for search and tagging
+  search.MarkdownChunker{MaxChars} and tagging.Chunk(text, maxBytes) differ in units and live apart; Tagger and Generator take only an int. Left open on 2026-11-09 on purpose: the two do different jobs (structure-aware retrieval chunks with a heading path vs even pieces for scoring), the tagging floors were measured on tagging.Chunk, and a shared port would need a re-measure to prove it changes nothing.
+
+## search, vector, media
+
+## tagging and eval
+
+## providers and fetch
+
+- [ ] phash: measure thresholds on real photos
+  The duplicate thresholds come from synthetic pictures. Flat pictures all share the zero hash and a small mark on a near-flat picture flips about half the pHash bits. No ParseHash yet, and the vectors are not a compact bit column in the stores. grey.go has its own compose-on-white code that could use internal/imageutil if it gives identical 8-bit values.
+
+## second pass
+
+## found while building the example
+
+- [ ] EmbeddingCache has no count or size
+  The status page can only show the database file's bytes.
+- [ ] no lazy VideoEmbedder; Vision.Fingerprint needs a loaded model
+  The example keeps the vision model eager for this reason. A LazyVideoEmbedder and a fingerprint computed from spec and options (like ModelID) would let it load on first use.
+- [ ] yzma.Completer has no Accel(); LazyCompleter has no Model()
+  The status page cannot say what runs the chat model or name it before load.
+- [ ] audio-only video fails with ffmpeg's error, not ErrNoFrames
+  IndexVideo on an mp4 without a video stream surfaces ffmpeg's own message.
+- [ ] phash.Hash does not turn EXIF-rotated JPEGs upright
+  MediaIndex applies EXIF orientation in an unexported decode, so a raw phash.Hash of the same file can disagree with the indexed vector. From reading the code, not reproduced.
+
+# change log

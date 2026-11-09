@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>langai · text search</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="../assets/base.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <nav id="nav" data-page="textsearch/"><a class="home" href="../">Home</a></nav>
+  <h1>Text search</h1>
+  <div id="info" class="info">loading…</div>
+  <div class="actions">
+    <form id="searchform" class="searchform"><input id="q" type="search" placeholder="search the documents, in any language…" autocomplete="off"><button class="button" type="submit">search</button></form>
+    <button id="rescan" class="button" title="read the directory again: IndexBatch embeds what changed, and documents whose files are gone leave the index">rescan</button>
+  </div>
+</header>
+<div id="banner" class="banner" hidden></div>
+<main>
+  <section class="docs">
+    <div id="scan" class="scan"></div>
+    <div id="examples" class="examples"></div>
+    <div id="doclist"></div>
+  </section>
+  <aside id="detail" class="detail"><p class="hint">Search for something, or click a document to see the chunks that were embedded and the documents most like it.</p></aside>
+</main>
+<script src="../assets/ui.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

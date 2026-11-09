@@ -11,35 +11,15 @@ import (
 	"testing"
 
 	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/langai/langaitest"
 )
 
 var errBoom = errors.New("boom")
 
-type prompt struct{ system, user string }
-
-// stubLLM answers a prompt with byUser[user] when it holds the user message
-// and with answer otherwise, or fails with err, and records what it was asked.
-// hook, when set, runs first with the prompt's number (1 for the first), and
-// an error from it fails that prompt.
-type stubLLM struct {
-	answer string
-	byUser map[string]string
-	err    error
-	hook   func(n int) error
-	asked  []prompt
-}
-
-func (s *stubLLM) Complete(_ context.Context, system, user string) (string, error) {
-	s.asked = append(s.asked, prompt{system, user})
-	if s.hook != nil {
-		if err := s.hook(len(s.asked)); err != nil {
-			return "", err
-		}
-	}
-	if a, ok := s.byUser[user]; ok {
-		return a, s.err
-	}
-	return s.answer, s.err
+// byUser answers a prompt with replies[user], and with nothing for a user
+// message it does not hold. It reads the map at every call.
+func byUser(replies map[string]string) func(system, user string) (string, error) {
+	return func(_, user string) (string, error) { return replies[user], nil }
 }
 
 type embedCall struct {
@@ -92,9 +72,9 @@ func angled() map[string][]float32 {
 	}
 }
 
-func newGenerator(t *testing.T, answer string, vecs map[string][]float32, cfg GeneratorConfig) (*Generator, *stubLLM, *vecEmbedder) {
+func newGenerator(t *testing.T, answer string, vecs map[string][]float32, cfg GeneratorConfig) (*Generator, *langaitest.FakeCompleter, *vecEmbedder) {
 	t.Helper()
-	llm := &stubLLM{answer: answer}
+	llm := &langaitest.FakeCompleter{Replies: []string{answer}}
 	emb := &vecEmbedder{vecs: vecs}
 	g, err := NewGenerator(llm, emb, cfg)
 	if err != nil {
@@ -119,14 +99,14 @@ func TestNew_RequiresCompleterAndEmbedder(t *testing.T) {
 	if _, err := NewGenerator(nil, &vecEmbedder{}, GeneratorConfig{}); err == nil {
 		t.Error("nil Completer accepted")
 	}
-	if _, err := NewGenerator(&stubLLM{}, nil, GeneratorConfig{}); err == nil {
+	if _, err := NewGenerator(&langaitest.FakeCompleter{}, nil, GeneratorConfig{}); err == nil {
 		t.Error("nil Embedder accepted")
 	}
 }
 
 func TestNew_RejectsNegativeSettings(t *testing.T) {
 	for _, cfg := range []GeneratorConfig{{Candidates: -1}, {MaxBytes: -1}} {
-		if _, err := NewGenerator(&stubLLM{}, &vecEmbedder{}, cfg); err == nil {
+		if _, err := NewGenerator(&langaitest.FakeCompleter{}, &vecEmbedder{}, cfg); err == nil {
 			t.Errorf("%+v accepted", cfg)
 		}
 	}
@@ -247,11 +227,11 @@ func TestGenerate_AsksTheModelForTheConfiguredNumberOfTags(t *testing.T) {
 		if _, err := g.Generate(context.Background(), bread, 0); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(llm.asked[0].system, tc.want) {
-			t.Errorf("%+v: the system prompt does not say %q:\n%s", tc.cfg, tc.want, llm.asked[0].system)
+		if !strings.Contains(llm.Calls()[0].System, tc.want) {
+			t.Errorf("%+v: the system prompt does not say %q:\n%s", tc.cfg, tc.want, llm.Calls()[0].System)
 		}
-		if llm.asked[0].user != bread {
-			t.Errorf("the user message is %q, want the text", llm.asked[0].user)
+		if llm.Calls()[0].User != bread {
+			t.Errorf("the user message is %q, want the text", llm.Calls()[0].User)
 		}
 	}
 }
@@ -265,8 +245,8 @@ func TestGenerate_CutsTheTextForTheModelAndTheEmbedderAlike(t *testing.T) {
 	if _, err := g.Generate(context.Background(), text, 0); err != nil {
 		t.Fatal(err)
 	}
-	if llm.asked[0].user != "éé" {
-		t.Errorf("the model read %q, want %q", llm.asked[0].user, "éé")
+	if llm.Calls()[0].User != "éé" {
+		t.Errorf("the model read %q, want %q", llm.Calls()[0].User, "éé")
 	}
 	if emb.calls[0].texts[0] != "éé" {
 		t.Errorf("the embedder read %q, want %q", emb.calls[0].texts[0], "éé")
@@ -279,8 +259,8 @@ func TestGenerate_ReplacesInvalidUTF8(t *testing.T) {
 	if _, err := g.Generate(context.Background(), "bread \xff", 0); err != nil {
 		t.Fatal(err)
 	}
-	if llm.asked[0].user != "bread \uFFFD" {
-		t.Errorf("the model read %q", llm.asked[0].user)
+	if llm.Calls()[0].User != "bread \uFFFD" {
+		t.Errorf("the model read %q", llm.Calls()[0].User)
 	}
 }
 
@@ -290,31 +270,87 @@ func TestGenerate_AsksNobodyAboutABlankText(t *testing.T) {
 	if err != nil || got != nil {
 		t.Fatalf("got %v, %v", got, err)
 	}
-	if len(llm.asked) != 0 || len(emb.calls) != 0 {
-		t.Errorf("a blank text reached the model (%d) or the embedder (%d)", len(llm.asked), len(emb.calls))
+	if len(llm.Calls()) != 0 || len(emb.calls) != 0 {
+		t.Errorf("a blank text reached the model (%d) or the embedder (%d)", len(llm.Calls()), len(emb.calls))
 	}
 }
 
+// noTags is a reply that holds words but no tag: every line is too long to be
+// one.
+const noTags = "I am sorry but this text is not something I can write tags for."
+
 func TestGenerate_AnswerWithoutTagsIsNotAnError(t *testing.T) {
-	g, _, emb := newGenerator(t, "\n \n", angled(), GeneratorConfig{})
+	g, llm, emb := newGenerator(t, noTags, angled(), GeneratorConfig{})
 	got, err := g.Generate(context.Background(), bread, 0)
 	if err != nil || got != nil {
 		t.Fatalf("got %v, %v", got, err)
 	}
-	if len(emb.calls) != 0 {
-		t.Errorf("embedded %v although the model wrote no tag", emb.calls)
+	if len(llm.Calls()) != 1 || len(emb.calls) != 0 {
+		t.Errorf("asked %d times and embedded %v, want one question and nothing embedded", len(llm.Calls()), emb.calls)
+	}
+}
+
+// TestGenerate_AnEmptyReplyIsAskedAgainAndThenAnError: a model that answers
+// with nothing has not said "no tags", it has failed. It used to come back as
+// no tags and no error. It is asked once more, and a second empty reply is an
+// error the caller can tell from a text without tags.
+func TestGenerate_AnEmptyReplyIsAskedAgainAndThenAnError(t *testing.T) {
+	for name, empty := range map[string]string{
+		"nothing":                    "",
+		"blank lines":                "\n \n",
+		"a reasoning block only":     "<think>\nbread, I suppose\n</think>\n",
+		"reasoning that never ended": "<think>\nThe text is about bread and",
+		"an empty code fence":        "```\n```",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, llm, emb := newGenerator(t, empty, angled(), GeneratorConfig{})
+			got, err := g.Generate(context.Background(), bread, 0)
+			if !errors.Is(err, ErrEmptyReply) || got != nil {
+				t.Fatalf("got %v, %v; want no tags and ErrEmptyReply", got, err)
+			}
+			if len(llm.Calls()) != 2 || len(emb.calls) != 0 {
+				t.Errorf("asked %d times and embedded %v, want two questions and nothing embedded", len(llm.Calls()), emb.calls)
+			}
+		})
+	}
+}
+
+// TestGenerate_AFailedOrEmptyReplyIsAskedAgainOnce: one bad reply, an error or
+// nothing at all, does not fail the call: the second answer counts.
+func TestGenerate_AFailedOrEmptyReplyIsAskedAgainOnce(t *testing.T) {
+	for name, first := range map[string]error{
+		"an error":       errBoom,
+		"an empty reply": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, llm, _ := newGenerator(t, "alpha", angled(), GeneratorConfig{})
+			llm.Reply = func(string, string) (string, error) {
+				if len(llm.Calls()) == 1 {
+					return "", first
+				}
+				return "alpha", nil
+			}
+			got, err := g.Generate(context.Background(), bread, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireTags(t, got, []Tag{{"alpha", 0.6}})
+			if len(llm.Calls()) != 2 {
+				t.Errorf("asked %d times, want twice", len(llm.Calls()))
+			}
+		})
 	}
 }
 
 func TestGenerate_ReportsAModelFailure(t *testing.T) {
 	g, llm, emb := newGenerator(t, "alpha", angled(), GeneratorConfig{})
-	llm.err = errBoom
-	_, err := g.Generate(context.Background(), bread, 0)
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("got %v, want it to wrap %v", err, errBoom)
+	llm.Err = errBoom
+	got, err := g.Generate(context.Background(), bread, 0)
+	if !errors.Is(err, errBoom) || errors.Is(err, ErrPartial) || got != nil {
+		t.Fatalf("got %v, %v; want no tags and an error wrapping %v", got, err, errBoom)
 	}
-	if len(emb.calls) != 0 {
-		t.Errorf("embedded %v after the model failed", emb.calls)
+	if len(llm.Calls()) != 2 || len(emb.calls) != 0 {
+		t.Errorf("asked %d times and embedded %v, want two questions and nothing embedded", len(llm.Calls()), emb.calls)
 	}
 }
 
@@ -350,7 +386,7 @@ func TestGenerate_StopsOnACanceledContext(t *testing.T) {
 	if _, err := g.Generate(ctx, bread, 0); !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v, want context.Canceled", err)
 	}
-	if len(llm.asked) != 0 {
+	if len(llm.Calls()) != 0 {
 		t.Error("the model was asked after the context was canceled")
 	}
 }

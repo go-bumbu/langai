@@ -55,9 +55,10 @@
     const d = await api('api/info');
     info = d.info;
     const chat = d.chat ? ` (${d.chat})` : '';
+    const embedder = d.embedder ? ` (${d.embedder})` : '';
     const chunks = info.chunkBytes > 0 ? ` · notes over ${info.chunkBytes} bytes read in parts` : '';
-    infoEl.innerHTML = `existing tags: <b>${info.embedder}</b> · name ≥ ${info.nameMinScore}, examples ≥ ${info.memberMinScore}${chunks}<br>` +
-      `new tags: <b>${info.completer}</b>${chat} scored by the embedder · cutoff ${info.minScore} · ${info.accel}`;
+    infoEl.innerHTML = `existing tags: <b>${info.embedder}</b>${embedder} · name ≥ ${info.nameMinScore}, examples ≥ ${info.memberMinScore}${chunks}<br>` +
+      `new tags: <b>${info.completer}</b>${chat} scored by the embedder · cutoff ${info.minScore} · ${d.runsOn || info.accel}`;
     $('#samples').hidden = !info.samples;
     $('#samples-tagged').hidden = !info.samples;
   }
@@ -85,7 +86,9 @@
 
   function tagRow(t) {
     return el('li', { class: filter === t.id ? 'active' : '', title: t.name, onclick: () => { filter = filter === t.id ? null : t.id; render(); } },
-      el('span', { class: 'name' }, t.name),
+      el('span', { class: 'name' }, t.name, t.incomplete
+        ? el('span', { class: 'incomplete', title: 'built without one of the notes it was put on by hand: the embedder could not take that note\'s text (Scope.Incomplete). It suggests on its name and its other notes until the notebook next changes.' }, ' ⚠ incomplete')
+        : null),
       el('span', { class: 'counts', title: 'notes tagged by hand · notes the Tagger picks it for' }, `${t.hand} · ${t.auto}`),
       el('button', { class: 'icon', title: 'rename', onclick: (e) => { e.stopPropagation(); renameTag(t); } }, '✎'),
       el('button', { class: 'icon del', title: 'delete', onclick: (e) => { e.stopPropagation(); deleteTag(t); } }, '×'));
@@ -173,7 +176,10 @@
     });
     const kept = r.tags.filter((t) => t.above).length;
     const how = `${r.options.language ? 'in ' + r.options.language : "in the note's language"}${tree ? ', as a tree (grey levels are your tags already)' : ''}`;
+    // a long note the model read only in part: its tags are good, some may be missing
+    const partial = r.error ? el('div', { class: 'error', title: 'recommend again to retry the windows that failed' }, r.error) : null;
     return el('div', { class: 'recs' }, ...(rows.length ? rows : [el('div', { class: 'none' }, 'the model wrote no usable tag')]),
+      partial,
       el('div', { class: 'meta' }, `${r.tags.length} written ${how}, ${kept} clear the cutoff ${r.minScore} · ${s(r.ms)}`));
   }
 
@@ -260,6 +266,13 @@
       await load();
     }));
   }
+
+  $('#warm').addEventListener('click', (e) => busy(e.target, async () => {
+    const st = await api('api/warm', { method: 'POST' });
+    toast(`Tagger warm at revision ${st.revision}: ${st.notes} notes and ${st.tags} tags in ${s(st.ms)}` +
+      (st.incomplete.length ? `; ${st.incomplete.length} tags built without one of their notes` : '; what the cache held was not embedded again'));
+    await Promise.all([loadInfo(), load()]);
+  }));
 
   // the recommendation settings survive a reload, in this browser only
   const remember = (sel, prop) => {

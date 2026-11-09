@@ -3,6 +3,7 @@ package tagging
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -22,8 +23,19 @@ const windowBytes = 6144
 // maxTitleBytes is the longest first line of a text that is read as its title.
 // A window past the first, cut from the middle of the text, often cannot tell
 // what its section is about, so the title is repeated at its head. Measured on
-// the same 24 documents: side-topic recall 0.656 without, 0.708 with.
+// the same 24 documents, under the scoring zarf/eval used before 2026-11-09:
+// side-topic recall 0.656 without, 0.708 with. With the title it is 0.759
+// under today's scoring (TestGenerateLongTags in provider/yzma); without it
+// was not measured again.
 const maxTitleBytes = 200
+
+// maxFailedWindowsAtStart is how many windows of a long text, from the first
+// on, the model may fail on, each asked twice (see write), before the rest of
+// the text is not asked about. With no window read by then nothing says the
+// model is there at all, and each further window would cost two more of its
+// timeouts. Once a window has been read the model is up, and every window is
+// asked about however many fail.
+const maxFailedWindowsAtStart = 2
 
 // titleOf returns the first line of text, trimmed, when it is a title: at
 // most maxTitleBytes and followed by more text. Otherwise it is empty.
@@ -41,30 +53,68 @@ func titleOf(text string) string {
 // each name is scored by longScore over the text's chunks. The windows go to
 // the model as Chunk returns them, the ones after the first headed by the
 // text's title (see maxTitleBytes); the chunks that score are the text's own.
+//
+// A window the model fails on, twice (see write), does not cost the others:
+// its error is kept, the remaining windows are read, and the tags of the ones
+// that worked are returned with an error wrapping ErrPartial. With no window
+// read there is nothing to return but the errors, and a ctx that ended stops
+// the reading with its own error.
+//
+// A model that is gone is not asked about the rest of the text, whose windows
+// would fail the same way and are lost with the one it failed on: one that
+// says it is closed (langai.ErrClosed), and one that failed on the first
+// maxFailedWindowsAtStart windows with none read yet, so a remote model that
+// is down costs a few timeouts, not two per window.
 func (g *Generator) generateLong(ctx context.Context, text string, minScore float64) ([]Tag, error) {
-	clean := g.clean()
 	var names []string
+	var failed []error
 	seen := make(map[string]bool)
 	title := titleOf(text)
-	for i, w := range Chunk(text, windowBytes) {
+	windows := Chunk(text, windowBytes)
+	read := 0
+	for i, w := range windows {
 		if i > 0 && title != "" {
 			w = title + "\n" + w
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		answer, err := g.write(ctx, w)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
-		answer, err := g.llm.Complete(ctx, g.prompt, w)
 		if err != nil {
-			return nil, fmt.Errorf("tagging: write tags: %w", err)
+			failed = append(failed, fmt.Errorf("tagging: write tags for window %d of %d: %w", i+1, len(windows), err))
+			if errors.Is(err, langai.ErrClosed) || (read == 0 && len(failed) == maxFailedWindowsAtStart) {
+				break
+			}
+			continue
 		}
+		read++
 		// a window with no usable tag adds nothing, and the others still count
-		for _, name := range parseTags(answer, g.cfg.Candidates, clean) {
+		for _, name := range parseTags(answer, g.cfg.Candidates, g.clean) {
 			if key := strings.ToLower(name); !seen[key] {
 				seen[key] = true
 				names = append(names, name)
 			}
 		}
 	}
+	var partial error
+	switch lost := len(windows) - read; {
+	case read == 0:
+		return nil, errors.Join(failed...)
+	case lost > 0:
+		partial = fmt.Errorf("%w: %d of %d windows were not read: %w", ErrPartial, lost, len(windows), errors.Join(failed...))
+	}
+	tags, err := g.scoreLong(ctx, text, names, minScore)
+	if err != nil {
+		return nil, err
+	}
+	return tags, partial
+}
+
+// scoreLong returns the tags among names that score at least minScore on a
+// long text, best first, at most Candidates of them: each name is scored by
+// longScore over the text's chunks. No names is no tags, and nothing is
+// embedded for it.
+func (g *Generator) scoreLong(ctx context.Context, text string, names []string, minScore float64) ([]Tag, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}

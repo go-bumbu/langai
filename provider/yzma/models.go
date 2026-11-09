@@ -19,7 +19,7 @@ type pinnedModel struct {
 	dims           int
 }
 
-// pinnedModels lists the embedding models Config.Model selects from,
+// pinnedModels lists the embedding models Config.Model selects from in New,
 // DefaultModel first. Each is run with the settings make semeval evaluates
 // it with (see zarf/eval/testdata/models.yaml), and its digest pins the
 // GGUF that was evaluated. A model's file name in ModelsDir is fixed here
@@ -57,6 +57,7 @@ func pinnedModels() []pinnedModel {
 			asset: asset{
 				URL:    "https://huggingface.co/TwinSunsLLC/multilingual-e5-small-gguf/resolve/main/multilingual-e5-small-q8_0.gguf",
 				SHA256: "e011debc1208e31bf7b6aebee2d9fc8bd2ca11694a77ed66ac9d0c9d0a877c93",
+				Size:   132439008,
 			},
 			pooling:        PoolingMean,
 			queryPrefix:    "query: ",
@@ -69,6 +70,7 @@ func pinnedModels() []pinnedModel {
 			asset: asset{
 				URL:    "https://huggingface.co/smarttasks/bge-m3-GGUF/resolve/main/bge-m3-Q8_0.gguf",
 				SHA256: "aa473d51f451a22f0fcf39ba3330c14bed38a385712b1113440f69df4047a173",
+				Size:   634553760,
 			},
 			pooling: PoolingCLS,
 			dims:    1024,
@@ -79,6 +81,7 @@ func pinnedModels() []pinnedModel {
 			asset: asset{
 				URL:    "https://huggingface.co/ggml-org/Nomic-Embed-Text-V2-GGUF/resolve/main/nomic-embed-text-v2-moe-q8_0.gguf",
 				SHA256: "36c5817bc25f379e62021f49efde05b10ed3b0c93ab8059c43173a7a5de73565",
+				Size:   512225120,
 			},
 			pooling:        PoolingMean,
 			queryPrefix:    "search_query: ",
@@ -113,33 +116,33 @@ func pinnedCompleters() []pinnedCompleter {
 	}
 }
 
+// CompleterModels lists the names of the pinned chat models NewCompleter
+// selects from, DefaultCompleterModel first.
+func CompleterModels() []string {
+	return names(pinnedCompleters(), func(m pinnedCompleter) string { return m.name })
+}
+
 // LookupCompleterSpec returns the pinned spec of the named chat model, its
 // file inside modelsDir ("" means "models"). name "" means
-// DefaultCompleterModel; any other name must be one of the pinned chat models,
-// and the error for one that is not lists them.
+// DefaultCompleterModel; any other name must be one of CompleterModels, and
+// the error for one that is not lists them.
 func LookupCompleterSpec(name, modelsDir string) (CompleterSpec, error) {
 	if name == "" {
 		name = DefaultCompleterModel
 	}
-	if modelsDir == "" {
-		modelsDir = "models"
-	}
-	models := pinnedCompleters()
-	names := make([]string, 0, len(models))
-	for _, m := range models {
+	for _, m := range pinnedCompleters() {
 		if m.name == name {
 			return CompleterSpec{
 				Name:     m.name,
-				File:     filepath.Join(modelsDir, m.file),
+				File:     filepath.Join(modelsOr(modelsDir), m.file),
 				URL:      m.asset.URL,
 				SHA256:   m.asset.SHA256,
 				Size:     m.asset.Size,
 				Template: m.template,
 			}, nil
 		}
-		names = append(names, m.name)
 	}
-	return CompleterSpec{}, fmt.Errorf("unsupported chat model %q: use one of %s", name, strings.Join(names, ", "))
+	return CompleterSpec{}, fmt.Errorf("yzma: unsupported chat model %q: use one of %s", name, strings.Join(CompleterModels(), ", "))
 }
 
 // DefaultCompleterSpec is LookupCompleterSpec(DefaultCompleterModel,
@@ -150,24 +153,26 @@ func DefaultCompleterSpec(modelsDir string) CompleterSpec {
 	return spec
 }
 
-// Spec returns the pinned spec of the named model, its file inside modelsDir
-// ("" means "models"). name "" means DefaultModel; any other name must be one
-// of the pinned models, and the error for one that is not lists them. Its
-// Dims lets a caller size a vector store before the model is loaded.
-func Spec(name, modelsDir string) (ModelSpec, error) {
+// Models lists the names of the pinned embedding models New selects from,
+// DefaultModel first.
+func Models() []string {
+	return names(pinnedModels(), func(m pinnedModel) string { return m.name })
+}
+
+// LookupSpec returns the pinned spec of the named embedding model, its file
+// inside modelsDir ("" means "models"). name "" means DefaultModel; any
+// other name must be one of Models, and the error for one that is not lists
+// them. Its Dims lets a caller size a vector store before the model is
+// loaded.
+func LookupSpec(name, modelsDir string) (ModelSpec, error) {
 	if name == "" {
 		name = DefaultModel
 	}
-	if modelsDir == "" {
-		modelsDir = "models"
-	}
-	models := pinnedModels()
-	names := make([]string, 0, len(models))
-	for _, m := range models {
+	for _, m := range pinnedModels() {
 		if m.name == name {
 			return ModelSpec{
 				Name:           m.name,
-				File:           filepath.Join(modelsDir, m.file),
+				File:           filepath.Join(modelsOr(modelsDir), m.file),
 				URL:            m.asset.URL,
 				SHA256:         m.asset.SHA256,
 				Size:           m.asset.Size,
@@ -177,7 +182,23 @@ func Spec(name, modelsDir string) (ModelSpec, error) {
 				Dims:           m.dims,
 			}, nil
 		}
-		names = append(names, m.name)
 	}
-	return ModelSpec{}, fmt.Errorf("unsupported embedding model %q: use one of %s", name, strings.Join(names, ", "))
+	return ModelSpec{}, fmt.Errorf("yzma: unsupported embedding model %q: use one of %s", name, strings.Join(Models(), ", "))
+}
+
+// modelsOr is dir, or "models" when it is empty.
+func modelsOr(dir string) string {
+	if dir == "" {
+		return "models"
+	}
+	return dir
+}
+
+// names maps the pinned entries to their names, in order.
+func names[T any](pinned []T, name func(T) string) []string {
+	out := make([]string, len(pinned))
+	for i, p := range pinned {
+		out[i] = name(p)
+	}
+	return out
 }

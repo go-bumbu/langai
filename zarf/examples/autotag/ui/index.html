@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>langai · auto tagging</title>
 <link rel="icon" href="data:,">
+<link rel="stylesheet" href="../assets/base.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header>
-  <a class="home" href="../">langai examples</a>
+  <nav id="nav" data-page="autotag/"><a class="home" href="../">Home</a></nav>
   <h1>Auto tagging</h1>
   <div id="info" class="info">loading…</div>
   <div class="actions">
@@ -24,6 +25,7 @@
       </select>
     </label>
     <label class="check" title="recommend paths that extend your tags into a tree, such as cooking / baking / sourdough, instead of single words"><input id="tree" type="checkbox"> as a tree</label>
+    <button id="warm" class="button" title="Scope.Warm: bring the Tagger up to the notebook's revision and embed every note its cache does not hold yet. Over a full cache it embeds nothing; after a switch of embedding models it embeds everything, once.">warm</button>
     <button id="samples" class="button" hidden data-hand="0" title="import the eval golden set: its 15 tags and 84 documents in English, Spanish and German, with no hand tags, so every tag is judged by its name">load samples</button>
     <button id="samples-tagged" class="button" hidden data-hand="2" title="the same, and each tag put by hand on the first two documents that expect it (English ones), so it learns from examples; on samples loaded already, adds just those hand tags">load samples, partly tagged</button>
   </div>
@@ -46,6 +48,7 @@
     <div id="notelist"></div>
   </section>
 </main>
+<script src="../assets/ui.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

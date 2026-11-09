@@ -39,7 +39,10 @@ var floors = []floor{
 	{"xling", "recall@10", 0.85},  // measured 1.0000 on 2026-10-21
 	{"tagging", "f1@best", 0.65},  // measured 0.7071 on 2026-10-21
 	{"tagging", "f1@floor", 0.65}, // measured 0.7071 on 2026-10-21
-	{"tagging", "top1", 0.84},     // measured 0.8929 on 2026-10-21
+	// top1 measured 0.8929 on 2026-10-21, which the floor comes from, and 0.8810
+	// on 2026-11-09, on main as well as on the branch measured; what moved it
+	// was not found. The floor was left where it was.
+	{"tagging", "top1", 0.84}, // measured 0.8810 on 2026-11-09
 }
 
 // lookupMetric reads one metric of one task out of a result. ok is false for
@@ -126,10 +129,8 @@ func TestGoldenSetWithDefaultModel(t *testing.T) {
 	ctx := context.Background()
 	start := time.Now()
 	emb, err := New(ctx, Config{
-		ModelsDir:     filepath.Join(dir, "models"),
-		LibDir:        filepath.Join(dir, "llama-cpp", LibTag),
-		ManagedLibDir: true,
-		Logger:        slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		Runtime:   Runtime{LibDir: filepath.Join(dir, "llama-cpp", LibTag), ManagedLibDir: true, Logger: slog.New(slog.NewTextHandler(os.Stderr, nil))},
+		ModelsDir: filepath.Join(dir, "models"),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

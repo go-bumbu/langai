@@ -16,9 +16,10 @@
 // "dev") and of the tags on one path only the one the item clears the cutoff
 // of by most is picked (see TaggerConfig.AllPathLevels).
 //
-// A space is an (index, partition) pair: index is the hard tenant boundary,
-// and no data of one index is ever read on behalf of another; partition is
-// the space within it. The application implements a Catalog with two
+// A space is a Space, an index and a partition: index is the hard tenant
+// boundary, and no data of one index is ever read on behalf of another;
+// partition is the space within it. Tagger.Scope returns the handle on one
+// (a Scope), which Suggest, Scores and Warm are called on. The application implements a Catalog with two
 // read-only lookups, the tags of a space (each one's id, name and revision)
 // and the member texts of some of its tags, in one batched call, and passes
 // the space's revision on every Suggest: an opaque string, compared for
@@ -29,17 +30,23 @@
 // EmbeddingCache (MemCache, or sqlitecache and pgcache for a database) holds
 // every embedding, by index, model, role and the hash of the text, so an
 // edited text or another model simply misses and is embedded again, and
-// unused rows go with Prune. A TagIndex (MemIndex by default, an LRU of the
+// unused rows go with Tagger.Prune, which first marks what the tags of the
+// spaces in use are built from. A TagIndex (MemIndex by default, an LRU of the
 // spaces under a memory budget) holds each space's blended tag vectors and
 // cutoffs, with the revision they were built at. On a Suggest at the revision
 // the index holds, the catalog is not called: the text's vector comes from
 // the cache and is scored against the index's candidates. At another
 // revision, the Tagger reads the catalog's tags, rebuilds from the cache only
 // the tags whose revision, name, model or settings changed, drops the ones
-// gone, and records the revision, once for every caller of that revision. A
-// rebuild that fails returns an error wrapping ErrNotRebuilt and leaves the
-// index as it was, so the next call tries again. Losing the cache or the
-// index costs time, never correctness.
+// gone, and records the revision, once for every caller of that revision and
+// one rebuild of a space at a time. A rebuild that fails returns an error wrapping ErrNotRebuilt and leaves the
+// index as it was, so the next call tries again; texts are embedded and cached
+// a batch at a time, so it embeds only what is still missing. A member's text
+// the embedder cannot take, while it takes others, is left out of its tag,
+// reported to TaggerConfig.Logger and listed by Scope.Incomplete instead of
+// failing the rebuild; an embedder that is down fails it, so an outage is
+// never recorded as a rebuild. Losing the cache or the index costs time, never
+// correctness.
 //
 // A Generator starts from nothing: a language model (a langai.Completer)
 // proposes tags for the text, an embedding model (a langai.Embedder) scores
@@ -51,7 +58,9 @@
 // as the title and repeated at the head of every window, so pass "title\n" +
 // body), so the topics of later
 // sections get tags too, and each tag is scored by the chunk of the text it
-// fits best; that costs a call per window, about eleven for 64 KB.
+// fits best; that costs a call per window, about eleven for 64 KB. A call that
+// fails is made once more, and a window lost all the same costs only itself:
+// the tags of the others come back with an error wrapping ErrPartial.
 //
 // The model supplies the words and the embedder the score. A model's own
 // confidence is poorly calibrated and moves from run to run, while the cosine

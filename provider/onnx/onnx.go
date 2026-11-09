@@ -1,17 +1,19 @@
 // Package onnx runs image embedding models locally through ONNX Runtime, as
 // a langai.ImageEmbedder. The runtime is the shared library the first New or
 // Open loads (through github.com/yalue/onnxruntime_go, which is CGO) from
-// Config.LibDir; a managed directory gets the pinned build downloaded into
+// Runtime.LibDir; a managed directory gets the pinned build downloaded into
 // it, and the pinned model is downloaded into Config.ModelsDir, both verified
 // by digest (see fetch.go). Later loads are offline. The library loads once
 // per process and every Embedder shares it.
 //
-// New runs one of the pinned models (see Spec), DefaultModel unless
-// Config.Model selects another; Open runs any ONNX vision model described by
-// a ModelSpec: the tensor names, the input size, how a picture is resized and
-// normalized. An Embedder runs its model until Close; two run side by side.
+// The constructors have provider/yzma's shape: New takes a Config, which
+// names one of the pinned models (Models, LookupSpec; DefaultModel unless
+// Config.Model selects another) and embeds the Runtime; Open takes any ONNX
+// vision model described by a ModelSpec (the tensor names, the input size,
+// how a picture is resized and normalized) and the Runtime. An Embedder runs
+// its model until Close; two run side by side.
 //
-// CPU is the default. Config.Provider selects CUDA (the gpu build of the
+// CPU is the default. Runtime.Provider selects CUDA (the gpu build of the
 // runtime, CUDA 12 and cuDNN 9 on the host) or CoreML (the macOS build).
 //
 // The pinned runtime build (LibVersion) is the one whose C API headers the
@@ -25,19 +27,19 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
-	"path/filepath"
 	"runtime"
 	"sync"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/langai/internal/fetch"
 )
 
 // DefaultModel is the logical identity of the model New runs unless
 // Config.Model selects another: the vision tower of google/siglip2-base-patch16-224,
 // a 768-dimensional image encoder trained with a text tower, so its vectors
-// can later be matched by text too. It is the string to cache alongside
-// vectors; the ONNX file behind it is in models.go.
+// can later be matched by text too. It is the name the identity to store next
+// to vectors starts with (see Embedder.Model); the ONNX file behind it is in
+// models.go.
 const DefaultModel = "google/siglip2-base-patch16-224"
 
 // Provider selects what runs the model.
@@ -121,54 +123,35 @@ const (
 )
 
 // defaultBatchSize is how many images one model run takes when
-// Config.BatchSize is not set.
+// Runtime.BatchSize is not set.
 const defaultBatchSize = 8
 
-// Config selects the model, where models and libraries live, and how the
-// model runs.
+// Config selects a pinned model by name and the runtime that runs it: what
+// New takes. Open takes a ModelSpec and the Runtime instead.
 type Config struct {
+	// Runtime is the ONNX Runtime library and how the model runs.
+	Runtime
 	// ModelsDir is the directory the ONNX model is downloaded to and loaded
 	// from. Defaults to "models". Pre-seed it for offline installs.
 	ModelsDir string
-	// Model selects one of the pinned models by name (see Spec); "" means
-	// DefaultModel.
+	// Model selects one of the pinned models by name (see Models and
+	// LookupSpec); "" means DefaultModel.
 	Model string
-	// LibDir holds the ONNX Runtime shared library (libonnxruntime.so.<version>
-	// and, for CUDA, the provider libraries next to it). Required.
-	LibDir string
-	// ManagedLibDir marks LibDir as owned by this package: when the library
-	// is missing, or was installed for another Provider, the pinned build is
-	// downloaded into it. An operator-supplied LibDir (false) is never
-	// written to, only checked.
-	ManagedLibDir bool
-	// Provider is what runs the model; "" means ProviderCPU.
-	Provider Provider
-	// DeviceID is the GPU the CUDA provider uses; 0 is the first.
-	DeviceID int
-	// Threads is the thread count for one model run (ONNX Runtime's
-	// intra-op threads); <= 0 picks a default of at most four.
-	Threads int
-	// BatchSize is how many images go through the model in one run; <= 0
-	// means 8. Larger batches help a GPU; on a CPU they mostly cost memory.
-	BatchSize int
-	// Logger receives this package's progress at Info (each first-use
-	// download before it starts, the installed library and the downloaded
-	// model, the runtime load); nil discards it. ONNX Runtime's own
-	// warnings go to stderr.
-	Logger *slog.Logger
 }
 
 // ModelSpec describes one ONNX vision model: where its file is (or comes
 // from), which tensors to feed and read, and how a picture is prepared for
-// it, which must match what the model was trained with. Spec returns the
-// pinned ones New selects from.
+// it, which must match what the model was trained with. LookupSpec returns
+// the pinned ones New selects from.
 type ModelSpec struct {
-	// Name is the logical identity cached alongside vectors.
+	// Name names the model. It is the first part of the identity to store
+	// next to vectors, which Embedder.Model completes.
 	Name string
 	// File is the ONNX path. When it is missing and URL is set, it is
 	// downloaded there first.
 	File string
-	// URL is where File is downloaded from when absent. SHA256 is required
+	// URL is where File is downloaded from when it is absent or, with a Size
+	// set, not that long (a truncated file). SHA256 is required
 	// with it, and Size, when non-zero, is checked too: Open never downloads
 	// unverified bytes.
 	URL    string
@@ -263,15 +246,63 @@ func (spec ModelSpec) normalized() (ModelSpec, error) {
 }
 
 // Runtime is what Open needs besides the model: the runtime library and how
-// to run the model. The fields mirror Config's.
+// to run the model. The library loads once per process, so every Embedder
+// opened in it shares it.
 type Runtime struct {
-	LibDir        string
+	// LibDir holds the ONNX Runtime shared library (libonnxruntime.so.<version>
+	// and, for CUDA, the provider libraries next to it). Required.
+	LibDir string
+	// ManagedLibDir marks LibDir as owned by this package: when the library
+	// is missing, or was installed for another Provider, the pinned build is
+	// downloaded into it. Give it a directory of its own: only a missing or
+	// empty one, or one an earlier install left its record in, is ever filled
+	// or replaced, and anything else is an error rather than a deletion. A
+	// LibDir that is a symbolic link is filled where it points, and stays a
+	// link. Installs are serialized by a lock file next to it ("<LibDir>.lock"),
+	// between goroutines and processes, and the library a process has loaded
+	// is never replaced under it: CUDA after CPU in the same process is an
+	// error (CPU after CUDA runs on the CUDA build). An operator-supplied
+	// LibDir (false) is never written to, only checked.
 	ManagedLibDir bool
-	Provider      Provider
-	DeviceID      int
-	Threads       int
-	BatchSize     int
-	Logger        *slog.Logger
+	// Provider is what runs the model; "" means ProviderCPU. Any other
+	// value than the Provider constants is an error.
+	Provider Provider
+	// DeviceID is the GPU the CUDA provider uses; 0 is the first. Negative
+	// is an error.
+	DeviceID int
+	// Threads is the thread count for one model run (ONNX Runtime's
+	// intra-op threads); 0 picks a default of at most four. Negative is an
+	// error.
+	Threads int
+	// BatchSize is how many images go through the model in one run; 0
+	// means 8. Larger batches help a GPU; on a CPU they mostly cost memory.
+	// Negative is an error.
+	BatchSize int
+	// Logger receives this package's progress at Info (each first-use
+	// download before it starts, the installed library and the downloaded
+	// model, the runtime load); nil discards it. ONNX Runtime's own
+	// warnings go to stderr.
+	Logger *slog.Logger
+}
+
+// validate reports a Runtime Open cannot run with, before anything is
+// downloaded or loaded.
+func (rt Runtime) validate() error {
+	if rt.LibDir == "" {
+		return errors.New("onnx: Runtime.LibDir is required")
+	}
+	if _, err := rt.Provider.normalized(); err != nil {
+		return fmt.Errorf("onnx: %w", err)
+	}
+	switch {
+	case rt.Threads < 0:
+		return fmt.Errorf("onnx: Runtime.Threads %d is negative: use 0 for the default", rt.Threads)
+	case rt.BatchSize < 0:
+		return fmt.Errorf("onnx: Runtime.BatchSize %d is negative: use 0 for the default", rt.BatchSize)
+	case rt.DeviceID < 0:
+		return fmt.Errorf("onnx: Runtime.DeviceID %d is negative", rt.DeviceID)
+	}
+	return nil
 }
 
 // logComponent tags this package's log lines the way the other providers
@@ -284,34 +315,34 @@ func defaultThreads() int {
 	return min(4, runtime.NumCPU())
 }
 
-// DefaultSpec is Spec(DefaultModel, modelsDir): the pinned SigLIP 2 vision
+// DefaultSpec is LookupSpec(DefaultModel, modelsDir): the pinned SigLIP 2 vision
 // tower inside modelsDir ("" means "models"), 224 pixels squashed, mean and
 // std 0.5, 768 dimensions.
 func DefaultSpec(modelsDir string) ModelSpec {
-	spec, _ := Spec(DefaultModel, modelsDir) // DefaultModel is always pinned
+	spec, _ := LookupSpec(DefaultModel, modelsDir) // DefaultModel is always pinned
 	return spec
 }
 
 // New prepares the runtime and the model cfg.Model selects (downloading
 // whatever is missing, see fetch.go), loads them, and runs the model once to
 // check its output. ctx bounds the downloads only; the returned Embedder
-// outlives it. It is Open with Spec(cfg.Model, cfg.ModelsDir).
+// outlives it. It is Open with LookupSpec(cfg.Model, cfg.ModelsDir) and
+// cfg.Runtime.
 func New(ctx context.Context, cfg Config) (*Embedder, error) {
-	spec, err := Spec(cfg.Model, cfg.ModelsDir)
+	spec, err := LookupSpec(cfg.Model, cfg.ModelsDir)
 	if err != nil {
 		return nil, err
 	}
-	return Open(ctx, spec, Runtime{
-		LibDir: cfg.LibDir, ManagedLibDir: cfg.ManagedLibDir, Provider: cfg.Provider, DeviceID: cfg.DeviceID,
-		Threads: cfg.Threads, BatchSize: cfg.BatchSize, Logger: cfg.Logger,
-	})
+	return Open(ctx, spec, cfg.Runtime)
 }
 
 // Open prepares the runtime and the model described by spec (downloading
 // whatever is missing, see fetch.go), loads them with the spec's tensor
 // names and picture preparation, and runs the model once to check that its
-// vectors have the expected size. ctx bounds the downloads only; the
-// returned Embedder outlives it and is released with Close.
+// vectors have the expected size. ctx bounds the downloads only, and gets a
+// deadline of 30 minutes when it has none of its own; the returned Embedder
+// outlives it and is released with Close. A download that was cut short is
+// picked up where it stopped by the next Open.
 func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	logger := rt.Logger
 	if logger == nil {
@@ -321,36 +352,46 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	if err != nil {
 		return nil, err
 	}
-	provider, err := rt.Provider.normalized()
-	if err != nil {
-		return nil, fmt.Errorf("onnx: %w", err)
-	}
-	if rt.LibDir == "" {
-		return nil, errors.New("onnx: LibDir is required")
-	}
-	libDir, err := filepath.Abs(rt.LibDir)
-	if err != nil {
+	if err := rt.validate(); err != nil {
 		return nil, err
 	}
-	if rt.Threads <= 0 {
+	provider, _ := rt.Provider.normalized() // validate checked it
+	// the real directory: a LibDir that is a link is installed where it
+	// points, and is the same directory as its target named directly
+	libDir, err := fetch.ResolveDir(rt.LibDir)
+	if err != nil {
+		return nil, fmt.Errorf("onnx: Runtime.LibDir: %w", err)
+	}
+	if rt.Threads == 0 {
 		rt.Threads = defaultThreads()
 	}
-	if rt.BatchSize <= 0 {
+	if rt.BatchSize == 0 {
 		rt.BatchSize = defaultBatchSize
 	}
-	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	ctx, cancel := downloadContext(ctx)
 	defer cancel()
-	if err := ensureLibs(ctx, libDir, rt.ManagedLibDir, variantFor(provider), logger); err != nil {
+	if from := libs.loadedDir(); rt.ManagedLibDir && from != "" && from != libDir {
+		// before anything is installed into a directory that cannot be loaded
+		return nil, fmt.Errorf("onnx: onnxruntime is already loaded from %s; cannot load %s in the same process", from, libDir)
+	}
+	// Install and load are one step under the directory's lock (see
+	// ensureLibs): nothing replaces the library between the check and the
+	// load, and a loaded library is never replaced.
+	var libPath string
+	err = ensureLibs(ctx, libsWant{
+		plat: platform(), dir: libDir, managed: rt.ManagedLibDir, variant: variantFor(provider),
+		loadedDir: libs.loadedDir,
+		use: func() (err error) {
+			if libPath, err = libraryPath(libDir); err != nil {
+				return err
+			}
+			return libs.load(api, libPath, logger)
+		},
+	}, logger)
+	if err != nil {
 		return nil, err
 	}
 	if err := ensureModelFile(ctx, spec, logger); err != nil {
-		return nil, err
-	}
-	libPath, err := libraryPath(libDir)
-	if err != nil {
-		return nil, err
-	}
-	if err := libs.load(api, libPath, logger); err != nil {
 		return nil, err
 	}
 	sess, dims, err := api.open(spec.File, sessionOptions{
@@ -381,10 +422,42 @@ type Embedder struct {
 	batch   int
 	pooling Pooling
 	pre     preprocessor
+	model   string // the identity of its vectors, see Model
 }
 
 // verify the interface is actually satisfied
 var _ langai.ImageEmbedder = (*Embedder)(nil)
+
+// preparation numbers the way this package turns a picture into the model's
+// input, beyond what a ModelSpec says. It is part of Model, and is raised
+// whenever the same picture and spec would give other pixels:
+//
+//	1: transparent pixels scaled as premultiplied colour, which made them black
+//	2: transparency composed on white (imageutil.ScaleOnWhite)
+const preparation = 2
+
+// ModelID is the identity of the vectors an Embedder opened with spec
+// produces, the string its Model returns, computed without loading
+// anything: what to hand NewLazyImageEmbedder, or a store, before the model
+// loads. See Embedder.Model for its form; the spec's defaults are filled in
+// first, so a spec that leaves them out and one that spells them have one
+// identity. Model calls it too, so the two cannot drift.
+func (spec ModelSpec) ModelID() string {
+	if n, err := spec.normalized(); err == nil {
+		spec = n
+	} // else Open refuses the spec, so the identity is never compared
+	return modelID(spec)
+}
+
+// modelID builds the identity Model documents from a normalized spec.
+func modelID(spec ModelSpec) string {
+	triple := func(v [3]float32) string {
+		return fmt.Sprintf("%g,%g,%g", v[0], v[1], v[2])
+	}
+	return fmt.Sprintf("%s;output=%s;pooling=%s;side=%d;resize=%s;edge=%d;filter=%s;mean=%s;std=%s;prep=%d",
+		spec.Name, spec.Output, spec.Pooling, spec.Side, spec.Resize, spec.ShortestEdge, spec.Interpolation,
+		triple(spec.Mean), triple(spec.Std), preparation)
+}
 
 // newEmbedder wraps a session and runs it once on a blank picture, which
 // catches a provider that was accepted but cannot run, and settles the
@@ -398,7 +471,7 @@ func newEmbedder(s session, spec ModelSpec, dims, batch int) (*Embedder, error) 
 	if dims == 0 {
 		dims = spec.Dims
 	}
-	e := &Embedder{s: s, dims: dims, batch: batch, pooling: spec.Pooling, pre: preprocessor{
+	e := &Embedder{s: s, dims: dims, batch: batch, pooling: spec.Pooling, model: spec.ModelID(), pre: preprocessor{
 		side: spec.Side, shortestEdge: spec.ShortestEdge, resize: spec.Resize, interpolation: spec.Interpolation,
 		mean: spec.Mean, std: spec.Std,
 	}}
@@ -418,6 +491,22 @@ func newEmbedder(s session, spec ModelSpec, dims, batch int) (*Embedder, error) 
 
 // Dimensions implements langai.ImageEmbedder.
 func (e *Embedder) Dimensions() int { return e.dims }
+
+// Model identifies the vectors this Embedder produces: the string to store
+// next to them, the same on every run and different whenever the vector of
+// a picture would be. It is the spec's name followed by what else decides
+// a vector, the tensor that is read and how a picture is prepared:
+//
+//	<ModelSpec.Name>;output=<tensor>;pooling=<none|cls|mean>;side=<n>;resize=<squash|crop>;edge=<n>;filter=<bilinear|bicubic>;mean=<r>,<g>,<b>;std=<r>,<g>,<b>;prep=<n>
+//
+// with the spec's defaults filled in (edge is ShortestEdge) and prep the
+// number of this package's own picture preparation, which goes up when a
+// release changes the pixels a picture becomes. The default model is
+// "google/siglip2-base-patch16-224;output=pooler_output;pooling=none;side=224;resize=squash;edge=224;filter=bilinear;mean=0.5,0.5,0.5;std=0.5,0.5,0.5;prep=2".
+// The provider, threads and batch size are not part of it, and neither is
+// the ONNX file, so two exports of one model need two names.
+// ModelSpec.ModelID gives the same string before the model loads.
+func (e *Embedder) Model() string { return e.model }
 
 // EmbedImages implements langai.ImageEmbedder: the pictures go through the
 // model BatchSize at a time, and each comes back as a unit-length vector.
@@ -461,7 +550,7 @@ func (e *Embedder) encode(images []image.Image) ([][]float32, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
-		return nil, errors.New("embedder is closed")
+		return nil, fmt.Errorf("onnx: embedder: %w", langai.ErrClosed)
 	}
 	values, shape, err := e.s.run(pixels, len(images), e.pre.side)
 	if err != nil {
@@ -475,7 +564,7 @@ func (e *Embedder) encode(images []image.Image) ([][]float32, error) {
 		return nil, fmt.Errorf("model returned %d-dimensional vectors, expected %d", len(out[0]), e.dims)
 	}
 	for _, vec := range out {
-		vector.Normalize(vec)
+		langai.Normalize(vec)
 	}
 	return out, nil
 }

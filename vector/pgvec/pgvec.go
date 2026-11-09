@@ -1,6 +1,13 @@
 // Package pgvec is a vector.Store backed by Postgres with the pgvector
 // extension. The database user must be able to run CREATE EXTENSION vector,
 // or the extension must already be installed.
+//
+// Each index has a table set of its own, created by the first write; a role
+// that only reads can search an index another role created. A search ranks
+// the chunks of its scope exactly: an approximate (HNSW) index would filter
+// the scope only after collecting its nearest rows of the whole table, so a
+// scope without rows among those would come back short. Text columns sort
+// by byte (COLLATE "C"), the order the other stores use.
 package pgvec
 
 import (
@@ -8,258 +15,159 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/pgvector/pgvector-go"
 
-	"github.com/go-bumbu/langai/internal/tablename"
 	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/langai/vector/internal/sqlstore"
 )
 
 // Store implements vector.Store on Postgres + pgvector, with one physical
-// table set per index (e.g. a tenant) and generation, created lazily. partition
-// and collection are ordinary indexed TEXT columns, and searches rank the
-// rows of their scope exactly (see ensure).
+// table set per index (e.g. a tenant) and generation. It is safe for
+// concurrent use.
 type Store struct {
-	db         *sql.DB
-	dims       int
-	generation string
-	mu         sync.Mutex
-	created    map[string]bool
+	*sqlstore.Store
 }
 
+var _ vector.Store = (*Store)(nil)
+
 // Option customizes a Store.
-type Option func(*Store)
+type Option func(*options)
+
+type options struct{ generation string }
 
 // WithGeneration keeps the store's tables apart from those of every other
-// generation in the same database (see tablename.For), so the vectors of a
-// different embedding model can be built next to the current ones before an
-// application switches over. generation is "" (the default, the tables that
-// existed before generations) or 1-12 lowercase letters and digits.
+// generation in the same database, so the vectors of a different embedding
+// model can be built next to the current ones before an application switches
+// over; DropGeneration retires the old ones afterwards. generation is "" (the
+// default) or 1-12 lowercase letters and digits. An index's tables are named
+// ss_<generation>_<hash>_<suffix>, where <hash> is the first 16 hex digits of
+// the SHA-256 of the index, so any index string makes a safe identifier and
+// two indexes never share tables; the default generation's are
+// ss_<hash>_<suffix>, the names the stores used before generations existed.
 func WithGeneration(generation string) Option {
-	return func(s *Store) { s.generation = generation }
+	return func(o *options) { o.generation = generation }
+}
+
+// dialect is Postgres's: vectors as pgvector's vector type, id lists read
+// with json_array_elements_text, and the schema created in one transaction
+// under an advisory lock, so two processes creating an index's tables at once
+// wait for each other. The schema before this one had no meta table.
+var dialect = sqlstore.Dialect{
+	Name:     "postgres",
+	Numbered: true,
+	Schema: func(docs, chunks, meta string, dims int) []string {
+		return []string{
+			`CREATE TABLE IF NOT EXISTS ` + docs + ` (
+				partition TEXT COLLATE "C" NOT NULL, collection TEXT COLLATE "C" NOT NULL,
+				doc_id TEXT COLLATE "C" NOT NULL, content_hash TEXT NOT NULL,
+				PRIMARY KEY (partition, collection, doc_id))`,
+			fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+				id BIGSERIAL PRIMARY KEY,
+				partition TEXT COLLATE "C" NOT NULL, collection TEXT COLLATE "C" NOT NULL,
+				doc_id TEXT COLLATE "C" NOT NULL, seq INT NOT NULL, text TEXT NOT NULL,
+				embedding vector(%d) NOT NULL)`, chunks, dims),
+			`CREATE INDEX IF NOT EXISTS ` + chunks + `_doc ON ` + chunks + ` (partition, collection, doc_id, seq)`,
+			`CREATE TABLE IF NOT EXISTS ` + meta + ` (name TEXT COLLATE "C" PRIMARY KEY, value TEXT NOT NULL)`,
+		}
+	},
+	LockDDL:     `SELECT pg_advisory_xact_lock(hashtext(?))`,
+	Legacy:      "docs",
+	TableExists: `SELECT to_regclass(?) IS NOT NULL`,
+	ListTables:  `SELECT tablename FROM pg_tables WHERE schemaname = current_schema() AND tablename LIKE 'ss\_%' ESCAPE '\'`,
+	Distance: func(embedding, query string) string {
+		return `(` + embedding + ` <=> ` + query + `)::float8`
+	},
+	// the query vectors come as one vector[] literal, unnested into one row
+	// per vector, MATERIALIZED so that it is parsed once and not once per
+	// chunk the subquery scores
+	Queries: func(int) string {
+		return `WITH q(i, v) AS MATERIALIZED (
+			SELECT (u.ord - 1)::int, u.v FROM unnest(CAST(CAST(? AS text) AS vector[])) WITH ORDINALITY AS u(v, ord))`
+	},
+	EncodeQueries: func(vs [][]float32) any { return vectorArray(vs) },
+	IDs:           `SELECT json_array_elements_text(CAST(? AS json))`,
+	Encode:        func(v []float32) any { return pgvector.NewVector(v) },
+	Decode: func(src any) ([]float32, error) {
+		var v pgvector.Vector
+		if err := v.Scan(src); err != nil {
+			return nil, err
+		}
+		return v.Slice(), nil
+	},
+	MissingTable: func(err error) bool { return sqlState(err) == undefinedTable },
+	LockRows:     `FOR UPDATE`,
+	ShareRows:    `FOR SHARE`,
+	Retryable: func(err error) bool {
+		code := sqlState(err)
+		return code == deadlockDetected || code == serializationFailure
+	},
+}
+
+// The SQLSTATEs the store tells apart: a statement naming a table that does
+// not exist, and the transient failures a write transaction is run again
+// for.
+const (
+	undefinedTable       = "42P01"
+	deadlockDetected     = "40P01"
+	serializationFailure = "40001"
+)
+
+// vectorArray is the text of a vector[] holding vs: {"[1,0.5]","[0,1]"},
+// each element in pgvector's own text form, whose floats parse back to the
+// same float32s.
+func vectorArray(vs [][]float32) string {
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, v := range vs {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`"[`)
+		for j, f := range v {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(strconv.FormatFloat(float64(f), 'g', -1, 32))
+		}
+		b.WriteString(`]"`)
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
+// sqlState returns the SQLSTATE code of a Postgres error, "" for any other.
+// Both pgx (pgconn.PgError) and lib/pq (pq.Error) report it through a
+// SQLState method, so no driver is imported.
+func sqlState(err error) string {
+	var e interface{ SQLState() string }
+	if errors.As(err, &e) {
+		return e.SQLState()
+	}
+	return ""
 }
 
 // New returns a Store using db and ensures the pgvector extension exists.
-// dims must match the embedder's Dimensions(); vectors of another model,
-// whatever their size, belong in another generation (WithGeneration) rather
-// than in this one's tables.
+// dims must match the embedder's Dimensions(); an index whose tables hold
+// vectors of other dimensions fails with vector.ErrDimensions, and the
+// vectors of another model, whatever their size, belong in another
+// generation (WithGeneration).
 func New(ctx context.Context, db *sql.DB, dims int, opts ...Option) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("nil database handle")
 	}
-	if dims <= 0 {
-		return nil, fmt.Errorf("invalid vector dimensions %d", dims)
-	}
-	s := &Store{db: db, dims: dims, created: map[string]bool{}}
+	var o options
 	for _, opt := range opts {
-		opt(s)
+		opt(&o)
 	}
-	if err := tablename.CheckGeneration(s.generation); err != nil {
+	s, err := sqlstore.New(db, dialect, dims, o.generation)
+	if err != nil {
 		return nil, err
 	}
 	if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
 		return nil, fmt.Errorf("pgvector extension not available (install it or grant CREATE EXTENSION): %w", err)
 	}
-	return s, nil
-}
-
-func (s *Store) ensure(ctx context.Context, index string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.created[index] {
-		return nil
-	}
-	docs, err := tablename.For(s.generation, index, "docs")
-	if err != nil {
-		return err
-	}
-	chunks, _ := tablename.For(s.generation, index, "chunks")
-	stmts := []string{
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-			partition TEXT NOT NULL, collection TEXT NOT NULL,
-			doc_id TEXT NOT NULL, content_hash TEXT NOT NULL,
-			PRIMARY KEY (partition, collection, doc_id))`, docs),
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-			id BIGSERIAL PRIMARY KEY,
-			partition TEXT NOT NULL, collection TEXT NOT NULL,
-			doc_id TEXT NOT NULL, seq INT NOT NULL, text TEXT NOT NULL,
-			embedding vector(%d) NOT NULL)`, chunks, s.dims),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_doc ON %s(partition, collection, doc_id)`, chunks, chunks),
-		// Searches are exact: the index above narrows them to their scope,
-		// whose rows are then ranked by distance. Earlier versions also built
-		// an HNSW index here, which filters only after collecting its
-		// ef_search nearest rows of the whole table, so a scope without rows
-		// among those came back short or empty. Drop it where it exists.
-		fmt.Sprintf(`DROP INDEX IF EXISTS %s_embedding_idx`, chunks),
-	}
-	for _, st := range stmts {
-		if _, err := s.db.ExecContext(ctx, st); err != nil {
-			return fmt.Errorf("create %s schema: %w", index, err)
-		}
-	}
-	s.created[index] = true
-	return nil
-}
-
-func (s *Store) Upsert(ctx context.Context, index, partition, collection, docID, contentHash string, chunks []vector.Chunk) error {
-	for _, c := range chunks {
-		if len(c.Vector) != s.dims {
-			return fmt.Errorf("chunk %d has %d dimensions, store expects %d", c.Seq, len(c.Vector), s.dims)
-		}
-	}
-	if err := s.ensure(ctx, index); err != nil {
-		return err
-	}
-	docs, _ := tablename.For(s.generation, index, "docs")
-	chunksT, _ := tablename.For(s.generation, index, "chunks")
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`DELETE FROM %s WHERE partition = $1 AND collection = $2 AND doc_id = $3`, chunksT),
-		partition, collection, docID); err != nil {
-		return err
-	}
-	for _, c := range chunks {
-		if _, err := tx.ExecContext(ctx,
-			fmt.Sprintf(`INSERT INTO %s (partition, collection, doc_id, seq, text, embedding) VALUES ($1, $2, $3, $4, $5, $6)`, chunksT),
-			partition, collection, docID, c.Seq, c.Text, pgvector.NewVector(c.Vector)); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`INSERT INTO %s (partition, collection, doc_id, content_hash) VALUES ($1, $2, $3, $4)
-			ON CONFLICT (partition, collection, doc_id) DO UPDATE SET content_hash = excluded.content_hash`, docs),
-		partition, collection, docID, contentHash); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (s *Store) Delete(ctx context.Context, index, partition, collection, docID string) error {
-	if err := s.ensure(ctx, index); err != nil {
-		return err
-	}
-	docs, _ := tablename.For(s.generation, index, "docs")
-	chunksT, _ := tablename.For(s.generation, index, "chunks")
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`DELETE FROM %s WHERE partition = $1 AND collection = $2 AND doc_id = $3`, chunksT),
-		partition, collection, docID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`DELETE FROM %s WHERE partition = $1 AND collection = $2 AND doc_id = $3`, docs),
-		partition, collection, docID); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (s *Store) ContentHash(ctx context.Context, index, partition, collection, docID string) (string, error) {
-	if err := s.ensure(ctx, index); err != nil {
-		return "", err
-	}
-	docs, _ := tablename.For(s.generation, index, "docs")
-	var h string
-	err := s.db.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT content_hash FROM %s WHERE partition = $1 AND collection = $2 AND doc_id = $3`, docs),
-		partition, collection, docID).Scan(&h)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return h, err
-}
-
-// Chunks implements vector.Store.
-func (s *Store) Chunks(ctx context.Context, index, partition, collection, docID string) ([]vector.Chunk, error) {
-	if err := s.ensure(ctx, index); err != nil {
-		return nil, err
-	}
-	chunksT, _ := tablename.For(s.generation, index, "chunks")
-	//nolint:gosec // table name is a hex sha256 of the index (injection-safe); all values are bound $n parameters
-	q := fmt.Sprintf(`SELECT seq, text, embedding FROM %s
-		WHERE partition = $1 AND collection = $2 AND doc_id = $3 ORDER BY seq, id`, chunksT)
-	rows, err := s.db.QueryContext(ctx, q, partition, collection, docID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []vector.Chunk
-	for rows.Next() {
-		var c vector.Chunk
-		var v pgvector.Vector
-		if err := rows.Scan(&c.Seq, &c.Text, &v); err != nil {
-			return nil, err
-		}
-		c.Vector = v.Slice()
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
-// Search implements vector.Store.
-func (s *Store) Search(ctx context.Context, index, partition, collection string, query []float32, limit int) ([]vector.Match, error) {
-	return s.SearchScope(ctx, index, vector.ScopeFilter{Partition: partition, Collection: collection}, query, limit)
-}
-
-// SearchScope implements vector.Store. The <=> operator is pgvector's
-// cosine distance (0 = identical, 2 = opposite); scores are reported as
-// 1-distance so that higher is better, matching the vector.Store contract.
-func (s *Store) SearchScope(ctx context.Context, index string, f vector.ScopeFilter, query []float32, limit int) ([]vector.Match, error) {
-	if limit <= 0 {
-		return nil, nil
-	}
-	if len(query) != s.dims {
-		return nil, fmt.Errorf("query vector has %d dimensions, store expects %d", len(query), s.dims)
-	}
-	if err := s.ensure(ctx, index); err != nil {
-		return nil, err
-	}
-	chunksT, _ := tablename.For(s.generation, index, "chunks")
-	where := []string{}
-	args := []any{pgvector.NewVector(query)} // $1
-	n := 2
-	if f.Partition != "" {
-		where = append(where, fmt.Sprintf("partition = $%d", n))
-		args = append(args, f.Partition)
-		n++
-	}
-	if f.Collection != "" {
-		where = append(where, fmt.Sprintf("collection = $%d", n))
-		args = append(args, f.Collection)
-		n++
-	}
-	clause := ""
-	if len(where) > 0 {
-		clause = "WHERE " + strings.Join(where, " AND ")
-	}
-	args = append(args, limit) // $n
-	//nolint:gosec // table name is a hex sha256 of the index (injection-safe); all values are bound $n parameters
-	q := fmt.Sprintf(`SELECT doc_id, partition, collection, seq, text, (embedding <=> $1)::float8
-		FROM %s %s ORDER BY embedding <=> $1 LIMIT $%d`, chunksT, clause, n)
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []vector.Match
-	for rows.Next() {
-		var m vector.Match
-		var dist float64
-		if err := rows.Scan(&m.DocID, &m.Partition, &m.Collection, &m.Seq, &m.Text, &dist); err != nil {
-			return nil, err
-		}
-		m.Score = 1 - dist
-		out = append(out, m)
-	}
-	return out, rows.Err()
+	return &Store{s}, nil
 }

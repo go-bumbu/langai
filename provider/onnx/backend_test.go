@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"log/slog"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-bumbu/langai"
 )
 
 // fakeAPI is a sessionAPI without native code. It records every call and
@@ -116,12 +120,23 @@ func (s *fakeSession) run(pixels []float32, n, side int) ([]float32, []int64, er
 func (s *fakeSession) close() { s.closed++ }
 
 // useFake swaps the package's runtime surface and loader for the fake for
-// the duration of the test.
+// the duration of the test, and keeps the test from downloading a real
+// model or runtime: requests to anything but the loopback test servers fail.
 func useFake(t *testing.T, f *fakeAPI) {
 	t.Helper()
-	origAPI, origLibs := api, libs
-	api, libs = f, &runtimeLoader{}
-	t.Cleanup(func() { api, libs = origAPI, origLibs })
+	origAPI, origLibs, origClient := api, libs, httpClient
+	api, libs, httpClient = f, &runtimeLoader{}, &http.Client{Transport: loopbackOnly{}}
+	t.Cleanup(func() { api, libs, httpClient = origAPI, origLibs, origClient })
+}
+
+// loopbackOnly is a RoundTripper that only reaches httptest servers.
+type loopbackOnly struct{}
+
+func (loopbackOnly) RoundTrip(r *http.Request) (*http.Response, error) {
+	if h := r.URL.Hostname(); h != "127.0.0.1" && h != "::1" && h != "localhost" {
+		return nil, fmt.Errorf("test is offline, refusing %s", r.URL)
+	}
+	return http.DefaultTransport.RoundTrip(r)
 }
 
 // fakeInstall lays out an operator library directory with an empty library
@@ -129,7 +144,13 @@ func useFake(t *testing.T, f *fakeAPI) {
 // downloading.
 func fakeInstall(t *testing.T) (libDir, modelFile string) {
 	t.Helper()
-	libDir = filepath.Join(t.TempDir(), "onnxruntime")
+	// under its real path, which is how Open knows a library directory (a
+	// temp directory is behind a link on some systems)
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	libDir = filepath.Join(tmp, "onnxruntime")
 	if err := os.MkdirAll(libDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +219,34 @@ func TestRuntimeLoader_LoadsOnceAndLocksVersionAndPath(t *testing.T) {
 	}
 }
 
+// TestOpen_ALinkedLibDirIsItsTarget: a LibDir that is a symbolic link and
+// the directory it points at are one library directory: the runtime is
+// loaded from the real path, and an Open that names it the other way shares
+// the load instead of being refused as another directory.
+func TestOpen_ALinkedLibDirIsItsTarget(t *testing.T) {
+	f := &fakeAPI{dims: 4}
+	useFake(t, f)
+	libDir, modelFile := fakeInstall(t)
+	real, err := filepath.EvalSymlinks(libDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "ort")
+	if err := os.Symlink(libDir, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{link, libDir, link} {
+		emb, err := Open(context.Background(), testSpec(modelFile), Runtime{LibDir: dir})
+		if err != nil {
+			t.Fatalf("Open with LibDir %s: %v", dir, err)
+		}
+		_ = emb.Close()
+	}
+	if len(f.loads) != 1 || f.loads[0] != filepath.Join(real, libFile()) {
+		t.Errorf("loads = %v, want one, from %s", f.loads, real)
+	}
+}
+
 func TestOpen_LoadsOpensProbesAndLogs(t *testing.T) {
 	f := &fakeAPI{dims: 4}
 	useFake(t, f)
@@ -253,13 +302,16 @@ func TestOpen_Errors(t *testing.T) {
 		rt   Runtime
 		want string
 	}{
-		"bad spec":        {ModelSpec{File: modelFile, Side: 8}, Runtime{LibDir: libDir}, "Name"},
-		"bad provider":    {testSpec(modelFile), Runtime{LibDir: libDir, Provider: "tpu"}, "provider"},
-		"no lib dir":      {testSpec(modelFile), Runtime{}, "LibDir"},
-		"empty lib dir":   {testSpec(modelFile), Runtime{LibDir: t.TempDir()}, libFile()},
-		"no model":        {testSpec(filepath.Join(t.TempDir(), "gone.onnx")), Runtime{LibDir: libDir}, "no URL"},
-		"dims mismatch":   {ModelSpec{Name: "m", File: modelFile, Side: 8, Dims: 5}, Runtime{LibDir: libDir}, "declares 4"},
-		"another lib dir": {testSpec(modelFile), Runtime{LibDir: t.TempDir()}, "already loaded"},
+		"bad spec":         {ModelSpec{File: modelFile, Side: 8}, Runtime{LibDir: libDir}, "Name"},
+		"bad provider":     {testSpec(modelFile), Runtime{LibDir: libDir, Provider: "tpu"}, "provider"},
+		"no lib dir":       {testSpec(modelFile), Runtime{}, "LibDir"},
+		"negative threads": {testSpec(modelFile), Runtime{LibDir: libDir, Threads: -1}, "Threads -1 is negative"},
+		"negative batch":   {testSpec(modelFile), Runtime{LibDir: libDir, BatchSize: -8}, "BatchSize -8 is negative"},
+		"negative device":  {testSpec(modelFile), Runtime{LibDir: libDir, DeviceID: -1}, "DeviceID -1 is negative"},
+		"empty lib dir":    {testSpec(modelFile), Runtime{LibDir: t.TempDir()}, libFile()},
+		"no model":         {testSpec(filepath.Join(t.TempDir(), "gone.onnx")), Runtime{LibDir: libDir}, "no URL"},
+		"dims mismatch":    {ModelSpec{Name: "m", File: modelFile, Side: 8, Dims: 5}, Runtime{LibDir: libDir}, "declares 4"},
+		"another lib dir":  {testSpec(modelFile), Runtime{LibDir: t.TempDir()}, "already loaded"},
 	}
 	// "another lib dir" needs a loaded runtime first, and a library file
 	another := cases["another lib dir"]
@@ -402,8 +454,8 @@ func TestEmbedder_ClosedCancelledAndBadInput(t *testing.T) {
 	if f.sessions[0].closed != 1 {
 		t.Errorf("closed %d times", f.sessions[0].closed)
 	}
-	if _, err := emb.EmbedImages(context.Background(), []image.Image{img}); err == nil || !strings.Contains(err.Error(), "closed") {
-		t.Errorf("after Close: err = %v", err)
+	if _, err := emb.EmbedImages(context.Background(), []image.Image{img}); !errors.Is(err, langai.ErrClosed) {
+		t.Errorf("after Close: err = %v, want langai.ErrClosed", err)
 	}
 }
 
@@ -487,14 +539,24 @@ func TestNew_SelectsAPinnedModel(t *testing.T) {
 	useFake(t, f)
 	libDir, _ := fakeInstall(t)
 	modelsDir := t.TempDir()
-	if _, err := New(context.Background(), Config{Model: "nobody/nothing", LibDir: libDir, ModelsDir: modelsDir}); err == nil {
+	if _, err := New(context.Background(), Config{Runtime: Runtime{LibDir: libDir}, Model: "nobody/nothing", ModelsDir: modelsDir}); err == nil {
 		t.Error("unknown model: want an error")
 	}
-	// the default model, pre-seeded so nothing is downloaded
-	if err := os.WriteFile(filepath.Join(modelsDir, defaultModelFile), []byte("x"), 0o600); err != nil {
+	// a pre-seeded file that is not the pinned size is what a crash left: it is
+	// fetched again (here: refused, the test is offline) rather than loaded
+	seeded := filepath.Join(modelsDir, defaultModelFile)
+	if err := os.WriteFile(seeded, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	emb, err := New(context.Background(), Config{LibDir: libDir, ModelsDir: modelsDir, Threads: 3, BatchSize: 16})
+	if _, err := New(context.Background(), Config{Runtime: Runtime{LibDir: libDir}, ModelsDir: modelsDir}); err == nil || !strings.Contains(err.Error(), "offline") {
+		t.Errorf("truncated model: err = %v, want a download attempt", err)
+	}
+	// the default model, pre-seeded (a sparse file of the pinned size) so
+	// nothing is downloaded
+	if err := os.Truncate(seeded, pinned[DefaultModel].Size); err != nil {
+		t.Fatal(err)
+	}
+	emb, err := New(context.Background(), Config{Runtime: Runtime{LibDir: libDir, Threads: 3, BatchSize: 16}, ModelsDir: modelsDir})
 	if err != nil {
 		t.Fatal(err)
 	}

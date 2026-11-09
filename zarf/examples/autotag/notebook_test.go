@@ -14,19 +14,32 @@ import (
 	"github.com/go-bumbu/langai/tagging"
 )
 
-// cannedModel answers a prompt for flat tags with flat and one for tree tags
-// with tree, and keeps the last system prompt.
-type cannedModel struct {
-	flat, tree string
-	system     string
+// flatReply and treeReply are what the chat model of newNotebookModel
+// answers a prompt for flat tags and one for tree tags with.
+const (
+	flatReply = "bread\nbaking\ntravel\n"
+	treeReply = "cooking / baking / sourdough\ncooking / bread\ntravel / city guides\n"
+)
+
+// cannedReply answers a prompt for flat tags with flat and one for tree tags
+// with tree.
+func cannedReply(flat, tree string) func(system, user string) (string, error) {
+	return func(system, _ string) (string, error) {
+		if strings.Contains(system, `separated by " / "`) {
+			return tree, nil
+		}
+		return flat, nil
+	}
 }
 
-func (m *cannedModel) Complete(_ context.Context, system, _ string) (string, error) {
-	m.system = system
-	if strings.Contains(system, `separated by " / "`) {
-		return m.tree, nil
+// lastSystem is the system prompt of the last call model received.
+func lastSystem(t *testing.T, model *langaitest.FakeCompleter) string {
+	t.Helper()
+	calls := model.Calls()
+	if len(calls) == 0 {
+		t.Fatal("the chat model was never called")
 	}
-	return m.flat, nil
+	return calls[len(calls)-1].System
 }
 
 // newNotebook builds a notebook over a fresh MemCache. FakeEmbedder only
@@ -37,11 +50,11 @@ func newNotebook(t *testing.T, file string) *Notebook {
 	return nb
 }
 
-func newNotebookModel(t *testing.T, file string) (*Notebook, *cannedModel) {
+func newNotebookModel(t *testing.T, file string) (*Notebook, *langaitest.FakeCompleter) {
 	t.Helper()
 	ctx := context.Background()
 	emb := langaitest.FakeEmbedder{}
-	model := &cannedModel{flat: "bread\nbaking\ntravel\n", tree: "cooking / baking / sourdough\ncooking / bread\ntravel / city guides\n"}
+	model := &langaitest.FakeCompleter{Reply: cannedReply(flatReply, treeReply)}
 	nb, err := New(ctx, Config{
 		Cache:       tagging.NewMemCache(),
 		Tagging:     tagging.TaggerConfig{Model: "fake", NameMinScore: 0.2, MemberMinScore: 0.2},
@@ -216,8 +229,8 @@ func TestNotebook_RecommendOptionsReachTheModel(t *testing.T) {
 	if _, err := nb.Recommend(ctx, n.ID, RecommendOptions{Language: "es"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(model.system, "in Spanish (es)") || strings.Contains(model.system, " / ") {
-		t.Errorf("Spanish, flat:\n%s", model.system)
+	if system := lastSystem(t, model); !strings.Contains(system, "in Spanish (es)") || strings.Contains(system, " / ") {
+		t.Errorf("Spanish, flat:\n%s", system)
 	}
 
 	res, err := nb.Recommend(ctx, n.ID, RecommendOptions{Tree: true})
@@ -225,8 +238,8 @@ func TestNotebook_RecommendOptionsReachTheModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	// the notebook's tags, sorted, are the tree to extend
-	if !strings.Contains(model.system, "one per line:\ncooking\ncooking / bread\n") || !strings.Contains(model.system, "language of the text") {
-		t.Errorf("tree prompt:\n%s", model.system)
+	if system := lastSystem(t, model); !strings.Contains(system, "one per line:\ncooking\ncooking / bread\n") || !strings.Contains(system, "language of the text") {
+		t.Errorf("tree prompt:\n%s", system)
 	}
 	known := map[string]int{}
 	ids := map[string]string{}
@@ -283,7 +296,7 @@ func TestNotebook_AddTagWithParentsMakesTheBranch(t *testing.T) {
 func TestNotebook_RecommendKnowsTheDeepestExistingLevel(t *testing.T) {
 	ctx := context.Background()
 	nb, model := newNotebookModel(t, "")
-	model.tree = "events / hackathons / basel\nweb / agentic\n"
+	model.Reply = cannedReply(flatReply, "events / hackathons / basel\nweb / agentic\n")
 	_, _ = nb.AddTag(ctx, "events / hackathons", false) // no "events" tag
 	_, _ = nb.AddTag(ctx, "dev / web", false)
 	n, _ := nb.AddNote(ctx, "", "a hackathon in basel about the agentic web")

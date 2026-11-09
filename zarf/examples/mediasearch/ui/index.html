@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>langai · media search</title>
 <link rel="icon" href="data:,">
+<link rel="stylesheet" href="../assets/base.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header>
-  <a class="home" href="../">langai examples</a>
+  <nav id="nav" data-page="mediasearch/"><a class="home" href="../">Home</a></nav>
   <h1>Media search</h1>
   <div id="info" class="info">loading…</div>
   <div class="actions">
@@ -19,10 +20,12 @@
     <button id="rescan" class="button">rescan</button>
   </div>
 </header>
+<div id="banner" class="banner" hidden></div>
 <main>
   <section id="grid" class="grid"></section>
   <aside id="detail" class="detail"><p class="hint">Click a thumbnail to see what looks like it, or search with a file of your own.</p></aside>
 </main>
+<script src="../assets/ui.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

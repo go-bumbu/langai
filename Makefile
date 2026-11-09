@@ -18,9 +18,13 @@ test-models: ## run the real-model tests: the embedding smoke test and the golde
 	@SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$(SEMSEARCH_YZMA_TEST_DIR) go test -p 1 ./provider/yzma/ ./tagging/ -run 'TestEmbedAndRank|TestGoldenSet|TestGoldenTagging' -v -count=1
 
 # The vision model is ~2.7 GB on top of the above (the Qwen3-VL-Embedding GGUF and its
-# projector) and needs ffmpeg, so its real-model test has a target of its own. On a
+# projector) and needs ffmpeg, so its real-model tests have a target of their own. On a
 # machine with a GPU the provider installs the matching llama.cpp build into the cache.
-test-vision: ## run the vision embedder's real-model test: text, image and video segments in one space through libmtmd
+# The -run pattern matches two tests: TestVisionReal (on whatever Accel picks) and
+# TestVisionRealCutsAndAborts, which loads the model a second time, on the CPU with a
+# small context, to check cutting a long text and aborting a running evaluation: the
+# model loads twice, one load after the other, so the target takes that much longer.
+test-vision: ## run the vision embedder's real-model tests: text, image and video segments in one space through libmtmd, then cutting and aborting on the CPU
 	@SEMSEARCH_MODELS=1 SEMSEARCH_YZMA_TEST_DIR=$(SEMSEARCH_YZMA_TEST_DIR) go test ./provider/yzma/ -run 'TestVisionReal' -v -count=1 -timeout 0
 
 # The chat model is ~2.5 GB on top of the above and a run takes minutes on a CPU, so
@@ -109,13 +113,14 @@ semeval: ## compare embedding models on the golden set (downloads candidates int
 ##@ Examples
 #==========================================================================================
 # example runs zarf/examples' `make run`; its settings pass through, e.g.
-# `make example MODEL=qwen3vl ADDR=0.0.0.0:8085`. `make example-prepare` fetches the
-# sample media first (needs curl and ffmpeg).
+# `make example MODEL=qwen3vl ADDR=0.0.0.0:8085` or `make example POSTGRES=<dsn>`.
+# `make example-prepare` fetches the sample media and writes the sample
+# documents first (needs curl and ffmpeg).
 .PHONY: example example-prepare
-example: ## serve the example pages on http://127.0.0.1:8085 (media search, auto tagging)
+example: ## serve the example pages on http://127.0.0.1:8085 (status, media search, text search, duplicates, auto tagging)
 	@$(MAKE) --no-print-directory -C zarf/examples run
 
-example-prepare: ## download the example's sample photos and render its sample clips (needs curl and ffmpeg)
+example-prepare: ## download the example's sample photos, make copies and clips of them, write its sample documents (needs curl and ffmpeg)
 	@$(MAKE) --no-print-directory -C zarf/examples prepare
 
 #==========================================================================================

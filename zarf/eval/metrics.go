@@ -23,16 +23,35 @@ func toSet(ids []string) relevantSet {
 	return out
 }
 
-// recallAt is the share of relevant ids found within the first k of ranked.
+// distinct returns the different ids of ranked in their order, each at its
+// first, best rank: a document that comes back twice is one result.
+func distinct(ranked []string) []string {
+	out := make([]string, 0, len(ranked))
+	seen := make(map[string]bool, len(ranked))
+	for _, id := range ranked {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// firstK returns the first k different ids of ranked, none for a k of 0 or
+// less.
+func firstK(ranked []string, k int) []string {
+	ranked = distinct(ranked)
+	return ranked[:max(0, min(k, len(ranked)))]
+}
+
+// recallAt is the share of relevant ids found within the first k different
+// ids of ranked.
 func recallAt(ranked []string, relevant relevantSet, k int) float64 {
 	if len(relevant) == 0 {
 		return 0
 	}
 	found := 0
-	for i, id := range ranked {
-		if i == k {
-			break
-		}
+	for _, id := range firstK(ranked, k) {
 		if relevant[id] {
 			found++
 		}
@@ -40,9 +59,10 @@ func recallAt(ranked []string, relevant relevantSet, k int) float64 {
 	return float64(found) / float64(len(relevant))
 }
 
-// reciprocalRank is 1/rank of the first relevant id in ranked, 0 when none.
+// reciprocalRank is 1/rank of the first relevant id among the different ids
+// of ranked, 0 when none.
 func reciprocalRank(ranked []string, relevant relevantSet) float64 {
-	for i, id := range ranked {
+	for i, id := range distinct(ranked) {
 		if relevant[id] {
 			return 1 / float64(i+1)
 		}
@@ -50,17 +70,12 @@ func reciprocalRank(ranked []string, relevant relevantSet) float64 {
 	return 0
 }
 
-// ndcgAt is the normalized discounted cumulative gain over the first k of
-// ranked with binary gains: the ideal ranking has every relevant id first.
+// ndcgAt is the normalized discounted cumulative gain over the first k
+// different ids of ranked with binary gains: the ideal ranking has every
+// relevant id first. It is 0 when nothing is relevant or k is 0 or less.
 func ndcgAt(ranked []string, relevant relevantSet, k int) float64 {
-	if len(relevant) == 0 {
-		return 0
-	}
 	var dcg float64
-	for i, id := range ranked {
-		if i == k {
-			break
-		}
+	for i, id := range firstK(ranked, k) {
 		if relevant[id] {
 			dcg += 1 / math.Log2(float64(i+2))
 		}
@@ -68,6 +83,9 @@ func ndcgAt(ranked []string, relevant relevantSet, k int) float64 {
 	var ideal float64
 	for i := 0; i < min(k, len(relevant)); i++ {
 		ideal += 1 / math.Log2(float64(i+2))
+	}
+	if ideal == 0 {
+		return 0
 	}
 	return dcg / ideal
 }
@@ -83,12 +101,18 @@ type scored struct {
 // scoring at least floor) that are expected (tp), the assigned ones that are
 // not (fp), and the expected ones left unassigned (fn). The floor is
 // inclusive, like the Tagger's NameMinScore, and nothing else limits how
-// many tags a document gets.
+// many tags a document gets. A score that is not a number is below every
+// floor, and a tag that comes back twice is decided once, at its best score.
 func decisions(hits []scored, expected relevantSet, floor float64) (tp, fp, fn int) {
+	seen := make(map[string]bool, len(hits))
 	for _, h := range hits {
-		if h.Score < floor {
+		if !(h.Score >= floor) { // not "<": a NaN is below every floor
 			break
 		}
+		if seen[h.Tag] {
+			continue
+		}
+		seen[h.Tag] = true
 		if expected[h.Tag] {
 			tp++
 		} else {
@@ -135,8 +159,11 @@ func sweepFloors() []float64 {
 }
 
 // bestCut is the cut with the highest F1; on ties the lowest floor, which
-// assigns the most tags for the same quality.
+// assigns the most tags for the same quality. No cuts give the zero cut.
 func bestCut(cuts []Cut) Cut {
+	if len(cuts) == 0 {
+		return Cut{}
+	}
 	best := cuts[0]
 	for _, c := range cuts[1:] {
 		if c.F1 > best.F1 {
