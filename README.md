@@ -20,13 +20,15 @@ models run in-process through llama.cpp and ONNX Runtime.
 | `vector/pgvec` | `Store` on Postgres with pgvector. |
 | `provider/yzma` | `Embedder` that runs a GGUF sentence-embedding model, `Completer` that runs a GGUF chat model (the one the `Generator` writes tags with), and `Vision`, which runs Qwen3-VL-Embedding as a text, image and video embedder in one space, through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Downloads and verifies the pinned llama.cpp build and models on first use, and picks the build and the GPU offload from the hardware (`Config.Accel`). |
 | `provider/onnx` | `ImageEmbedder` that runs an ONNX vision model through [ONNX Runtime](https://onnxruntime.ai) (CGO, via [onnxruntime_go](https://github.com/yalue/onnxruntime_go)): SigLIP 2 base by default, DINOv2 base as the other pinned model, any other through a `ModelSpec`. CPU by default, CUDA or CoreML by configuration. Downloads and verifies the pinned runtime build and model on first use. |
+| `provider/phash` | `ImageEmbedder` without a model: a 64- or 256-bit perceptual hash (pHash or dHash) as a unit vector whose cosine is `1 - 2·hamming/bits`, for finding exact and near-exact duplicates (re-encoded, resized, lightly edited copies) with the same `MediaIndex` and stores. Pure Go, nothing to download, a few milliseconds per picture. `Hash` gives the bits themselves for grouping without a store. |
 | `zarf/eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. `make semeval` compares embedding models side by side on it. |
 | `langaitest` | Fakes of the ports, for tests. `FakeEmbedder` and `FakeImageEmbedder` are deterministic and each names a fixed model (`FakeEmbedderModel`, `FakeImageEmbedderModel`); `FakeCompleter` is a scripted chat model: canned replies in order or a function of the prompt, an error on demand, and a record of the prompts it received. |
 
 Every package stands alone and you only compile the dependencies of the packages you
 import: CGO and sqlite-vec come in only with `vector/sqlitevec`, pgvector only with
 `vector/pgvec`, llama.cpp only with `provider/yzma`, CGO and ONNX Runtime only with
-`provider/onnx`, and the ffmpeg binary is only run by `media/ffmpeg`.
+`provider/onnx`, and the ffmpeg binary is only run by `media/ffmpeg`. `provider/phash`
+is pure Go and brings in nothing.
 
 ## Layout
 
@@ -49,6 +51,7 @@ langai/                 the shared ports: Embedder, ImageEmbedder, Completer, Ro
 ├── provider/           model runtimes; each implements some of the ports
 │   ├── yzma/           llama.cpp in process: Embedder (New), Completer (NewCompleter)
 │   ├── onnx/           ONNX Runtime in process (CGO): SigLIP 2 and DINOv2 image embeddings
+│   ├── phash/          no model: perceptual hashes (pHash, dHash) as image embeddings, for duplicates
 │   ├── kronk/          planned: llama.cpp via kronk: embeddings, chat, vision, rerank
 │   ├── openai/         planned: OpenAI-compatible HTTP, remote APIs or a kronk server
 │   └── cache/          planned: wraps any provider, caches by content hash
@@ -351,7 +354,9 @@ stored, so the next run tries it again rather than keep an item that is never fo
   near-duplicate matching: it puts unrelated pictures further apart. The two live in
   different spaces: one model per collection, as `tagging` keys every embedding by model.
   `Open` runs any other ONNX vision model from a `ModelSpec` (tensor names, pooling,
-  input size, resize and normalization).
+  input size, resize and normalization). Finding the copies of a picture (the same one
+  re-encoded, resized or lightly edited) needs no model at all: see
+  [Duplicates without a model](#duplicates-without-a-model).
 - **Videos.** `ffmpeg.Config` sets the scene-change threshold (0.4), the shortest and
   longest gap between frames (1 s and 5 s), the cap per video (64 frames, with the
   shortest gap raised to `duration/64` so a cut-heavy video still yields about that
@@ -380,6 +385,49 @@ stored, so the next run tries it again rather than keep an item that is never fo
   wired, so text queries need the vision model below. The CUDA and CoreML paths are wired
   but were not run on a GPU in this release; the CPU path is what the real-model tests
   cover.
+
+### Duplicates without a model
+
+```go
+dup, err := phash.New(phash.Config{})                  // the 64-bit pHash; or Algorithm: phash.AlgorithmDHash, Bits: 256
+store, err := sqlitevec.New(ctx, db, dup.Dimensions()) // 64 dimensions, one per bit
+ix, err := search.NewMediaIndex(dup, store, "tenant-1", "space-7", "duplicates",
+    search.WithMediaMinScore(0.875))                   // at most 4 of the 64 bits differ
+err = ix.IndexImage(ctx, "photo-42", file)
+hits, err := ix.SearchIndexed(ctx, "photo-42", 10)     // its copies; Score is 1 - 2·hamming/64
+
+h, err := dup.Hash(img)          // or without a store: the bits themselves
+same := h == other               // comparable, so also a map key
+near := h.Distance(other) <= 4   // Hamming distance; h.String() is the hex
+```
+
+`provider/phash` is an `ImageEmbedder` that runs no model: it reduces a picture to a
+perceptual hash and returns the bits as a unit vector of ±1/√bits entries, so the cosine
+of two pictures is exactly `1 - 2·hamming/bits` and `MediaIndex` and every store work on
+it as on a model's vectors. It is pure Go, downloads nothing and hashes a 1920×1080
+picture in about 2.5 ms (6 ms for a decoded JPEG), so a de-duplication job does not pay
+for a model.
+
+- **What it finds.** The same picture again: saved as a JPEG, scaled up or down,
+  slightly brightened, or with a small mark stamped on it. Not a crop, a rotated or
+  mirrored copy, or a picture that only looks similar; those need a model
+  (`onnx.DINOv2Model` for near-duplicates, SigLIP 2 for "looks like"). A picture with
+  almost no structure has almost nothing to hash: every flat picture has the same hash.
+- **Algorithms.** `AlgorithmPHash` (the default) thresholds the 8×8 lowest frequencies of
+  the DCT of a 32×32 grey grid at their median; `AlgorithmDHash` compares neighbouring
+  cells of a 9×8 grid. pHash keeps unrelated pictures furthest apart; dHash moves least
+  under a local edit. `Bits: 256` widens the gap between duplicates and the rest.
+- **Scores.** With the 64-bit pHash a re-encoded, resized or brightened copy stayed
+  within 2 bits on the package's test pictures and one with a mark within 10, while the
+  closest of 79,800 unrelated pairs was 14 bits apart: a floor of 0.875 (4 bits) keeps
+  the plain copies, 0.6875 (10 bits) the marked ones too. The package doc has the table
+  for all four hashes.
+- **One hash per collection.** `Model()` names the algorithm and size (`phash-64`,
+  `dhash-64`, `phash-256`, `dhash-256`), so a store refuses to mix two of them, or a
+  hash with a model's vectors.
+- **Deterministic.** Integer arithmetic only: the same pixels give the same bits on
+  every OS and architecture. Transparency is composed on white, and any `image.Image`
+  is accepted (paletted, 16-bit, CMYK, YCbCr) up to 256 megapixels.
 
 ### Text, images and videos in one space
 
