@@ -325,6 +325,43 @@ func TestEngine_ABadTextAmongGoodOnesIsStillSkipped(t *testing.T) {
 	}
 }
 
+// TestEngine_ACachedTextVouchesForTheEmbedder: the one text a call has to
+// embed fails, and nothing of the call embeds after it. A text the cache holds
+// was taken by the embedder before, so embedding it once more tells a bad
+// text from an embedder that is down: the error still names the tag whose new
+// name could not be embedded, and a Warm the text it could not embed.
+func TestEngine_ACachedTextVouchesForTheEmbedder(t *testing.T) {
+	ctx := context.Background()
+	o := newOutageRig(t, breadWithRecipes("1"))
+	o.scores(t, "r1", croissantText)
+
+	tags, members := breadAt("1", croissantRecipes)
+	o.cat.set(append(tags, CatalogTag{"new", "a name that goes boom", "1"}), members)
+	before := o.calls.Load()
+	_, err := o.e.scores(ctx, "1", "10", "r2", croissantText)
+	if !errors.Is(err, ErrNotRebuilt) || !errors.Is(err, errBoom) || !strings.Contains(err.Error(), `"new"`) {
+		t.Errorf("err = %v, want one wrapping ErrNotRebuilt and the cause, naming the tag new", err)
+	}
+	if n := o.calls.Load() - before; n != 2 {
+		t.Errorf("%d Embed calls, want 2: the name, and a cached name once more", n)
+	}
+
+	err = o.e.warm(ctx, "1", "10", "r1", []string{croissantText, poisonText})
+	if !errors.Is(err, errBoom) || !strings.Contains(err.Error(), "text 2 of 2") {
+		t.Errorf("warm: err = %v, want one wrapping the cause and naming text 2 of 2", err)
+	}
+
+	// with the embedder down the same calls end with its error, naming nothing
+	refused := errors.New("connection refused")
+	o.fail(refused)
+	if _, err := o.e.scores(ctx, "1", "10", "r2", croissantText); !errors.Is(err, ErrNotRebuilt) || !errors.Is(err, refused) || strings.Contains(err.Error(), `"new"`) {
+		t.Errorf("with the embedder down: err = %v, want one wrapping ErrNotRebuilt and the cause, and no tag named", err)
+	}
+	if err := o.e.warm(ctx, "1", "10", "r1", []string{croissantText, poisonText}); !errors.Is(err, refused) || strings.Contains(err.Error(), "text 2 of 2") {
+		t.Errorf("warm with the embedder down: err = %v, want the cause and no text named", err)
+	}
+}
+
 // TestScope_IncompleteNamesTheTagsBuiltWithoutAMember: through the Tagger,
 // with no Logger, an application sees which tags were built without one of
 // their members.

@@ -1,6 +1,7 @@
 package tagging
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -314,6 +315,7 @@ func (e *engine) diff(ctx context.Context, index, partition string, held map[str
 		return nil, nil, err
 	}
 	listed := make(map[string]bool, len(tags))
+	canary := ""
 	for _, t := range tags {
 		switch {
 		case t.ID == "":
@@ -326,8 +328,12 @@ func (e *engine) diff(ctx context.Context, index, partition string, held map[str
 			return nil, nil, fmt.Errorf("tagging: catalog tag %q has an empty revision", t.ID)
 		}
 		listed[t.ID] = true
-		if fp := e.fingerprint(t); held[t.ID] != fp {
+		switch fp := e.fingerprint(t); {
+		case held[t.ID] != fp:
 			put = append(put, TagVector{ID: t.ID, Name: t.Name, Fingerprint: fp})
+		case canary == "":
+			// built by this model already: a name the embedder took before
+			canary = t.Name
 		}
 	}
 	for id := range held {
@@ -337,7 +343,7 @@ func (e *engine) diff(ctx context.Context, index, partition string, held map[str
 	}
 	slices.Sort(drop)
 	for start := 0; start < len(put); start += membersGroupSize {
-		if err := e.build(ctx, index, partition, put[start:min(start+membersGroupSize, len(put))]); err != nil {
+		if err := e.build(ctx, index, partition, put[start:min(start+membersGroupSize, len(put))], canary); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -353,14 +359,17 @@ func (e *engine) diff(ctx context.Context, index, partition string, held map[str
 // the Logger, and marks its tag to be built again at the next revision (see
 // skippedMark): one text the embedder cannot take must not keep a whole space
 // from being built. That is only so while the embedder works, which a later
-// text of the call, or else the first tag's name as the canary, has to show
-// (see embedRun): an embedder that is down fails the build, so that an outage
-// is never recorded as a space built from its names alone. A name that could
-// not be embedded leaves its tag with nothing to be built from, so it is an
-// error naming the tag, and so is a member with a vector not as long as the
-// tag's name vector, which blend and tagCutoff index one by the other.
-// Everything else is embedded and cached before either error is returned.
-func (e *engine) build(ctx context.Context, index, partition string, tags []TagVector) error {
+// text of the call, or else a tag's name as the canary, has to show (see
+// embedRun): an embedder that is down fails the build, so that an outage is
+// never recorded as a space built from its names alone. canary is the name of
+// a tag of the space that is built already, which the embedder took before,
+// or "" when there is none; the members then take the first name of tags. A
+// name that could not be embedded leaves its tag with nothing to be built
+// from, so it is an error naming the tag, and so is a member with a vector
+// not as long as the tag's name vector, which blend and tagCutoff index one
+// by the other. Everything else is embedded and cached before either error is
+// returned.
+func (e *engine) build(ctx context.Context, index, partition string, tags []TagVector, canary string) error {
 	ids, names := make([]string, len(tags)), make([]string, len(tags))
 	for i, t := range tags {
 		ids[i], names[i] = t.ID, t.Name
@@ -375,11 +384,11 @@ func (e *engine) build(ctx context.Context, index, partition string, tags []TagV
 		members[id] = nonBlank(got[id])
 		texts = append(texts, members[id]...)
 	}
-	items, skipped, err := e.itemVectors(ctx, index, texts, names[0])
+	items, skipped, err := e.itemVectors(ctx, index, texts, cmp.Or(canary, names[0]))
 	if err != nil {
 		return err
 	}
-	nameVecs, unnamed, err := e.vectors(ctx, index, langai.RoleDocument, names, "")
+	nameVecs, unnamed, err := e.vectors(ctx, index, langai.RoleDocument, names, canary)
 	if err != nil {
 		return err
 	}

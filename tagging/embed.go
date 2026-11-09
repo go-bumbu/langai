@@ -89,9 +89,11 @@ texts:
 // given, canary included), after which what was embedded before stays cached.
 // canary, when not empty, is a tag's name: a text the embedder is expected to
 // take as a document, embedded past the cache to tell the two apart when no
-// text of the call embedded after one that failed. A cache that cannot be
-// written is no error: the vectors are returned and the failure reported (see
-// ErrCacheWrite for a Get; a failed Put only means embedding again later).
+// text of the call embedded after one that failed. Without one, a text of the
+// call that the cache holds does the same: the embedder took it before. A
+// cache that cannot be written is no error: the vectors are returned and the
+// failure reported (see ErrCacheWrite for a Get; a failed Put only means
+// embedding again later).
 func (e *engine) vectors(ctx context.Context, index string, role langai.Role, texts []string, canary string) (vecs map[string][]float32, failed map[string]error, err error) {
 	keys := make(map[string]CacheKey, len(texts))
 	var uniq []string
@@ -118,15 +120,20 @@ func (e *engine) vectors(ctx context.Context, index string, role langai.Role, te
 	// model's, kept under this Model name: a miss, embedded again and
 	// overwritten, never scored against this model's vectors
 	dims := e.emb.Dimensions()
+	run := embedRun{emb: e.emb, role: role, known: canary, knownRole: langai.RoleDocument, hasKnown: canary != ""}
 	var misses []string
 	for _, t := range uniq {
-		if v, ok := got[keys[t]]; ok && (dims <= 0 || len(v) == dims) {
-			vecs[t] = v
-		} else {
+		v, ok := got[keys[t]]
+		if !ok || (dims > 0 && len(v) != dims) {
 			misses = append(misses, t)
+			continue
+		}
+		vecs[t] = v
+		if !run.hasKnown {
+			// the embedder took this text before: it will do for a canary
+			run.known, run.knownRole, run.hasKnown = t, role, true
 		}
 	}
-	run := embedRun{emb: e.emb, role: role, known: canary, knownRole: langai.RoleDocument, hasKnown: canary != ""}
 	for start := 0; start < len(misses); start += embedBatchSize {
 		batch := misses[start:min(start+embedBatchSize, len(misses))]
 		vs, errs, err := run.batch(ctx, batch)
@@ -171,7 +178,8 @@ type embedRun struct {
 	emb  langai.Embedder
 	role langai.Role
 	// known is a text the embedder takes in knownRole, when hasKnown: the
-	// caller's canary at first, then the last text of the call it embedded
+	// caller's canary or a text the cache holds at first, then the last text
+	// of the call it embedded
 	known     string
 	knownRole langai.Role
 	hasKnown  bool
