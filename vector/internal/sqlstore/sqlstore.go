@@ -15,6 +15,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,11 +49,15 @@ type Dialect struct {
 	// tables of an index, given their names, for vectors of dims dimensions.
 	// The meta table comes last: its existence says the others exist.
 	Schema func(docs, chunks, meta string, dims int) []string
-	// LockDDL, when not empty, runs the schema statements in one transaction
-	// that first takes this lock, bound to the meta table's name, so that two
-	// processes creating an index's tables wait for each other. Without it the
-	// statements run one by one.
-	LockDDL string
+	// The tables of an index are created and dropped in one transaction, and
+	// LockDDL, when not empty, is its first statement: a lock, bound to the
+	// meta table's name, that makes two processes creating or dropping an
+	// index's tables wait for each other. BeginDDL, when not empty, starts
+	// that transaction on a connection of its own instead of BeginTx (SQLite's
+	// BEGIN IMMEDIATE, which takes the write lock at once, so the busy timeout
+	// covers the wait for it and no other writer can slip in between).
+	LockDDL  string
+	BeginDDL string
 	// Legacy is the suffix of a table that only the schema before the meta
 	// table had. An index that has it and no meta table is refused with an
 	// error that says how to migrate.
@@ -162,12 +167,14 @@ func (s *Store) q(query string) string {
 func (s *Store) withTables(ctx context.Context, index string, create bool, fn func(tables) error) (bool, error) {
 	for retried := false; ; retried = true {
 		t, ok, err := s.open(ctx, index, create)
-		if err != nil || !ok {
-			return false, err
+		if err == nil && !ok {
+			return false, nil
 		}
-		err = fn(t)
+		if err == nil {
+			err = fn(t)
+		}
 		if retried || err == nil || !s.d.MissingTable(err) {
-			return true, err
+			return ok, err
 		}
 		s.forget(index)
 	}
@@ -235,19 +242,24 @@ func (s *Store) open(ctx context.Context, index string, create bool) (tables, bo
 // probe looks index's tables up for open, creating them when create is set:
 // whether they exist, and whether they record the store's dimensions, which
 // they do not yet while another process is creating them.
+//
+// The tables appear and disappear together, in one transaction, but the
+// lookups of the meta table and of the legacy marker are two statements
+// (and on Postgres the marker, docs, is a table of this schema too): a
+// creation that commits between them reads as the schema before this one.
+// So that answer is checked again under the DDL lock, which every creation
+// and drop holds until it commits.
 func (s *Store) probe(ctx context.Context, t tables, index string, create bool) (ok, known bool, err error) {
-	exists, err := s.exists(ctx, t.meta)
+	exists, err := s.exists(ctx, s.db, t.meta)
 	if err != nil {
 		return false, false, err
 	}
 	if !exists {
-		legacy, err := s.exists(ctx, t.legacy)
-		if err != nil {
+		if exists, err = s.metaUnlessLegacy(ctx, t, index); err != nil {
 			return false, false, err
 		}
-		if legacy {
-			return false, false, ownf("vector: index %q has %s tables of the schema before this version: delete them (DeleteIndex) or open the store WithGeneration and index again", index, s.d.Name)
-		}
+	}
+	if !exists {
 		if !create {
 			return false, false, nil
 		}
@@ -262,45 +274,103 @@ func (s *Store) probe(ctx context.Context, t tables, index string, create bool) 
 	return true, known, nil
 }
 
-func (s *Store) exists(ctx context.Context, table string) (bool, error) {
+// metaUnlessLegacy is probe's answer for an index whose meta table it did
+// not find: false when the legacy marker is missing too, the error naming
+// the old schema when the marker is there and, under the DDL lock, the meta
+// table still is not, and true when the meta table turned up meanwhile.
+func (s *Store) metaUnlessLegacy(ctx context.Context, t tables, index string) (bool, error) {
+	legacy, err := s.exists(ctx, s.db, t.legacy)
+	if err != nil || !legacy {
+		return false, err
+	}
+	var exists bool
+	err = s.ddl(ctx, t, func(ex execer) error {
+		var err error
+		exists, err = s.exists(ctx, ex, t.meta)
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, ownf("vector: index %q has %s tables of the schema before this version: delete them (DeleteIndex) or open the store WithGeneration and index again", index, s.d.Name)
+	}
+	return true, nil
+}
+
+// execer is what the statements of a DDL transaction run on: a *sql.Tx, or
+// the *sql.Conn of a transaction begun with Dialect.BeginDDL.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func (s *Store) exists(ctx context.Context, ex execer, table string) (bool, error) {
 	var ok bool
-	if err := s.db.QueryRowContext(ctx, s.q(s.d.TableExists), table).Scan(&ok); err != nil {
+	if err := ex.QueryRowContext(ctx, s.q(s.d.TableExists), table).Scan(&ok); err != nil {
 		return false, fmt.Errorf("look up table: %w", err)
 	}
 	return ok, nil
 }
 
-// create runs the Dialect's schema statements and records the store's
-// dimensions, in one locked transaction when the Dialect has a lock.
-func (s *Store) create(ctx context.Context, t tables) error {
-	stmts := s.d.Schema(t.docs, t.chunks, t.meta, s.dims)
-	dims := s.q(`INSERT INTO ` + t.meta + ` (name, value) VALUES ('dims', ?) ON CONFLICT (name) DO NOTHING`)
-	if s.d.LockDDL == "" {
-		for _, st := range stmts {
-			if _, err := s.db.ExecContext(ctx, st); err != nil {
-				return err
-			}
-		}
-		_, err := s.db.ExecContext(ctx, dims, strconv.Itoa(s.dims))
-		return err
+// ddl runs fn in one transaction that creates or drops t, holding the
+// Dialect's DDL lock (or SQLite's write lock) from its start.
+func (s *Store) ddl(ctx context.Context, t tables, fn func(execer) error) error {
+	if s.d.BeginDDL != "" {
+		return s.ddlOnConn(ctx, fn)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, s.q(s.d.LockDDL), t.meta); err != nil {
-		return err
-	}
-	for _, st := range stmts {
-		if _, err := tx.ExecContext(ctx, st); err != nil {
+	if s.d.LockDDL != "" {
+		if _, err := tx.ExecContext(ctx, s.q(s.d.LockDDL), t.meta); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, dims, strconv.Itoa(s.dims)); err != nil {
+	if err := fn(tx); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// ddlOnConn is ddl for a Dialect with BeginDDL: the transaction runs on a
+// connection of its own, begun with that statement, and a connection that
+// cannot be rolled back is discarded rather than handed back to the pool
+// inside a transaction.
+func (s *Store) ddlOnConn(ctx context.Context, fn func(execer) error) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, s.d.BeginDDL); err != nil {
+		return err
+	}
+	if err = fn(conn); err == nil {
+		if _, err = conn.ExecContext(ctx, "COMMIT"); err == nil {
+			return nil
+		}
+	}
+	if _, rbErr := conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK"); rbErr != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	return err
+}
+
+// create runs the Dialect's schema statements and records the store's
+// dimensions, in one DDL transaction.
+func (s *Store) create(ctx context.Context, t tables) error {
+	return s.ddl(ctx, t, func(ex execer) error {
+		for _, st := range s.d.Schema(t.docs, t.chunks, t.meta, s.dims) {
+			if _, err := ex.ExecContext(ctx, st); err != nil {
+				return err
+			}
+		}
+		_, err := ex.ExecContext(ctx, s.q(`INSERT INTO `+t.meta+` (name, value) VALUES ('dims', ?) ON CONFLICT (name) DO NOTHING`), strconv.Itoa(s.dims))
+		return err
+	})
 }
 
 // checkDims fails with vector.ErrDimensions when the index's tables were
@@ -446,7 +516,12 @@ func (s *Store) delete(ctx context.Context, c vector.Coord, ids []string) error 
 }
 
 // DeleteIndex implements vector.Store by dropping the index's tables, those
-// of the schema before the meta table included.
+// of the schema before the meta table included, all in one DDL transaction:
+// no other Store ever sees some of them gone and the rest still there, and
+// a failure part of the way drops none, so no later write can bring back a
+// meta table over old documents. They are dropped in the order every write
+// transaction locks them, meta, docs, chunks, so a drop waiting for a
+// writer never deadlocks with it.
 func (s *Store) DeleteIndex(ctx context.Context, index string) error {
 	if index == "" {
 		return vector.ErrEmptyIndex
@@ -456,12 +531,15 @@ func (s *Store) DeleteIndex(ctx context.Context, index string) error {
 		return s.wrap("delete index", err)
 	}
 	defer s.forget(index)
-	for _, table := range []string{t.meta, t.docs, t.chunks, t.legacy} {
-		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS `+table); err != nil {
-			return s.wrap("delete index", err)
+	err = s.ddl(ctx, t, func(ex execer) error {
+		for _, table := range []string{t.meta, t.docs, t.chunks, t.legacy} {
+			if _, err := ex.ExecContext(ctx, `DROP TABLE IF EXISTS `+table); err != nil {
+				return err
+			}
 		}
-	}
-	return nil
+		return nil
+	})
+	return s.wrap("delete index", err)
 }
 
 // Hashes implements vector.Store.

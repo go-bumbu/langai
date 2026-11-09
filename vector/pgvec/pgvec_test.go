@@ -53,6 +53,9 @@ func newDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("db handle: %v", err)
 	}
+	// every test has a pool of its own: close it, or a long run exhausts
+	// the server's connections
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 

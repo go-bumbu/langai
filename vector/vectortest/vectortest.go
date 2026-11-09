@@ -80,6 +80,8 @@ func RunShared(t *testing.T, newStores func(t *testing.T, n int) []vector.Store)
 		run  func(t *testing.T, s []vector.Store)
 	}{
 		{"OtherStoreDeletesIndex", 2, otherStoreDeletesIndex},
+		{"ConcurrentFirstWrites", writers, concurrentFirstWrites},
+		{"DeleteIndexWhileWriting", 4, deleteIndexWhileWriting},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.run(t, newStores(t, c.n)) })
@@ -122,6 +124,73 @@ func otherStoreDeletesIndex(t *testing.T, s []vector.Store) {
 	upsert(t, a, coord, "m2", doc("z", axis(1)))
 	if got := hashes(t, b, coord, "x", "y", "z"); len(got) != 1 || got["z"] != "h-z" {
 		t.Errorf("the other store sees %v, want only z", got)
+	}
+}
+
+// concurrentFirstWrites: Stores writing the first documents of a fresh index
+// at once all succeed, whichever creates its tables.
+func concurrentFirstWrites(t *testing.T, s []vector.Store) {
+	ctx := context.Background()
+	for round := range 10 {
+		c := vector.Coord{Index: fmt.Sprintf("fresh%d", round), Partition: "p", Collection: "c"}
+		var wg sync.WaitGroup
+		errs := make(chan error, len(s))
+		for w, st := range s {
+			wg.Go(func() { errs <- st.Upsert(ctx, c, "m", doc(fmt.Sprintf("w%d", w), axis(0))) })
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: concurrent first write: %v", round, err)
+			}
+		}
+		if list, err := s[0].Docs(ctx, c, "", 0); err != nil || len(list) != len(s) {
+			t.Fatalf("round %d: Docs = %d documents, %v; want %d", round, len(list), err, len(s))
+		}
+	}
+}
+
+// deleteIndexWhileWriting: a Store dropping an index while others write and
+// read it makes none of them fail, and what is left afterwards is
+// consistent: every document listed has its chunks.
+func deleteIndexWhileWriting(t *testing.T, s []vector.Store) {
+	ctx := context.Background()
+	for i := range 3 {
+		upsert(t, s[i], coord, "m", doc(fmt.Sprintf("seed%d", i), axis(0))) // every store has the index open
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 4*30)
+	for i := range 30 {
+		wg.Go(func() { errs <- s[0].Upsert(ctx, coord, "m", doc(fmt.Sprintf("a%02d", i), axis(0))) })
+		wg.Go(func() {
+			_, err := s[1].Search(ctx, coord, vector.Query{Vector: axis(0), Limit: 5, Model: "m"})
+			errs <- err
+		})
+		wg.Go(func() { _, err := s[2].Hashes(ctx, coord, "a00"); errs <- err })
+		if i == 10 {
+			wg.Go(func() { errs <- s[3].DeleteIndex(ctx, coord.Index) })
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent call: %v", err)
+		}
+	}
+	list, err := s[3].Docs(ctx, coord, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range list {
+		if got, err := s[1].Chunks(ctx, coord, d.ID); err != nil || len(got) != 1 {
+			t.Errorf("document %s is listed but has chunks %v, %v", d.ID, got, err)
+		}
+	}
+	upsert(t, s[2], coord, "m", doc("last", axis(0)))
+	if got := search(t, s[1], coord, vector.Query{Vector: axis(0), Limit: 100}); !slices.Contains(ids(got), "last") {
+		t.Errorf("search after the storm = %v, want last among them", ids(got))
 	}
 }
 

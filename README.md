@@ -277,7 +277,8 @@ like any other, not a wildcard. A `vector.Query` opens a coordinate only when as
 `Store.Search` ranks documents, not chunks: it returns the best chunk of each of the
 best documents, so one long document or one many-framed video never crowds out the
 rest, in score order, then by document id, then by chunk. `DeleteIndex` removes an
-index with everything in it, e.g. when a tenant leaves; another Store on the same
+index with everything in it, e.g. when a tenant leaves, in one transaction (as an
+index's tables are also created in one), so no Store ever sees half an index; another Store on the same
 database (another process, a maintenance CLI) notices: its reads of that index find
 nothing and its next write creates it again. The first write of a new index never
 stalls the store's calls on other indexes, and a call waiting for an index another

@@ -68,9 +68,9 @@ func WithGeneration(generation string) Option {
 }
 
 // dialect is SQLite's: vectors as little-endian float32 BLOBs, ids lists
-// read with json_each, and the schema created statement by statement, the
-// meta table last. The tables of the schema before this one had a vec0
-// virtual table, named vec.
+// read with json_each, and the schema created and dropped in one
+// transaction begun IMMEDIATE, which takes the write lock at once. The
+// tables of the schema before this one had a vec0 virtual table, named vec.
 var dialect = sqlstore.Dialect{
 	Name: "sqlite",
 	Schema: func(docs, chunks, meta string, _ int) []string {
@@ -88,6 +88,7 @@ var dialect = sqlstore.Dialect{
 			`CREATE TABLE IF NOT EXISTS ` + meta + ` (name TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 		}
 	},
+	BeginDDL:    "BEGIN IMMEDIATE",
 	Legacy:      "vec",
 	TableExists: `SELECT count(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?`,
 	ListTables:  `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ss\_%' ESCAPE '\'`,
