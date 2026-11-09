@@ -126,12 +126,12 @@ func TestTaggerLongTags(t *testing.T) {
 		}
 		s := eval.MatchTopics(got, d.Topics, sim, tau)
 		scores = append(scores, s)
-		t.Logf("%s (%d bytes): main %.2f side %.2f mention %.2f prec %.2f: %s",
-			d.ID, len(d.Text), s.MainRecall, s.SideRecall, s.MentionRate, s.Precision, strings.Join(got, ", "))
+		t.Logf("%s (%d bytes): main %.2f side %.2f mention %.2f prec %.2f F1 %.2f: %s",
+			d.ID, len(d.Text), s.MainRecall, s.SideRecall, s.MentionRate, s.Precision, s.F1(), strings.Join(got, ", "))
 	}
 	m := eval.MeanLongScores(scores)
-	t.Logf("mean over %d documents: recall %.3f main %.3f side %.3f late side %.3f mention %.3f precision %.3f F1 %.3f tags %d",
-		len(docs), m.Recall, m.MainRecall, m.SideRecall, m.LateSideRecall, m.MentionRate, m.Precision, m.F1(), m.Tags)
+	t.Logf("mean over %d documents (%d without tags): recall %.3f main %.3f side %.3f late side %.3f mention %.3f precision %.3f mean F1 %.3f tags %.1f",
+		m.Documents, m.Untagged, m.Recall, m.MainRecall, m.SideRecall, m.LateSideRecall, m.MentionRate, m.Precision, m.MeanF1, m.Tags)
 
 	const (
 		minMainRecall  = 0.87
