@@ -38,6 +38,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -293,26 +294,72 @@ func (s *Sampler) Duration(ctx context.Context, path string) (time.Duration, err
 // re-encoding, so a cut starts at the last keyframe before start and the
 // segment's own timestamps start at zero. Audio, subtitles and data are
 // dropped; an MP4 or MOV gets its index at the front, so it plays from a
-// pipe. A file at out is overwritten, and a failed or cancelled cut removes
-// it, so no partial segment is left there. ctx bounds ffmpeg; cancelling it
-// kills the program.
+// pipe. ctx bounds ffmpeg; cancelling it kills the program.
+//
+// ffmpeg writes into a file of this call's own, next to out and with out's
+// extension, which takes out's name once the cut is whole: a file already at
+// out is replaced by a cut that succeeds and left as it was by one that
+// fails or is cancelled, and no partial segment ever appears there. The
+// segment is readable by its owner only. An out that names the input itself,
+// under any spelling or through a link, is refused before anything runs.
 func (s *Sampler) Cut(ctx context.Context, path string, start, length time.Duration, out string) error {
 	if path == "" || out == "" {
 		return errors.New("ffmpeg: empty path")
+	}
+	if sameFile(path, out) {
+		return fmt.Errorf("ffmpeg: cut %q into %q: the output is the same file as the input", path, out)
+	}
+	tmp, err := tempNextTo(out)
+	if err != nil {
+		return fmt.Errorf("ffmpeg: %w", err)
 	}
 	args := slices.Concat([]string{"-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", seconds(start)}, input(path))
 	if length > 0 {
 		args = append(args, "-t", seconds(length))
 	}
-	args = append(args, "-map", "0:v:0", "-an", "-sn", "-dn", "-c", "copy", "-movflags", "+faststart", local(out))
-	if _, err := s.run(ctx, "ffmpeg", s.cfg.FFmpeg, args); err != nil {
-		// whatever ffmpeg wrote is not the segment
-		if rmErr := os.Remove(out); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+	args = append(args, "-map", "0:v:0", "-an", "-sn", "-dn", "-c", "copy", "-movflags", "+faststart", local(tmp))
+	_, err = s.run(ctx, "ffmpeg", s.cfg.FFmpeg, args)
+	if err == nil {
+		err = os.Rename(tmp, out)
+	}
+	if err != nil {
+		// whatever ffmpeg wrote is not the segment; only this call's own file
+		// is removed
+		if rmErr := os.Remove(tmp); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 			return errors.Join(err, fmt.Errorf("ffmpeg: remove the partial cut: %w", rmErr))
 		}
 		return err
 	}
 	return nil
+}
+
+// sameFile reports whether a and b name one file: they are the same file on
+// disk (links followed), or, when one of them does not exist yet, the same
+// path once both are made absolute and cleaned.
+func sameFile(a, b string) bool {
+	if ai, err := os.Stat(a); err == nil {
+		if bi, err := os.Stat(b); err == nil && os.SameFile(ai, bi) {
+			return true
+		}
+	}
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && absA == absB
+}
+
+// tempNextTo creates an empty file next to out, with out's extension (ffmpeg
+// picks the container by it) and a name no other call has, and returns its
+// path: where a cut is written before it takes out's name.
+func tempNextTo(out string) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(out), ".langai-cut-*"+filepath.Ext(out))
+	if err != nil {
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 // local writes a file path the way ffmpeg and ffprobe take it for a local

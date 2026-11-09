@@ -477,7 +477,9 @@ pictures and clips, and an image finds the stretch of a video it appears in.
   tokens per second of video, so a segment is a few thousand tokens and a feature film
   never overflows the context (`ContextTokens`, 16384). The `Cutter` (the ffmpeg
   `Sampler`) cuts by stream copy, so a segment starts at the last keyframe before its
-  time; a cut that fails or is cancelled removes its partial output. `MaxSegments` caps
+  time. A cut is written under a name of its own and renamed into place when it is
+  whole: one that fails or is cancelled leaves nothing, and never removes a file that
+  was already there, and a cut onto its own input is refused. `MaxSegments` caps
   the work per video. A segment is one vector: the model sees the whole stretch, which
   is what makes a clip match a description, and what loses the "matched at 4.00 s"
   precision of the frame route. A file whose container states no
