@@ -9,18 +9,19 @@ models run in-process through llama.cpp and ONNX Runtime.
 
 | Package | What it does |
 |---|---|
-| `langai` | The ports: `Embedder` (text embedding models), `ImageEmbedder` (image embedding models), `Completer` (chat models) and the `Role` a text is embedded as. `LazyEmbedder` defers loading a model to its first use. |
+| `langai` | The ports: `Embedder` (text embedding models), `ImageEmbedder` (image embedding models), `Completer` (chat models), the `Role` a text is embedded as, and the optional `Identified`, by which a model names itself so that stores never mix two models' vectors. `Normalize` scales a vector to unit length for the providers. `LazyEmbedder` defers loading a model to its first use. |
 | `search` | Turns documents into embedding vectors and answers free-text queries with the closest ones: `Index` and the markdown-aware chunker. `MediaIndex` does the same for pictures: it embeds images and videos (as sampled frames through an image model, or as whole segments through a video model) and answers an image, a video or, with a model that has a text side, a text with the items that look most like it, across both kinds. |
 | `media` | The ports for video input: `Sampler` turns a video file into the `Frame`s that stand for it, `VideoEmbedder` embeds it as whole `Segment`s, `Cutter` measures and cuts it. |
 | `media/ffmpeg` | `Sampler` and `Cutter` over the ffmpeg and ffprobe binaries: the first frame, every scene cut and one frame per interval, scaled down, capped per video, or the keyframes only, for long videos; stream-copy cuts for the segment embedder. |
 | `tagging` | Tags for a text. `Tagger` suggests tags among the ones an application already has and learns from the tags people put on items by hand: each tag's vector blends its name with the items tagged with it, and each tag is judged against its own cutoff. The application provides its tags and hand-made links through a `Catalog`; the Tagger keeps only an embedding cache (`MemCache`, `tagging/sqlitecache`, `tagging/pgcache`) and an in-memory index of tag vectors. `Generator` writes tags with no list to start from: a chat model proposes them and the embedding model scores each against the text, so one cutoff means the same on every text. |
-| `vector` | The `Store` interface for search vectors, and `MemStore` (exact, in memory, for tests and evaluation). |
+| `vector` | The `Store` interface for search vectors: documents in collections located by a `Coord` (index, partition, collection), batch writes, listing, and one exact `Search` that returns the best chunk of each of the best documents. `Validate` and the sentinel errors (`ErrDimensions`, `ErrInvalidVector`, `ErrModelMismatch`), and `MemStore` (exact, in memory, for tests and evaluation). |
+| `vector/vectortest` | The conformance suite every `Store` passes. |
 | `vector/sqlitevec` | `Store` on SQLite with the sqlite-vec extension (CGO). |
 | `vector/pgvec` | `Store` on Postgres with pgvector. |
 | `provider/yzma` | `Embedder` that runs a GGUF sentence-embedding model, `Completer` that runs a GGUF chat model (the one the `Generator` writes tags with), and `Vision`, which runs Qwen3-VL-Embedding as a text, image and video embedder in one space, through llama.cpp, loaded at runtime by [yzma](https://github.com/hybridgroup/yzma) (purego + libffi, no CGO). Downloads and verifies the pinned llama.cpp build and models on first use, and picks the build and the GPU offload from the hardware (`Config.Accel`). |
 | `provider/onnx` | `ImageEmbedder` that runs an ONNX vision model through [ONNX Runtime](https://onnxruntime.ai) (CGO, via [onnxruntime_go](https://github.com/yalue/onnxruntime_go)): SigLIP 2 base by default, DINOv2 base as the other pinned model, any other through a `ModelSpec`. CPU by default, CUDA or CoreML by configuration. Downloads and verifies the pinned runtime build and model on first use. |
 | `zarf/eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. `make semeval` compares embedding models side by side on it. |
-| `langaitest` | `FakeEmbedder` and `FakeImageEmbedder`, deterministic, for tests. |
+| `langaitest` | `FakeEmbedder` and `FakeImageEmbedder`, deterministic, for tests; each names a fixed model (`FakeEmbedderModel`, `FakeImageEmbedderModel`). |
 
 Every package stands alone and you only compile the dependencies of the packages you
 import: CGO and sqlite-vec come in only with `vector/sqlitevec`, pgvector only with
@@ -54,6 +55,8 @@ langai/                 the shared ports: Embedder, ImageEmbedder, Completer, Ro
 ├── vector/             Store for search vectors, in-memory MemStore
 │   ├── sqlitevec/      SQLite with sqlite-vec (CGO)
 │   ├── pgvec/          Postgres with pgvector
+│   ├── vectortest/     conformance suite for a Store
+│   ├── internal/       sqlstore: the SQL the two stores share
 │   └── qdrant/         planned, if a dedicated vector database is needed
 ├── media/              video input: the Sampler port and Frame
 │   └── ffmpeg/         video → frames via the ffmpeg binary
@@ -107,9 +110,14 @@ go get github.com/go-bumbu/langai
 - **`vector/sqlitevec`** is CGO and needs the system SQLite headers to compile:
   `sudo apt-get install -y libsqlite3-dev` (Debian/Ubuntu). The extension registers
   itself for every SQLite connection the process opens after the package is imported,
-  so import it (blank if need be) before opening the first connection.
+  so import it (blank if need be) before opening the first connection. Open a file
+  database with a busy timeout, so concurrent writers queue instead of failing with
+  "database is locked", and in WAL mode, so readers do not wait for them:
+  `search.db?_busy_timeout=5000&_journal_mode=WAL` with mattn/go-sqlite3. Every write
+  transaction of the store starts with a write, so `_txlock=immediate` is not needed.
 - **`vector/pgvec`** needs a Postgres with the pgvector extension, or a user allowed
-  to run `CREATE EXTENSION vector`.
+  to run `CREATE EXTENSION vector`. Only writes create tables, so a role that may only
+  read can search what another role indexed.
 - **`provider/yzma`** needs `libffi8` wherever the binary runs: the Go bindings open it
   in a package `init()` and panic without it, so a binary that imports the package needs
   it even when it never embeds anything. The llama.cpp libraries also need `libgomp1`,
@@ -166,9 +174,28 @@ hits, err := ix.Search(ctx, "how long to boil spaghetti", 10)
 ```
 
 Every `Store` backend keeps one physical table set per index, so one index's vectors are
-never queryable from another's. A store opened with `WithGeneration` keeps further table
-sets of its own, so a migration can build a second model's vectors next to the current
-ones before switching over.
+never queryable from another's. Within an index a search sees exactly one collection,
+the one at its partition and collection: an empty partition or collection is a value
+like any other, not a wildcard. A `vector.Query` opens a coordinate only when asked
+(`AllPartitions`, `AllCollections`), and can keep or leave out given document ids.
+`Store.Search` ranks documents, not chunks: it returns the best chunk of each of the
+best documents, so one long document or one many-framed video never crowds out the
+rest, in score order, then by document id, then by chunk. `DeleteIndex` removes an
+index with everything in it, e.g. when a tenant leaves.
+
+Vectors of different models never mix. A store refuses a vector of the wrong length
+(`vector.ErrDimensions`) and a zero, NaN or infinite one (`vector.ErrInvalidVector`); a
+SQL store opened with other dimensions than an index's tables hold refuses that index.
+When the embedder names its model (`langai.Identified`), `search.New` and
+`search.NewMediaIndex` pass that name on: the first write to a collection records it,
+and a write or search with another model fails with `vector.ErrModelMismatch`. An
+embedder that names no model is not checked.
+
+A store opened with `WithGeneration` keeps further table sets of its own, so a migration
+can build a second model's vectors next to the current ones before switching over; the
+new generation's store then retires the old one with `DropGeneration`. The SQL stores
+refuse the tables of the schema before this version with an error that says so: delete
+the index (`DeleteIndex`) or build a new generation, and index again.
 
 The first `yzma.New` downloads the llama.cpp libraries (~18 MB) and the default model,
 `google/embeddinggemma-300m` (~329 MB, 768 dimensions, multilingual); both are pinned by
@@ -210,9 +237,10 @@ err = ix.Delete(ctx, "photo-42")
 
 An image is one frame at time zero and a video the frames its `Sampler` picked, each
 embedded as an image into one vector space, so an image query finds videos and a video
-query finds images. A search embeds every query frame, asks the store for the closest
-frames of each and scores an item by its best frame, so a video is found by the one shot
-that resembles the query most; `At` says where in the video that is, and for a video
+query finds images. A search embeds every query frame, asks the store for the best
+frame of each of the closest items and scores an item by its best frame, so a video is
+found by the one shot that resembles the query most, and its other frames take no
+places from other items; `At` says where in the video that is, and for a video
 query `QueryAt` which of its frames matched. An item that is the query itself comes back
 first with a score near 1, so drop your own id. `IndexFrames` and `SearchFrames` take
 frames you extracted yourself, with your own content hash; more image formats register

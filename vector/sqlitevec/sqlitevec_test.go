@@ -3,223 +3,32 @@ package sqlitevec
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
+	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/go-bumbu/langai/internal/tablename"
 	"github.com/go-bumbu/langai/langaitest"
 	"github.com/go-bumbu/langai/search"
 	"github.com/go-bumbu/langai/vector"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/go-bumbu/langai/vector/vectortest"
 )
 
-// newStore returns a Store backed by a sqlite file in a per-test temp dir.
-func newStore(t *testing.T, dims int) *Store {
-	t.Helper()
-	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "semsearch.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	store, err := New(context.Background(), db, dims)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	return store
-}
-
-func TestUpsertAndSearch(t *testing.T) {
-	store := newStore(t, 3)
-	ctx := context.Background()
-
-	err := store.Upsert(ctx, "idx", "p", "c", "a", "hash-a", []vector.Chunk{
-		{Seq: 0, Text: "north", Vector: []float32{1, 0, 0}},
-		{Seq: 1, Text: "east", Vector: []float32{0, 1, 0}},
-	})
-	if err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
-	err = store.Upsert(ctx, "idx", "p", "c", "b", "hash-b", []vector.Chunk{
-		{Seq: 0, Text: "up", Vector: []float32{0, 0, 1}},
-	})
-	if err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
-
-	got, err := store.Search(ctx, "idx", "p", "c", []float32{1, 0.1, 0}, 10)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("expected 3 matches, got %d: %#v", len(got), got)
-	}
-	if got[0].DocID != "a" || got[0].Text != "north" || got[0].Seq != 0 {
-		t.Fatalf("unexpected best match: %#v", got[0])
-	}
-	if got[0].Score < 0.9 {
-		t.Errorf("expected near-1 cosine score for close vectors, got %f", got[0].Score)
-	}
-	for i := 1; i < len(got); i++ {
-		if got[i].Score > got[i-1].Score {
-			t.Fatalf("results not ordered by descending score: %#v", got)
-		}
-	}
-}
-
-func TestSearchLimit(t *testing.T) {
-	store := newStore(t, 3)
-	ctx := context.Background()
-	for i, v := range [][]float32{{1, 0, 0}, {0.9, 0.1, 0}, {0.8, 0.2, 0}} {
-		err := store.Upsert(ctx, "idx", "p", "c", string(rune('a'+i)), "h", []vector.Chunk{{Seq: 0, Text: "t", Vector: v}})
-		if err != nil {
-			t.Fatalf("Upsert: %v", err)
-		}
-	}
-	got, err := store.Search(ctx, "idx", "p", "c", []float32{1, 0, 0}, 2)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 matches, got %d", len(got))
-	}
-}
-
-func TestUpsertReplacesChunks(t *testing.T) {
-	store := newStore(t, 3)
-	ctx := context.Background()
-
-	err := store.Upsert(ctx, "idx", "p", "c", "doc", "h1", []vector.Chunk{
-		{Seq: 0, Text: "old-0", Vector: []float32{1, 0, 0}},
-		{Seq: 1, Text: "old-1", Vector: []float32{0, 1, 0}},
-		{Seq: 2, Text: "old-2", Vector: []float32{0, 0, 1}},
-	})
-	if err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
-	err = store.Upsert(ctx, "idx", "p", "c", "doc", "h2", []vector.Chunk{
-		{Seq: 0, Text: "new-0", Vector: []float32{0, 1, 0}},
-	})
-	if err != nil {
-		t.Fatalf("Upsert (replace): %v", err)
-	}
-
-	got, err := store.Search(ctx, "idx", "p", "c", []float32{1, 1, 1}, 10)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 1 || got[0].Text != "new-0" {
-		t.Fatalf("expected only the replacement chunk, got %#v", got)
-	}
-}
-
-func TestChunks(t *testing.T) {
-	store := newStore(t, 3)
-	ctx := context.Background()
-	if err := store.Upsert(ctx, "idx", "p", "c", "doc", "h", []vector.Chunk{
-		{Seq: 4000, Text: "b", Vector: []float32{0, 0.5, -1.25}},
-		{Seq: 0, Text: "a", Vector: []float32{1, 0, 0}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Upsert(ctx, "idx", "p", "c", "other", "h", []vector.Chunk{{Seq: 0, Text: "x", Vector: []float32{0, 1, 0}}}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := store.Chunks(ctx, "idx", "p", "c", "doc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []vector.Chunk{{Seq: 0, Text: "a", Vector: []float32{1, 0, 0}}, {Seq: 4000, Text: "b", Vector: []float32{0, 0.5, -1.25}}}
-	if len(got) != len(want) {
-		t.Fatalf("chunks = %+v, want %+v", got, want)
-	}
-	for i := range want {
-		if got[i].Seq != want[i].Seq || got[i].Text != want[i].Text || !slices.Equal(got[i].Vector, want[i].Vector) {
-			t.Errorf("chunk %d = %+v, want %+v", i, got[i], want[i])
-		}
-	}
-	if got, err := store.Chunks(ctx, "idx", "p", "c", "missing"); err != nil || got != nil {
-		t.Errorf("unknown doc: %v, %v; want nothing", got, err)
-	}
-	if got, err := store.Chunks(ctx, "idx", "q", "c", "doc"); err != nil || got != nil {
-		t.Errorf("other partition: %v, %v; want nothing", got, err)
-	}
-}
-
-func TestContentHash(t *testing.T) {
-	store := newStore(t, 3)
-	ctx := context.Background()
-
-	hash, err := store.ContentHash(ctx, "idx", "p", "c", "missing")
-	if err != nil {
-		t.Fatalf("ContentHash: %v", err)
-	}
-	if hash != "" {
-		t.Fatalf("expected empty hash for unknown doc, got %q", hash)
-	}
-
-	// zero chunks is valid: hash recorded, nothing searchable
-	if err := store.Upsert(ctx, "idx", "p", "c", "doc", "the-hash", nil); err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
-	hash, err = store.ContentHash(ctx, "idx", "p", "c", "doc")
-	if err != nil {
-		t.Fatalf("ContentHash: %v", err)
-	}
-	if hash != "the-hash" {
-		t.Fatalf("expected recorded hash, got %q", hash)
-	}
-}
-
-func TestDelete(t *testing.T) {
-	store := newStore(t, 3)
-	ctx := context.Background()
-
-	err := store.Upsert(ctx, "idx", "p", "c", "doc", "h", []vector.Chunk{{Seq: 0, Text: "t", Vector: []float32{1, 0, 0}}})
-	if err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
-	if err := store.Delete(ctx, "idx", "p", "c", "doc"); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	got, err := store.Search(ctx, "idx", "p", "c", []float32{1, 0, 0}, 10)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("expected no matches after delete, got %#v", got)
-	}
-	hash, err := store.ContentHash(ctx, "idx", "p", "c", "doc")
-	if err != nil {
-		t.Fatalf("ContentHash: %v", err)
-	}
-	if hash != "" {
-		t.Fatalf("expected hash removed on delete, got %q", hash)
-	}
-	// deleting an unknown doc is a no-op
-	if err := store.Delete(ctx, "idx", "p", "c", "doc"); err != nil {
-		t.Fatalf("Delete (again): %v", err)
-	}
-}
-
-func TestDimensionMismatch(t *testing.T) {
-	store := newStore(t, 3)
-	ctx := context.Background()
-
-	err := store.Upsert(ctx, "idx", "p", "c", "doc", "h", []vector.Chunk{{Seq: 0, Text: "t", Vector: []float32{1, 0}}})
-	if err == nil {
-		t.Fatal("expected error for wrong chunk dimensions")
-	}
-	if _, err := store.Search(ctx, "idx", "p", "c", []float32{1, 0}, 10); err == nil {
-		t.Fatal("expected error for wrong query dimensions")
-	}
-}
+// recommendedDSN is the DSN the package doc recommends, after the file name.
+const recommendedDSN = "?_busy_timeout=5000&_journal_mode=WAL"
 
 // openTestDB returns a sqlite *sql.DB backed by a file in a per-test temp
-// dir, for tests that construct the Store themselves via New.
-func openTestDB(t *testing.T) *sql.DB {
+// dir, so every connection the pool opens sees the same database, opened
+// with dsn after the file name.
+func openTestDB(t *testing.T, dsn string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "semsearch.db"))
+	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "search.db")+dsn)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -227,188 +36,25 @@ func openTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func ids(ms []vector.Match) []string {
-	out := make([]string, len(ms))
-	for i, m := range ms {
-		out[i] = m.DocID
+// newStore returns a Store on a database of its own, opened the way the
+// package doc recommends.
+func newStore(t *testing.T, dims int, opts ...Option) *Store {
+	t.Helper()
+	s, err := New(t.Context(), openTestDB(t, recommendedDSN), dims, opts...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
-	return out
+	return s
 }
 
-func sameIDs(ms []vector.Match, want ...string) bool {
-	if len(ms) != len(want) {
-		return false
-	}
-	have := map[string]bool{}
-	for _, m := range ms {
-		have[m.DocID] = true
-	}
-	for _, w := range want {
-		if !have[w] {
-			return false
-		}
-	}
-	return true
+func TestConformance(t *testing.T) {
+	vectortest.Run(t, func(t *testing.T) vector.Store { return newStore(t, vectortest.Dims) })
 }
 
-func TestSqliteVec_IndexIsolationAndScope(t *testing.T) {
-	ctx := context.Background()
-	db := openTestDB(t)
-	s, err := New(ctx, db, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	up := func(index, part, coll, id string, ax int) {
-		v := make([]float32, 4)
-		v[ax] = 1
-		if err := s.Upsert(ctx, index, part, coll, id, "h", []vector.Chunk{{Seq: 0, Text: id, Vector: v}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	up("A", "10", "tags", "a", 0)
-	up("B", "10", "tags", "b", 0) // same coords, different index
-	up("A", "10", "bookmarks", "c", 0)
-	up("A", "20", "tags", "d", 0)
-
-	q := []float32{1, 0, 0, 0}
-	// index isolation: A's exact search never sees B
-	got, _ := s.Search(ctx, "A", "10", "tags", q, 10)
-	if len(got) != 1 || got[0].DocID != "a" {
-		t.Fatalf("exact/isolation wrong: %v", ids(got))
-	}
-	// partition-only within A -> a + c
-	got, _ = s.SearchScope(ctx, "A", vector.ScopeFilter{Partition: "10"}, q, 10)
-	if !sameIDs(got, "a", "c") {
-		t.Fatalf("partition-only wrong: %v", ids(got))
-	}
-	// collection-only within A -> a + d
-	got, _ = s.SearchScope(ctx, "A", vector.ScopeFilter{Collection: "tags"}, q, 10)
-	if !sameIDs(got, "a", "d") {
-		t.Fatalf("collection-only wrong: %v", ids(got))
-	}
-}
-
-// TestSqliteVec_IndexCaseIsolation guards against a case-collision bug: SQL
-// identifiers are case-insensitive, so if the index string were interpolated
-// directly into the table name, indexes "A" and "a" would resolve to the
-// same physical tables (ss_A_* / ss_a_* on a case-sensitive filesystem, but
-// identical to SQLite's identifier matching) — a data leak across indexes,
-// i.e. across tenants when the index is the tenant.
-func TestSqliteVec_IndexCaseIsolation(t *testing.T) {
-	ctx := context.Background()
-	db := openTestDB(t)
-	s, err := New(ctx, db, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// same partition/collection/vector, only the index case differs
-	v := []float32{1, 0, 0}
-	if err := s.Upsert(ctx, "A", "p", "c", "upper-doc", "h", []vector.Chunk{
-		{Seq: 0, Text: "upper", Vector: v},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Upsert(ctx, "a", "p", "c", "lower-doc", "h", []vector.Chunk{
-		{Seq: 0, Text: "lower", Vector: v},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := s.Search(ctx, "A", "p", "c", v, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !sameIDs(got, "upper-doc") {
-		t.Fatalf(`Search("A", ...) not isolated from "a": %v`, ids(got))
-	}
-
-	got, err = s.Search(ctx, "a", "p", "c", v, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !sameIDs(got, "lower-doc") {
-		t.Fatalf(`Search("a", ...) not isolated from "A": %v`, ids(got))
-	}
-}
-
-// TestSqliteVec_GenerationsAreIsolated: one store per generation on the same
-// database is what a migration runs while the next model's vectors are built
-// next to the current ones. The same index, coordinates and document id stay
-// apart in every operation, even when the two models' vectors differ in size.
-func TestSqliteVec_GenerationsAreIsolated(t *testing.T) {
-	ctx := context.Background()
-	db := openTestDB(t)
-	current, err := New(ctx, db, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	next, err := New(ctx, db, 4, WithGeneration("g2"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := current.Upsert(ctx, "idx", "p", "c", "doc", "hash-current", []vector.Chunk{
-		{Seq: 0, Text: "current", Vector: []float32{1, 0, 0}},
-	}); err != nil {
-		t.Fatalf("Upsert current: %v", err)
-	}
-	if err := next.Upsert(ctx, "idx", "p", "c", "doc", "hash-next", []vector.Chunk{
-		{Seq: 0, Text: "next", Vector: []float32{1, 0, 0, 0}},
-	}); err != nil {
-		t.Fatalf("Upsert next: %v", err)
-	}
-
-	got, err := next.Search(ctx, "idx", "p", "c", []float32{1, 0, 0, 0}, 10)
-	if err != nil {
-		t.Fatalf("Search next: %v", err)
-	}
-	if len(got) != 1 || got[0].Text != "next" {
-		t.Fatalf("next generation found %#v, want only its own chunk", got)
-	}
-	if h, err := next.ContentHash(ctx, "idx", "p", "c", "doc"); err != nil || h != "hash-next" {
-		t.Fatalf("next ContentHash = %q, %v; want hash-next", h, err)
-	}
-
-	// retiring the document in one generation leaves the other's copy
-	if err := next.Delete(ctx, "idx", "p", "c", "doc"); err != nil {
-		t.Fatalf("Delete next: %v", err)
-	}
-	got, err = current.Search(ctx, "idx", "p", "c", []float32{1, 0, 0}, 10)
-	if err != nil {
-		t.Fatalf("Search current: %v", err)
-	}
-	if len(got) != 1 || got[0].Text != "current" {
-		t.Fatalf("current generation found %#v after the next one deleted its copy, want its own chunk", got)
-	}
-	if h, err := current.ContentHash(ctx, "idx", "p", "c", "doc"); err != nil || h != "hash-current" {
-		t.Fatalf("current ContentHash = %q, %v; want hash-current", h, err)
-	}
-}
-
-// TestNew_RejectsMalformedGeneration: a generation that cannot name tables
-// is refused when the store is built, not on its first write.
-func TestNew_RejectsMalformedGeneration(t *testing.T) {
-	if _, err := New(context.Background(), openTestDB(t), 3, WithGeneration("G2")); err == nil {
-		t.Fatal(`New accepted generation "G2"`)
-	}
-}
-
-// TestSqliteVec_GenerationObjectsCarryItsPrefix: every table and index a
-// generation's store creates, sqlite-vec's shadow tables included, is named
-// ss_<generation>_*, so a retired generation can be dropped by name without
-// listing indexes. SQLite's own sqlite_* objects are not the store's.
-func TestSqliteVec_GenerationObjectsCarryItsPrefix(t *testing.T) {
-	ctx := context.Background()
-	db := openTestDB(t)
-	s, err := New(ctx, db, 3, WithGeneration("g2"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Upsert(ctx, "idx", "p", "c", "doc", "h", []vector.Chunk{
-		{Seq: 0, Text: "t", Vector: []float32{1, 0, 0}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite\_%' ESCAPE '\'`)
+// tableNames lists the tables and indexes of db that are not SQLite's own.
+func tableNames(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), `SELECT name FROM sqlite_master WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY name`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,6 +70,194 @@ func TestSqliteVec_GenerationObjectsCarryItsPrefix(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
+	return names
+}
+
+// TestConcurrentUpserts_BusyTimeoutIsEnough: every write transaction starts
+// with a write, so a busy timeout alone lets writers queue, in WAL mode and
+// in the default rollback-journal mode; before, a transaction that read
+// first failed with "database is locked" in most calls.
+func TestConcurrentUpserts_BusyTimeoutIsEnough(t *testing.T) {
+	for _, dsn := range []string{recommendedDSN, "?_busy_timeout=5000"} {
+		t.Run(dsn, func(t *testing.T) {
+			s, err := New(t.Context(), openTestDB(t, dsn), 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := vector.Coord{Index: "i", Partition: "p", Collection: "c"}
+			var wg sync.WaitGroup
+			errs := make(chan error, 80)
+			for w := range 8 {
+				wg.Go(func() {
+					for i := range 10 {
+						errs <- s.Upsert(t.Context(), c, "m", vector.Doc{ID: fmt.Sprintf("%d-%d", w, i), Hash: "h",
+							Chunks: []vector.Chunk{{Vector: []float32{1, float32(i), 0}}}})
+					}
+				})
+			}
+			wg.Wait()
+			close(errs)
+			failed := 0
+			for err := range errs {
+				if err != nil {
+					failed++
+					t.Log(err)
+				}
+			}
+			if failed > 0 {
+				t.Fatalf("%d of 80 concurrent upserts failed", failed)
+			}
+		})
+	}
+}
+
+// TestReadsCreateNoTables: searching, listing and deleting in an index that
+// was never written leave the database as it was.
+func TestReadsCreateNoTables(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, recommendedDSN)
+	s, err := New(ctx, db, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := vector.Coord{Index: "never", Partition: "p", Collection: "c"}
+	if _, err := s.Search(ctx, c, vector.Query{Vector: []float32{1, 0, 0}, Limit: 10, AllCollections: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Hashes(ctx, c, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Docs(ctx, c, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Chunks(ctx, c, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, c, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if names := tableNames(t, db); len(names) != 0 {
+		t.Fatalf("reads created %v", names)
+	}
+}
+
+// TestNew_OtherDimensions: a store opened for other dimensions than an
+// index's tables hold refuses that index, on reads and writes, and names the
+// way out.
+func TestNew_OtherDimensions(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, recommendedDSN)
+	eight, err := New(ctx, db, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := vector.Coord{Index: "idx", Partition: "p", Collection: "c"}
+	if err := eight.Upsert(ctx, c, "", vector.Doc{ID: "a", Chunks: []vector.Chunk{{Vector: []float32{1, 0, 0, 0, 0, 0, 0, 0}}}}); err != nil {
+		t.Fatal(err)
+	}
+	sixteen, err := New(ctx, db, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := make([]float32, 16)
+	q[0] = 1
+	_, err = sixteen.Search(ctx, c, vector.Query{Vector: q, Limit: 10})
+	if !errors.Is(err, vector.ErrDimensions) || !strings.Contains(err.Error(), "WithGeneration") {
+		t.Fatalf("Search with a 16-d store over 8-d tables: %v, want ErrDimensions naming WithGeneration", err)
+	}
+	err = sixteen.Upsert(ctx, c, "", vector.Doc{ID: "b", Chunks: []vector.Chunk{{Vector: q}}})
+	if !errors.Is(err, vector.ErrDimensions) {
+		t.Fatalf("Upsert with a 16-d store over 8-d tables: %v, want ErrDimensions", err)
+	}
+}
+
+// TestLegacySchemaIsRefused: the tables of the schema before the meta table
+// (a vec0 table per index) are refused with an error that says what to do,
+// instead of a driver error on the first statement that touches them.
+func TestLegacySchemaIsRefused(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, recommendedDSN)
+	vec, err := tablename.For("", "idx", "vec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE `+vec+` (x)`); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(ctx, db, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := vector.Coord{Index: "idx", Partition: "p", Collection: "c"}
+	_, err = s.Search(ctx, c, vector.Query{Vector: []float32{1, 0, 0}, Limit: 10})
+	if err == nil || !strings.Contains(err.Error(), "schema before") {
+		t.Fatalf("Search over legacy tables: %v, want the schema error", err)
+	}
+	if err := s.DeleteIndex(ctx, "idx"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Upsert(ctx, c, "", vector.Doc{ID: "a", Chunks: []vector.Chunk{{Vector: []float32{1, 0, 0}}}}); err != nil {
+		t.Fatalf("Upsert after DeleteIndex dropped the legacy tables: %v", err)
+	}
+}
+
+// TestGenerationsAreIsolated: one store per generation on the same database
+// is what a migration runs while the next model's vectors are built next to
+// the current ones. The same index, coordinates and document id stay apart
+// in every operation, even when the two models' vectors differ in size.
+func TestGenerationsAreIsolated(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, recommendedDSN)
+	current, err := New(ctx, db, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := New(ctx, db, 4, WithGeneration("g2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := vector.Coord{Index: "idx", Partition: "p", Collection: "c"}
+	if err := current.Upsert(ctx, c, "m1", vector.Doc{ID: "doc", Hash: "hash-current", Chunks: []vector.Chunk{{Text: "current", Vector: []float32{1, 0, 0}}}}); err != nil {
+		t.Fatalf("Upsert current: %v", err)
+	}
+	if err := next.Upsert(ctx, c, "m2", vector.Doc{ID: "doc", Hash: "hash-next", Chunks: []vector.Chunk{{Text: "next", Vector: []float32{1, 0, 0, 0}}}}); err != nil {
+		t.Fatalf("Upsert next: %v", err)
+	}
+	got, err := next.Search(ctx, c, vector.Query{Vector: []float32{1, 0, 0, 0}, Limit: 10})
+	if err != nil || len(got) != 1 || got[0].Text != "next" {
+		t.Fatalf("next generation found %+v, %v; want only its own chunk", got, err)
+	}
+	// retiring the document in one generation leaves the other's copy
+	if err := next.Delete(ctx, c, "doc"); err != nil {
+		t.Fatalf("Delete next: %v", err)
+	}
+	if h, err := current.Hashes(ctx, c, "doc"); err != nil || h["doc"] != "hash-current" {
+		t.Fatalf("current hashes = %v, %v; want hash-current", h, err)
+	}
+}
+
+// TestNew_RejectsMalformedGeneration: a generation that cannot name tables
+// is refused when the store is built, not on its first write.
+func TestNew_RejectsMalformedGeneration(t *testing.T) {
+	if _, err := New(t.Context(), openTestDB(t, ""), 3, WithGeneration("G2")); err == nil {
+		t.Fatal(`New accepted generation "G2"`)
+	}
+}
+
+// TestGenerationObjectsCarryItsPrefix: every table and index a generation's
+// store creates is named ss_<generation>_*, so DropGeneration can find them
+// by name. SQLite's own sqlite_* objects are not the store's.
+func TestGenerationObjectsCarryItsPrefix(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, recommendedDSN)
+	s, err := New(ctx, db, 3, WithGeneration("g2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Upsert(ctx, vector.Coord{Index: "idx"}, "m", vector.Doc{ID: "doc", Chunks: []vector.Chunk{{Vector: []float32{1, 0, 0}}}}); err != nil {
+		t.Fatal(err)
+	}
+	names := tableNames(t, db)
 	if len(names) == 0 {
 		t.Fatal("the store created no tables")
 	}
@@ -434,21 +268,111 @@ func TestSqliteVec_GenerationObjectsCarryItsPrefix(t *testing.T) {
 	}
 }
 
+// TestDropGeneration: after a migration, the new generation's store drops
+// the old generation's tables, every index's, and keeps its own; it refuses
+// to drop its own generation.
+func TestDropGeneration(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, recommendedDSN)
+	old, err := New(ctx, db, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := New(ctx, db, 3, WithGeneration("g2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := vector.Doc{ID: "doc", Chunks: []vector.Chunk{{Vector: []float32{1, 0, 0}}}}
+	for _, s := range []*Store{old, next} {
+		for _, index := range []string{"a", "b"} {
+			if err := s.Upsert(ctx, vector.Coord{Index: index}, "", doc); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// a table of the application's that only looks like one of the store's
+	if _, err := db.ExecContext(ctx, `CREATE TABLE ss_mine (x)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := next.DropGeneration(ctx, "g2"); err == nil {
+		t.Fatal("DropGeneration dropped the store's own generation")
+	}
+	if err := next.DropGeneration(ctx, ""); err != nil {
+		t.Fatalf("DropGeneration: %v", err)
+	}
+	for _, name := range tableNames(t, db) {
+		if !strings.HasPrefix(name, "ss_g2_") && name != "ss_mine" {
+			t.Errorf("%s survived DropGeneration", name)
+		}
+	}
+	got, err := next.Search(ctx, vector.Coord{Index: "a"}, vector.Query{Vector: []float32{1, 0, 0}, Limit: 10})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("the new generation lost its vectors: %v, %v", got, err)
+	}
+}
+
+// TestBackendsAgree: on random vectors the exact KNN of sqlite-vec ranks as
+// MemStore's brute force does.
+func TestBackendsAgree(t *testing.T) {
+	ctx := t.Context()
+	const dims = 8
+	mem := vector.NewMemStore()
+	sv := newStore(t, dims)
+	vecs := langaitest.FakeEmbedder{Dims: dims}
+	texts := make([]string, 50)
+	for i := range texts {
+		texts[i] = fmt.Sprintf("word%d word%d word%d", i, i*7%13, i*3%11)
+	}
+	embedded, err := vecs.Embed(ctx, 0, texts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, index := range []string{"A", "B"} {
+		c := vector.Coord{Index: index, Partition: "10", Collection: "tags"}
+		for i, v := range embedded {
+			d := vector.Doc{ID: fmt.Sprintf("%s%02d", index, i), Chunks: []vector.Chunk{{Vector: v}}}
+			if err := mem.Upsert(ctx, c, "", d); err != nil {
+				t.Fatal(err)
+			}
+			if err := sv.Upsert(ctx, c, "", d); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	c := vector.Coord{Index: "A", Partition: "10", Collection: "tags"}
+	q := vector.Query{Vector: embedded[3], Limit: 10}
+	memHits, err := mem.Search(ctx, c, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svHits, err := sv.Search(ctx, c, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := func(ms []vector.Match) []string {
+		var out []string
+		for _, m := range ms {
+			out = append(out, m.DocID)
+		}
+		return out
+	}
+	if len(memHits) != 10 || !slices.Equal(ids(memHits), ids(svHits)) {
+		t.Fatalf("rankings differ:\nmem %v\nsv  %v", ids(memHits), ids(svHits))
+	}
+}
+
 func TestEndToEndWithIndex(t *testing.T) {
-	store := newStore(t, 64)
-	ix, err := search.New(langaitest.FakeEmbedder{}, store, "idx", "p", "c")
+	ix, err := search.New(langaitest.FakeEmbedder{}, newStore(t, 64), "idx", "p", "c")
 	if err != nil {
 		t.Fatalf("search.New: %v", err)
 	}
 	ctx := context.Background()
-
 	if err := ix.Index(ctx, "golang", "# Go\n\ngoroutines channels compiler"); err != nil {
 		t.Fatalf("Index: %v", err)
 	}
 	if err := ix.Index(ctx, "cooking", "# Cooking\n\npasta pizza tomato sauce"); err != nil {
 		t.Fatalf("Index: %v", err)
 	}
-
 	got, err := ix.Search(ctx, "goroutines channels", 5)
 	if err != nil {
 		t.Fatalf("Search: %v", err)

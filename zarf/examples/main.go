@@ -121,7 +121,7 @@ func run() error {
 		return err
 	}
 	base := filepath.Join(*dataDir, "index-"+slug(modelID))
-	db, err := sql.Open("sqlite3", base+".sqlite?_busy_timeout=5000&_txlock=immediate")
+	db, err := sql.Open("sqlite3", base+".sqlite?_busy_timeout=5000&_journal_mode=WAL")
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}

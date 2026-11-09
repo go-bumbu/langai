@@ -45,20 +45,20 @@ const maxImagePixels = 256 << 20
 // Every item is a set of frames, an image being one frame at time zero, and
 // each frame is one vector.Chunk whose Seq is the frame's time in
 // milliseconds. A search embeds the query's frames, asks the store for the
-// closest chunks of each and keeps the best pair per item, so a video is
+// best chunk of each of the closest items for each frame and keeps the best
+// pair per item, so a video is
 // found by the one frame that resembles the query most. The coordinates
 // (index, partition, collection) work as for Index; vectors of an image
 // model must not share a collection with a text model's.
 type MediaIndex struct {
-	embedder   langai.ImageEmbedder
-	sampler    media.Sampler
-	video      media.VideoEmbedder // whole segments instead of sampled frames, when set
-	text       langai.Embedder     // text queries, when set
-	store      vector.Store
-	minScore   float64
-	index      string
-	partition  string
-	collection string
+	embedder langai.ImageEmbedder
+	sampler  media.Sampler
+	video    media.VideoEmbedder // whole segments instead of sampled frames, when set
+	text     langai.Embedder     // text queries, when set
+	store    vector.Store
+	minScore float64
+	coord    vector.Coord
+	model    string // the image embedder's, when it names it
 }
 
 // MediaOption customizes a MediaIndex.
@@ -98,7 +98,11 @@ func WithMediaMinScore(min float64) MediaOption {
 	return func(ix *MediaIndex) { ix.minScore = min }
 }
 
-// NewMediaIndex returns a MediaIndex using the given embedder and store.
+// NewMediaIndex returns a MediaIndex using the given embedder and store, over
+// the collection at index, partition and collection, which match exactly as
+// for New. When the image embedder names its model (langai.Identified), the
+// store records it with the first vectors written to the collection and
+// refuses another model's afterwards.
 func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, partition, collection string, opts ...MediaOption) (*MediaIndex, error) {
 	if embedder == nil {
 		return nil, errors.New("nil embedder")
@@ -107,8 +111,9 @@ func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, par
 		return nil, errors.New("nil store")
 	}
 	ix := &MediaIndex{
-		embedder: embedder, store: store,
-		minScore: math.Inf(-1), index: index, partition: partition, collection: collection,
+		embedder: embedder, store: store, minScore: math.Inf(-1),
+		coord: vector.Coord{Index: index, Partition: partition, Collection: collection},
+		model: modelOf(embedder),
 	}
 	for _, opt := range opts {
 		opt(ix)
@@ -146,12 +151,8 @@ func (ix *MediaIndex) IndexImage(ctx context.Context, docID string, r io.Reader)
 		return fmt.Errorf("search: read image %q: %w", docID, err)
 	}
 	hash := bytesHash(data)
-	stored, err := ix.store.ContentHash(ctx, ix.index, ix.partition, ix.collection, docID)
-	if err != nil {
-		return fmt.Errorf("search: read content hash: %w", err)
-	}
-	if stored == hash {
-		return nil
+	if same, err := ix.unchanged(ctx, docID, hash); err != nil || same {
+		return err
 	}
 	img, err := decodeImage(bytes.NewReader(data))
 	if err != nil {
@@ -177,12 +178,8 @@ func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error 
 	if err != nil {
 		return fmt.Errorf("search: hash video %q: %w", docID, err)
 	}
-	stored, err := ix.store.ContentHash(ctx, ix.index, ix.partition, ix.collection, docID)
-	if err != nil {
-		return fmt.Errorf("search: read content hash: %w", err)
-	}
-	if stored == hash {
-		return nil
+	if same, err := ix.unchanged(ctx, docID, hash); err != nil || same {
+		return err
 	}
 	if ix.video != nil {
 		segments, err := ix.video.EmbedVideo(ctx, path)
@@ -191,12 +188,12 @@ func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error 
 		}
 		chunks := make([]vector.Chunk, len(segments))
 		for i, s := range segments {
-			if len(s.Vector) != ix.embedder.Dimensions() {
-				return fmt.Errorf("search: embed video %q: segment %d has %d dimensions, want %d", docID, i, len(s.Vector), ix.embedder.Dimensions())
+			if err := vector.Validate(s.Vector, ix.embedder.Dimensions()); err != nil {
+				return fmt.Errorf("search: embed video %q: segment %d: %w", docID, i, err)
 			}
 			chunks[i] = vector.Chunk{Seq: int(s.Start / time.Millisecond), Vector: s.Vector}
 		}
-		if err := ix.store.Upsert(ctx, ix.index, ix.partition, ix.collection, docID, hash, chunks); err != nil {
+		if err := ix.store.Upsert(ctx, ix.coord, ix.model, vector.Doc{ID: docID, Hash: hash, Chunks: chunks}); err != nil {
 			return fmt.Errorf("search: store %q: %w", docID, err)
 		}
 		return nil
@@ -218,12 +215,8 @@ func (ix *MediaIndex) IndexFrames(ctx context.Context, docID, contentHash string
 		return errors.New("empty document id")
 	}
 	if contentHash != "" {
-		stored, err := ix.store.ContentHash(ctx, ix.index, ix.partition, ix.collection, docID)
-		if err != nil {
-			return fmt.Errorf("search: read content hash: %w", err)
-		}
-		if stored == contentHash {
-			return nil
+		if same, err := ix.unchanged(ctx, docID, contentHash); err != nil || same {
+			return err
 		}
 	}
 	return ix.indexFrames(ctx, docID, contentHash, frames)
@@ -236,12 +229,26 @@ func (ix *MediaIndex) indexFrames(ctx context.Context, docID, hash string, frame
 	}
 	chunks := make([]vector.Chunk, len(frames))
 	for i, f := range frames {
+		if err := vector.Validate(vectors[i], ix.embedder.Dimensions()); err != nil {
+			return fmt.Errorf("search: embed %q: frame %d: %w", docID, i, err)
+		}
 		chunks[i] = vector.Chunk{Seq: int(f.At / time.Millisecond), Vector: vectors[i]}
 	}
-	if err := ix.store.Upsert(ctx, ix.index, ix.partition, ix.collection, docID, hash, chunks); err != nil {
+	if err := ix.store.Upsert(ctx, ix.coord, ix.model, vector.Doc{ID: docID, Hash: hash, Chunks: chunks}); err != nil {
 		return fmt.Errorf("search: store %q: %w", docID, err)
 	}
 	return nil
+}
+
+// unchanged reports whether the store holds hash for docID, so indexing it
+// again would change nothing.
+func (ix *MediaIndex) unchanged(ctx context.Context, docID, hash string) (bool, error) {
+	stored, err := ix.store.Hashes(ctx, ix.coord, docID)
+	if err != nil {
+		return false, fmt.Errorf("search: read content hash: %w", err)
+	}
+	h, ok := stored[docID]
+	return ok && h == hash, nil
 }
 
 // embed runs the frames' images through the embedder and checks it answered
@@ -273,7 +280,7 @@ func (ix *MediaIndex) Delete(ctx context.Context, docID string) error {
 	if docID == "" {
 		return errors.New("empty document id")
 	}
-	if err := ix.store.Delete(ctx, ix.index, ix.partition, ix.collection, docID); err != nil {
+	if err := ix.store.Delete(ctx, ix.coord, docID); err != nil {
 		return fmt.Errorf("search: delete %q: %w", docID, err)
 	}
 	return nil
@@ -347,7 +354,7 @@ var ErrNotIndexed = errors.New("search: no stored vectors for this id")
 // is a query and QueryAt is its time, as with SearchVideo. The item itself
 // comes first with a score of about 1.
 func (ix *MediaIndex) SearchIndexed(ctx context.Context, docID string, limit int) ([]MediaMatch, error) {
-	chunks, err := ix.store.Chunks(ctx, ix.index, ix.partition, ix.collection, docID)
+	chunks, err := ix.store.Chunks(ctx, ix.coord, docID)
 	if err != nil {
 		return nil, fmt.Errorf("search: read stored vectors: %w", err)
 	}
@@ -400,18 +407,13 @@ func (ix *MediaIndex) search(ctx context.Context, queries []queryVector, limit i
 	}
 	best := make(map[string]MediaMatch)
 	for _, q := range queries {
-		// over-fetch chunks so that several frames of the same item don't
-		// crowd other items out of the final per-item list
-		raw, err := ix.store.Search(ctx, ix.index, ix.partition, ix.collection, q.vector, limit*4)
+		// the store answers each item's best frame for this query, so the
+		// frames of one item never crowd the others out
+		raw, err := ix.store.Search(ctx, ix.coord, vector.Query{Vector: q.vector, Limit: limit, Model: ix.model})
 		if err != nil {
 			return nil, fmt.Errorf("search: search: %w", err)
 		}
-		for _, m := range raw {
-			// the store returns hits best first, so the first one below the
-			// floor ends the list
-			if m.Score < ix.minScore {
-				break
-			}
+		for _, m := range aboveFloor(raw, ix.minScore) {
 			if cur, ok := best[m.DocID]; ok && cur.Score >= m.Score {
 				continue
 			}

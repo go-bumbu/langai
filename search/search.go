@@ -25,13 +25,12 @@ import (
 // Index ties an Embedder, a Store and a Chunker together into the high-level
 // operations callers use: index a document, remove it, search.
 type Index struct {
-	embedder   langai.Embedder
-	store      vector.Store
-	chunker    Chunker
-	minScore   float64
-	index      string
-	partition  string
-	collection string
+	embedder langai.Embedder
+	store    vector.Store
+	chunker  Chunker
+	minScore float64
+	coord    vector.Coord
+	model    string // the embedder's, when it names it
 }
 
 // Option customizes an Index.
@@ -55,7 +54,11 @@ func WithMinScore(min float64) Option {
 	return func(ix *Index) { ix.minScore = min }
 }
 
-// New returns an Index using the given embedder and store.
+// New returns an Index using the given embedder and store, over the
+// collection at index, partition and collection; an empty partition or
+// collection is a value like any other, never a wildcard. When the embedder
+// names its model (langai.Identified), the store records it with the first
+// vectors written to the collection and refuses another model's afterwards.
 func New(embedder langai.Embedder, store vector.Store, index, partition, collection string, opts ...Option) (*Index, error) {
 	if embedder == nil {
 		return nil, errors.New("nil embedder")
@@ -66,8 +69,9 @@ func New(embedder langai.Embedder, store vector.Store, index, partition, collect
 	// no floor by default: math.Inf(-1) rather than 0, because 0 is a
 	// meaningful cutoff on cosine backends and would silently become policy
 	ix := &Index{
-		embedder: embedder, store: store, chunker: &MarkdownChunker{},
-		minScore: math.Inf(-1), index: index, partition: partition, collection: collection,
+		embedder: embedder, store: store, chunker: &MarkdownChunker{}, minScore: math.Inf(-1),
+		coord: vector.Coord{Index: index, Partition: partition, Collection: collection},
+		model: modelOf(embedder),
 	}
 	for _, opt := range opts {
 		opt(ix)
@@ -84,11 +88,11 @@ func (ix *Index) Index(ctx context.Context, docID, text string) error {
 		return errors.New("empty document id")
 	}
 	hash := ContentHash(text)
-	stored, err := ix.store.ContentHash(ctx, ix.index, ix.partition, ix.collection, docID)
+	stored, err := ix.store.Hashes(ctx, ix.coord, docID)
 	if err != nil {
 		return fmt.Errorf("search: read content hash: %w", err)
 	}
-	if stored == hash {
+	if h, ok := stored[docID]; ok && h == hash {
 		return nil
 	}
 	parts := ix.chunker.Chunk(text)
@@ -102,10 +106,13 @@ func (ix *Index) Index(ctx context.Context, docID, text string) error {
 			return fmt.Errorf("search: embedder returned %d vectors for %d texts", len(vectors), len(parts))
 		}
 		for i, part := range parts {
+			if err := vector.Validate(vectors[i], ix.embedder.Dimensions()); err != nil {
+				return fmt.Errorf("search: embed document %q chunk %d: %w", docID, i, err)
+			}
 			chunks = append(chunks, vector.Chunk{Seq: i, Text: part, Vector: vectors[i]})
 		}
 	}
-	if err := ix.store.Upsert(ctx, ix.index, ix.partition, ix.collection, docID, hash, chunks); err != nil {
+	if err := ix.store.Upsert(ctx, ix.coord, ix.model, vector.Doc{ID: docID, Hash: hash, Chunks: chunks}); err != nil {
 		return fmt.Errorf("search: store document: %w", err)
 	}
 	return nil
@@ -116,7 +123,7 @@ func (ix *Index) Delete(ctx context.Context, docID string) error {
 	if docID == "" {
 		return errors.New("empty document id")
 	}
-	return ix.store.Delete(ctx, ix.index, ix.partition, ix.collection, docID)
+	return ix.store.Delete(ctx, ix.coord, docID)
 }
 
 // Search embeds the query and returns the closest documents, best first, at
@@ -139,30 +146,34 @@ func (ix *Index) Search(ctx context.Context, query string, limit int) ([]vector.
 	if len(vectors) != 1 {
 		return nil, fmt.Errorf("search: embedder returned %d vectors for 1 query", len(vectors))
 	}
-	// over-fetch chunks so that several chunks of the same document don't
-	// crowd other documents out of the final per-document list
-	raw, err := ix.store.Search(ctx, ix.index, ix.partition, ix.collection, vectors[0], limit*4)
+	if err := vector.Validate(vectors[0], ix.embedder.Dimensions()); err != nil {
+		return nil, fmt.Errorf("search: embed query: %w", err)
+	}
+	// the store answers one match per document, its best chunk
+	raw, err := ix.store.Search(ctx, ix.coord, vector.Query{Vector: vectors[0], Limit: limit, Model: ix.model})
 	if err != nil {
 		return nil, fmt.Errorf("search: search: %w", err)
 	}
-	seen := make(map[string]bool, len(raw))
-	out := make([]vector.Match, 0, limit)
-	for _, m := range raw {
-		// the store returns hits best first, so the first one below the floor
-		// ends the list — no point looking at weaker chunks
-		if m.Score < ix.minScore {
-			break
-		}
-		if seen[m.DocID] {
-			continue
-		}
-		seen[m.DocID] = true
-		out = append(out, m)
-		if len(out) == limit {
-			break
+	return aboveFloor(raw, ix.minScore), nil
+}
+
+// aboveFloor returns the leading matches of raw (best first) that score at
+// least min. A NaN score never passes.
+func aboveFloor(raw []vector.Match, min float64) []vector.Match {
+	for i, m := range raw {
+		if !(m.Score >= min) {
+			return raw[:i]
 		}
 	}
-	return out, nil
+	return raw
+}
+
+// modelOf returns the model e names, "" when it names none.
+func modelOf(e any) string {
+	if id, ok := e.(langai.Identified); ok {
+		return id.Model()
+	}
+	return ""
 }
 
 // ContentHash is the fingerprint used to detect unchanged documents.

@@ -192,8 +192,8 @@ func TestMediaIndex_UpdateReplacesAndDeleteRemoves(t *testing.T) {
 	if hits, _ = ix.SearchImage(ctx, bytes.NewReader(a), 10); len(hits) != 0 {
 		t.Errorf("after Delete: hits = %+v", hits)
 	}
-	if h, _ := store.ContentHash(ctx, "t", "p", "c", "x"); h != "" {
-		t.Errorf("after Delete the hash is still stored: %q", h)
+	if h, _ := store.Hashes(ctx, vector.Coord{Index: "t", Partition: "p", Collection: "c"}, "x"); len(h) != 0 {
+		t.Errorf("after Delete the hash is still stored: %v", h)
 	}
 	if err := ix.Delete(ctx, "never-indexed"); err != nil {
 		t.Errorf("deleting an unknown id: %v", err)
@@ -212,6 +212,29 @@ func clipFrames() []media.Frame {
 	}
 }
 
+// checkClipChunks checks what IndexVideo stored for clipFrames: one chunk per
+// frame, Seq in milliseconds, and a store search that finds the clip once,
+// by its frame closest to the query.
+func checkClipChunks(t *testing.T, store vector.Store, emb langai.ImageEmbedder) {
+	t.Helper()
+	ctx := context.Background()
+	coord := vector.Coord{Index: "t", Partition: "p", Collection: "c"}
+	chunks, err := store.Chunks(ctx, coord, "clip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 3 || chunks[0].Seq != 0 || chunks[1].Seq != 4000 || chunks[2].Seq != 8000 || chunks[1].Text != "" {
+		t.Errorf("stored chunks = %+v, want 3 at Seq 0, 4000 and 8000", chunks)
+	}
+	raw, err := store.Search(ctx, coord, vector.Query{Vector: mustEmbed(t, emb, pic(64, 48, green, red)), Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 1 || raw[0].Seq != 4000 {
+		t.Errorf("store search = %+v, want the clip once, by its frame at Seq 4000", raw)
+	}
+}
+
 func TestMediaIndex_ImageQueryFindsTheVideoFrame(t *testing.T) {
 	sampler := &countingSampler{frames: clipFrames()}
 	ix, emb, store := newMediaIndex(t, WithSampler(sampler))
@@ -220,14 +243,7 @@ func TestMediaIndex_ImageQueryFindsTheVideoFrame(t *testing.T) {
 	if err := ix.IndexVideo(ctx, "clip", path); err != nil {
 		t.Fatal(err)
 	}
-	// one chunk per frame, Seq in milliseconds
-	raw, err := store.Search(ctx, "t", "p", "c", mustEmbed(t, emb, pic(64, 48, green, red)), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(raw) != 3 || raw[0].Seq != 4000 || raw[0].Text != "" {
-		t.Errorf("stored chunks = %+v, want 3 with the best at Seq 4000", raw)
-	}
+	checkClipChunks(t, store, emb)
 	// the image query is the second shot at another size
 	hits, err := ix.SearchImage(ctx, bytes.NewReader(encoded(t, pic(128, 96, green, red))), 10)
 	if err != nil {
@@ -401,8 +417,8 @@ func TestMediaIndex_IndexFramesHonoursTheCallersHash(t *testing.T) {
 	if err := ix.IndexFrames(ctx, "empty", "h2", nil); err != nil {
 		t.Fatal(err)
 	}
-	if h, _ := store.ContentHash(ctx, "t", "p", "c", "empty"); h != "h2" {
-		t.Errorf("stored hash = %q, want h2", h)
+	if h, _ := store.Hashes(ctx, vector.Coord{Index: "t", Partition: "p", Collection: "c"}, "empty"); h["empty"] != "h2" {
+		t.Errorf("stored hash = %q, want h2", h["empty"])
 	}
 	hits, _ := ix.SearchFrames(ctx, frames, 10)
 	for _, h := range hits {
