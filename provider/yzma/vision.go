@@ -85,6 +85,13 @@ type VisionOptions struct {
 	// Cutter cuts a video into segments and reads its length; media/ffmpeg
 	// has it. Without one EmbedVideo fails.
 	Cutter media.Cutter
+	// TempDir is where EmbedVideo writes its segment files, in a directory
+	// of its own that it removes again; "" means os.TempDir(). One segment
+	// is there at a time, each removed once it is embedded. A video without
+	// a length is copied there first, up to MaxSegments segments of it, so
+	// such a file needs room for that copy: point TempDir at a disk when
+	// the default one is kept in memory (a tmpfs).
+	TempDir string
 }
 
 // VisionSpec describes one vision embedding model: the language model GGUF,
@@ -407,6 +414,7 @@ type Vision struct {
 	batch       int // most tokens one decode takes
 	dims        int
 	cutter      media.Cutter
+	tempDir     string // where segment files go, "" for os.TempDir()
 	segment     time.Duration
 	fps         float64
 	maxSegments int
@@ -445,6 +453,7 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 		template:    api.chatTemplate(model),
 		instruction: opts.Instruction,
 		cutter:      opts.Cutter,
+		tempDir:     opts.TempDir,
 		segment:     opts.SegmentLength,
 		fps:         opts.FPS,
 		maxSegments: opts.MaxSegments,
@@ -629,6 +638,12 @@ func (v *Vision) EmbedImages(ctx context.Context, images []image.Image) ([][]flo
 // segments of it, next to the segments in the temp directory. The copy is
 // then cut like any other video. A file that has no length even as a copy
 // (a raw elementary stream) is embedded as its first segment only.
+//
+// The segment files are written into a directory of this call's own inside
+// VisionOptions.TempDir, one at a time: each is removed once it is
+// embedded, and the directory when the call returns. So a video takes the
+// room of one segment there, and one without a length that of its copy as
+// well, which is at most MaxSegments segments long.
 func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
 	if v.cutter == nil {
 		return nil, errors.New("yzma: no Cutter: set VisionOptions.Cutter (media/ffmpeg) to embed videos")
@@ -647,9 +662,9 @@ func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]langai.Segment,
 		}
 		return []langai.Segment{{Start: 0, End: duration, Vector: vec}}, nil
 	}
-	dir, err := os.MkdirTemp("", "langai-vision-*")
+	dir, err := os.MkdirTemp(v.tempDir, "langai-vision-*")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("yzma: a directory for the segments (VisionOptions.TempDir): %w", err)
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	if duration <= 0 {
@@ -753,6 +768,9 @@ func (v *Vision) embedSegments(ctx context.Context, path string, duration time.D
 			return nil, fmt.Errorf("yzma: cut segment %d: %w", i, err)
 		}
 		vec, err := v.embedVideoFile(ctx, cut)
+		// the segment is done with, whatever came of it: one is on disk at a
+		// time, not the whole video
+		_ = os.Remove(cut)
 		if err != nil {
 			return nil, fmt.Errorf("yzma: segment %d: %w", i, err)
 		}

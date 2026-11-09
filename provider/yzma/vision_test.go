@@ -213,6 +213,10 @@ type fakeCutter struct {
 	// end, when set, is where the video really ends, whatever durations
 	// says: a cut from there on is media.ErrPastEnd
 	end time.Duration
+	// dir is the directory of the last cut, and maxFiles the most files it
+	// held right after any cut was written
+	dir      string
+	maxFiles int
 }
 
 func (c *fakeCutter) Duration(_ context.Context, path string) (time.Duration, error) {
@@ -231,7 +235,13 @@ func (c *fakeCutter) Cut(_ context.Context, _ string, start, length time.Duratio
 	if c.end > 0 && start >= c.end {
 		return fmt.Errorf("fake cutter: %w", media.ErrPastEnd)
 	}
-	return os.WriteFile(out, []byte("cut"), 0o600)
+	if err := os.WriteFile(out, []byte("cut"), 0o600); err != nil {
+		return err
+	}
+	c.dir = filepath.Dir(out)
+	entries, err := os.ReadDir(c.dir)
+	c.maxFiles = max(c.maxFiles, len(entries))
+	return err
 }
 
 func testVisionSpec() VisionSpec {
@@ -805,6 +815,58 @@ func TestVision_EmbedVideoStopsAtTheEndAndAtTheCap(t *testing.T) {
 				t.Errorf("the last segment ends at %v, want %v", segs[len(segs)-1].End, tc.lastEnd)
 			}
 		})
+	}
+}
+
+// TestVision_EmbedVideoKeepsOneSegmentOnDisk: a segment file is removed as
+// soon as it is embedded, so a long video takes the room of one segment in
+// the temp directory (plus, for a file without a length, its copy) and not
+// that of the whole video; the directory they are in is VisionOptions.TempDir
+// when that is set, and is gone when the call returns.
+func TestVision_EmbedVideoKeepsOneSegmentOnDisk(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		durations map[string]time.Duration
+		tempDir   bool // set VisionOptions.TempDir
+		segments  int
+		maxFiles  int
+	}{
+		{name: "a hundred segments", durations: map[string]time.Duration{"film.mp4": 100 * DefaultSegmentLength}, segments: 100, maxFiles: 1},
+		{name: "in a temp directory of the caller's", durations: map[string]time.Duration{"film.mp4": 100 * DefaultSegmentLength}, tempDir: true, segments: 100, maxFiles: 1},
+		{name: "without a length: the copy and one segment", durations: map[string]time.Duration{"film.mp4": 0, "source.mkv": 100 * DefaultSegmentLength}, tempDir: true, segments: 100, maxFiles: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cutter := &fakeCutter{durations: tc.durations}
+			opts := VisionOptions{Cutter: cutter}
+			if tc.tempDir {
+				opts.TempDir = t.TempDir()
+			}
+			v := openVisionFake(t, newFakeVision(), opts)
+			segs, err := v.EmbedVideo(context.Background(), "/media/film.mp4")
+			if err != nil || len(segs) != tc.segments {
+				t.Fatalf("%d segments, %v; want %d", len(segs), err, tc.segments)
+			}
+			if cutter.maxFiles != tc.maxFiles {
+				t.Errorf("%d files in the temp directory at once, want %d", cutter.maxFiles, tc.maxFiles)
+			}
+			if _, err := os.Stat(cutter.dir); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the segment directory %s is still there (%v)", cutter.dir, err)
+			}
+			want := os.TempDir()
+			if tc.tempDir {
+				want = opts.TempDir
+			}
+			if got := filepath.Dir(cutter.dir); got != filepath.Clean(want) {
+				t.Errorf("the segments were cut in %s, want a directory inside %s", got, want)
+			}
+		})
+	}
+	// a temp directory that is not there is an error, not a fall back to
+	// another one
+	cutter := &fakeCutter{durations: map[string]time.Duration{"film.mp4": time.Minute}}
+	v := openVisionFake(t, newFakeVision(), VisionOptions{Cutter: cutter, TempDir: filepath.Join(t.TempDir(), "missing")})
+	if _, err := v.EmbedVideo(context.Background(), "/media/film.mp4"); err == nil || len(cutter.cuts) != 0 {
+		t.Errorf("a missing TempDir: err = %v after %d cuts, want an error before any", err, len(cutter.cuts))
 	}
 }
 

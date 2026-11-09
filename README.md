@@ -494,6 +494,11 @@ pictures and clips, and an image finds the stretch of a video it appears in.
   A file without a length (a recording that was never finalized, a stream dump) is
   first copied into a Matroska file in the temp directory, at most `MaxSegments`
   segments of it, so that it has one, and is then cut like any other.
+- **Disk.** Segment files go into a directory of the call's own inside
+  `VisionOptions.TempDir` (the system's temp directory unless set), one at a time: each
+  is removed once it is embedded. A video takes the room of one segment there; one
+  without a length also that of its copy, up to `MaxSegments` segments long, so point
+  `TempDir` at a disk when the system's is kept in memory.
 - **Segment containers.** ffmpeg picks a segment's container by its file extension, so
   a segment keeps the video's extension only where that names a container known to take
   such a file's codecs by stream copy: `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, `.ts`,
