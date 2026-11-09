@@ -2,6 +2,7 @@ package tagging
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"math"
 	"os"
@@ -45,7 +46,8 @@ func TestGoldenTagging(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := newGoldenWorld(t, emb, ds, 0)
-	untagged, unrelated := w.untagged(ctx, t)
+	untagged, unrelated, _ := w.untagged(ctx, t, w.truth)
+	noWrongTag, _, closestWrong := w.untagged(ctx, t, w.family)
 	got := map[string]float64{
 		// no examples anywhere, so every tag is judged by its name alone (the
 		// eval's name-only f1@0.46, without the path rule, was 0.7071 when last
@@ -55,8 +57,13 @@ func TestGoldenTagging(t *testing.T) {
 		"mixed examples": w.mixed(ctx, t).f1(),
 		// the document's own tags don't exist, but the rest of their tag family
 		// does: share that gets no tag but ancestors of its own, which its path
-		// implies ("cooking" for a recipe when "cooking / recipes" is gone)
-		"fits nothing, no unrelated tag": unrelated,
+		// implies ("cooking" for a recipe when "cooking / recipes" is gone). The
+		// other picks are siblings and children: related tags, not unrelated ones
+		"own tags gone, none but ancestors": unrelated,
+		// the whole family of each of the document's tags is gone (the tag, its
+		// parent, siblings and children), so no tag left fits it: share that
+		// gets no tag. One minus this is the wrong-tag rate
+		"fits no tag, gets none": noWrongTag,
 		// two documents stitched into one page: share that gets both tags
 		"two topics, both tags": w.bothTags(ctx, t),
 		// the same with ChunkBytes 2000: every essence is one piece, so the
@@ -65,11 +72,13 @@ func TestGoldenTagging(t *testing.T) {
 		// itemScore)
 		"two topics, ChunkBytes 2000": newGoldenWorld(t, emb, ds, 2000).bothTags(ctx, t),
 	}
-	// the share that gets no tag at all, ancestors included: logged, not
-	// enforced (0.7500 under the centroid rule without the path rule, 0.6429
-	// under this one, which gives a recipe "cooking" once "cooking / recipes" is
-	// gone)
-	t.Logf("%-30s %.4f", "fits nothing, no tag at all", untagged)
+	// with only its own tags gone, the share that gets no tag at all, ancestors
+	// included: logged, not enforced (0.7500 under the centroid rule without the
+	// path rule, 0.6429 under this one, which gives a recipe "cooking" once
+	// "cooking / recipes" is gone)
+	t.Logf("%-33s %.4f", "own tags gone, no tag at all", untagged)
+	// how far the best unrelated tag of any document is from its cutoff
+	t.Logf("%-33s %s", "fits no tag, closest wrong tag", closestWrong)
 	floors := []struct {
 		name  string
 		floor float64
@@ -78,15 +87,20 @@ func TestGoldenTagging(t *testing.T) {
 		// the path rule: 0.7889, 0.8597, 0.8095, 0.8039. The centroid rule
 		// before them, at 0.46 and 0.70: 0.7071, 0.7561, 0.8333, 0.5882. Two
 		// topics with ChunkBytes 2000, measured 2026-11-07: 0.8725 (0.8431 when
-		// a text of two pieces scored by their mean, 0.7745 by the better one)
+		// a text of two pieces scored by their mean, 0.7745 by the better one).
+		// Fits no tag, measured 2026-11-09: 1.0000, none of the 84 documents got
+		// a tag, the closest being "cooking / baking" for de-zuckerarm, 0.0157
+		// under its cutoff; its floor is that less 0.05, so four documents may
+		// get a wrong tag before it fails
 		{"names only", 0.74},
 		{"mixed examples", 0.78},
-		{"fits nothing, no unrelated tag", 0.75},
+		{"own tags gone, none but ancestors", 0.75},
+		{"fits no tag, gets none", 0.95},
 		{"two topics, both tags", 0.70},
 		{"two topics, ChunkBytes 2000", 0.82},
 	}
 	for _, f := range floors {
-		t.Logf("%-30s %.4f (floor %.2f)", f.name, got[f.name], f.floor)
+		t.Logf("%-33s %.4f (floor %.2f)", f.name, got[f.name], f.floor)
 		// "not at or above", not "below": a scenario with nothing to count (no
 		// documents, or no pairs to stitch) is 0/0, a NaN, and every comparison
 		// with a NaN is false
@@ -288,18 +302,35 @@ func (w *goldenWorld) mixed(ctx context.Context, t *testing.T) tagCounts {
 	return all
 }
 
-// untagged deletes each document's own tags, asks for its suggestions and
-// puts the tags back. It reports the share of documents that get none, and the
-// share that get none but ancestors of their own tags.
-func (w *goldenWorld) untagged(ctx context.Context, t *testing.T) (none, noUnrelated float64) {
-	n, ok := 0, 0
+// untagged deletes the tags drop names for each document (its own tags, or
+// their whole families), asks for its suggestions and puts the tags back. It
+// reports the share of documents that get none, the share that get none but
+// ancestors of their own tags, and the tag left in the space that came
+// closest to being picked, or was picked by most: its score less its cutoff,
+// with the document and the tag, which says how much room the first share has.
+func (w *goldenWorld) untagged(ctx context.Context, t *testing.T, drop func(eval.Document) []string) (none, noUnrelated float64, closest string) {
+	t.Helper()
+	n, ok, margin := 0, 0, math.Inf(-1)
 	for _, doc := range w.ds.Documents {
-		own := w.truth(doc)
+		own := drop(doc)
 		for _, id := range own {
 			w.deleteTag(id)
 		}
 		w.setMembers(map[string]bool{doc.ID: true}, func(int) int { return math.MaxInt })
-		got := w.suggest(ctx, t, doc)
+		scores, err := w.space.Scores(ctx, strconv.Itoa(w.rev), doc.Essence())
+		if err != nil {
+			t.Fatalf("Scores: %v", err)
+		}
+		var got []string // what Suggest returns: the picked ids
+		for _, sc := range scores {
+			if sc.Picked() {
+				got = append(got, sc.ID)
+			}
+			if m := sc.Score - sc.Cutoff; m > margin {
+				margin = m
+				closest = fmt.Sprintf("%+.4f (%s, %q at %.4f)", m, doc.ID, w.names[sc.ID], sc.Score)
+			}
+		}
 		if len(got) == 0 {
 			n++
 		}
@@ -311,7 +342,27 @@ func (w *goldenWorld) untagged(ctx context.Context, t *testing.T) (none, noUnrel
 		}
 	}
 	all := float64(len(w.ds.Documents))
-	return float64(n) / all, float64(ok) / all
+	return float64(n) / all, float64(ok) / all, closest
+}
+
+// family returns the tags of the families of the document's own tags: every
+// tag under the top level of one of them, so the tag itself, its parent, its
+// siblings and its children. What is left in the space has nothing to do with
+// the document.
+func (w *goldenWorld) family(doc eval.Document) []string {
+	var ids []string
+	for _, id := range w.allTags {
+		if slices.ContainsFunc(doc.Tags, func(own string) bool { return topLevel(own) == topLevel(w.names[id]) }) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// topLevel is the first level of a tag path.
+func topLevel(path string) string {
+	top, _, _ := strings.Cut(path, " / ")
+	return top
 }
 
 // ancestorOfOwn reports whether the tag is an ancestor of one of the
