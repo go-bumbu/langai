@@ -118,13 +118,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
   paper nor the card mentions filtering; quality on explicit material is
   untested.
 - [ ] vision model follow-ups
-  Matryoshka: the model's vectors can be cut to 64..2048 and re-normalized;
-  a VisionConfig.Dims would shrink the store. The 8B model (MMEB-V2 77.8 vs
-  73.2) and the Qwen3-VL-Reranker as a second stage are untried. The
-  instruction is one per Vision; per-call instructions (a query instruction
-  that differs from the document one) would need a second prompt path.
-  ImageMaxTokens did not change the token count in the spike (484 for
-  800x600, 1,437 for 1080x1350): check what the projector's bounds do.
+  Matryoshka: the model's vectors can be cut to 64..2048 and re-normalized; a VisionOptions setting for the output size would shrink the store (the model id already carries dims). The 8B model (MMEB-V2 77.8 vs 73.2) and the Qwen3-VL-Reranker as a second stage are untried. The instruction is one per Vision; per-call instructions (a query instruction that differs from the document one) would need a second prompt path. ImageMaxTokens did not change the token count in the spike (484 for 800x600, 1,437 for 1080x1350): check what the projector's bounds do. Short videos go to libmtmd's own ffmpeg, which has no protocol whitelist: routing them through the Cutter would close that.
 - [ ] run provider/yzma on CUDA and on macOS
   Accel auto picks the build from the hardware and offloads to the GPU that
   registers; Vulkan on an AMD 890M iGPU was run (1.5 s per photo vs 7 s on
@@ -229,7 +223,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
 - [x] consistent provider constructors
   yzma/onnx Config repeat Runtime's fields, OpenVision breaks the Open(ctx, spec, Runtime) pattern, lookup names differ (Spec, LookupCompleterSpec, LookupVisionSpec), yzma has no Models(), and the cache constructors return the interface.
 - [ ] one Chunker for search and tagging
-  search.MarkdownChunker{MaxChars} and tagging.Chunk(text, maxBytes) differ in units and live apart; Tagger and Generator take only an int. One Chunker port with Markdown and Even implementations. The eval floors depend on tagging.Chunk, so re-measure.
+  search.MarkdownChunker{MaxChars} and tagging.Chunk(text, maxBytes) differ in units and live apart; Tagger and Generator take only an int. Left open on 2026-11-09 on purpose: the two do different jobs (structure-aware retrieval chunks with a heading path vs even pieces for scoring), the tagging floors were measured on tagging.Chunk, and a shared port would need a re-measure to prove it changes nothing.
 - [x] doc drift
   internal/tablename says tagging uses ForPrefix (dead outside its test); WithGeneration docs point consumers at an internal package; README's package tree and dependency rule are out of date.
 
@@ -495,3 +489,5 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Commits baf6aea 47975e1 70ffe86 872d33f 711f151 ab7184e. Ids, partitions, collections and models with invalid UTF-8 or NUL are refused with vector.ErrInvalidID (search.ErrEmptyID wraps it; in IndexBatch such a doc lands in Failed); vector.ErrEmptyIndex is exported and checked everywhere, also in search.New; driver errors are wrapped as vector: <backend> <op>. An emptied collection gives up its model record, Store.DeleteCollection and Store.Model are new on the port, the search indexes check the model before embedding and gained Reset(ctx) for a model migration. Tables are created and dropped in one locked transaction (no more spurious old-schema error on a concurrent first write), a store reopens an index another store dropped, opening an index does no I/O under the store-wide lock, pgvec locks deleted rows in id order and retries on deadlock, and vectors whose float32 norm underflows or overflows are refused. vectortest gained RunShared for several stores on one database. Open: content hashes and chunk text are not checked for invalid UTF-8 at the Store level (search cleans text first).
 - [x] chunker: bodiless headings and code blocks
   Commit f811299. A heading with no text and no subheading becomes a chunk of its heading path instead of vanishing; ATX headings allow at most 3 spaces of indent and are not read inside fenced code. The chunker fingerprint is markdown/2, so text collections re-index once.
+- [x] final verification on 2026-11-09 at 8ed7fb3
+  All pass: go test -race ./... with the Postgres containers, make verify (test, license-check, lint, benchmark, coverage), make test-models, the Tagger long set, make test-images, make test-vision and make test-gentags. Numbers: golden search recall@5 1.000, mrr 1.000, cross-lingual recall@10 1.000, tagging F1 0.707, top1 0.881; Tagger long set main 1.000, side 0.897, precision 0.801, mean F1 0.838; Generator long set main 1.000, side 0.759, precision 0.887, mean F1 0.822 (unchanged by both parser reworks); images 0.992 / 0.979 / 0.986 / 0.928 / 0.693; vision red vs resized 0.932, red vs blue 0.710. Not run: make semeval, anything on CUDA or macOS, and CI (nothing was pushed).
