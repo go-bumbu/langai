@@ -405,6 +405,19 @@ and `todo list --json` cover the common actions — run `todo --help`.
 - [x] no cross-process download lock off unix
   Two Windows processes can interleave writes to one .partial file. No Windows build is pinned today.
 
+## found while building the example
+
+- [ ] EmbeddingCache has no count or size
+  The status page can only show the database file's bytes.
+- [ ] no lazy VideoEmbedder; Vision.Fingerprint needs a loaded model
+  The example keeps the vision model eager for this reason. A LazyVideoEmbedder and a fingerprint computed from spec and options (like ModelID) would let it load on first use.
+- [ ] yzma.Completer has no Accel(); LazyCompleter has no Model()
+  The status page cannot say what runs the chat model or name it before load.
+- [ ] audio-only video fails with ffmpeg's error, not ErrNoFrames
+  IndexVideo on an mp4 without a video stream surfaces ffmpeg's own message.
+- [ ] phash.Hash does not turn EXIF-rotated JPEGs upright
+  MediaIndex applies EXIF orientation in an unexported decode, so a raw phash.Hash of the same file can disagree with the indexed vector. From reading the code, not reproduced.
+
 # change log
 
 - [x] vector: new Store port (breaking)
@@ -493,3 +506,5 @@ and `todo list --json` cover the common actions — run `todo --help`.
   All pass: go test -race ./... with the Postgres containers, make verify (test, license-check, lint, benchmark, coverage), make test-models, the Tagger long set, make test-images, make test-vision and make test-gentags. Numbers: golden search recall@5 1.000, mrr 1.000, cross-lingual recall@10 1.000, tagging F1 0.707, top1 0.881; Tagger long set main 1.000, side 0.897, precision 0.801, mean F1 0.838; Generator long set main 1.000, side 0.759, precision 0.887, mean F1 0.822 (unchanged by both parser reworks); images 0.992 / 0.979 / 0.986 / 0.928 / 0.693; vision red vs resized 0.932, red vs blue 0.710. Not run: make semeval, anything on CUDA or macOS, and CI (nothing was pushed).
 - [x] polish: comments, example prune, README upgrade notes
   Commits bf90f88 bf3922b 583b565 7bc037b, merged after the final verification (docs, comments and the example app only; go test -race ./..., lint and license-check pass on top). Quality figures in tagging doc comments are dated or marked as measured under the scoring before 2026-11-09; the golden top1 comment now says 0.8810. The autotag example prunes its embedding cache at startup and daily (30-day cutoff). Package docs name multi-vector search, Vision, the Cutter and Space. README gained Upgrading from v0.1.1: what changes for stored data. README download sizes, timings and memory figures were not re-checked.
+- [x] examples: status, text search and duplicates pages, lazy models, Postgres option
+  Commits a94c245 3b1512f 8943146 f9b9678 53a2d11 d5bbe53 54a377e 035e1e7 fc94b40 faf7879 5d3e05c. The example app now has five pages behind one navigation bar and stylesheet. Status (the home page): every model with its lazy-loader state, id and a load-now button, every collection with its recorded model, document count and a reset, the tagging cache with a prune. Text search: a docs folder indexed with IndexBatch (its result shown), reconciled through Docs and Delete, search hits with chunk text and heading path, the chunks of a document, more like this. Duplicates: provider/phash groups by Hamming distance with a threshold and the choice of pHash/dHash at 64/256 bits, plus find-copies through a MediaIndex over the hash. Media page: a model mismatch shows a banner with reset-and-rescan, too-large and no-frames badges. Tagging page: incomplete tags, a warm button. The text embedder, chat model and ONNX image model load lazily through the library's loaders (a restart over unchanged data serves in under a second); the Qwen3-VL vision model stays eager. -postgres / POSTGRES switches to pgvec and pgcache. make prepare writes 108 sample documents and 14 near-duplicate pictures. Exercised against the running app on real models: 108 documents / 636 chunks indexed in 14.3 s, an unchanged rescan 7 ms; my sourdough starter is not rising hit the English text at 0.747 and the German and Spanish bread texts at 0.498 and 0.474; pHash-64 at 4 bits gave 6 groups of 24 pictures, closest unrelated pair 22 bits. Coverage of the new packages 75 to 99 percent. pgx is now a direct dependency in go.mod because the example imports it. Not reproduced live, unit-tested only: ErrNoFrames (an audio-only mp4 fails with ffmpeg's own error) and Scope.Incomplete.
