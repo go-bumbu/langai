@@ -318,7 +318,7 @@ func (s *Store) metaUnlessLegacy(ctx context.Context, t tables, index string) (b
 		return false, err
 	}
 	if !exists {
-		return false, ownf("vector: index %q has %s tables of the schema before this version: delete them (DeleteIndex) or open the store WithGeneration and index again", index, s.d.Name)
+		return false, ownf("%w: index %q (%s): delete them (DeleteIndex) or open the store WithGeneration and index again", vector.ErrLegacySchema, index, s.d.Name)
 	}
 	return true, nil
 }

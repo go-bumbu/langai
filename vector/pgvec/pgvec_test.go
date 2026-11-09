@@ -371,7 +371,7 @@ func TestLegacySchemaIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := vector.Coord{Index: "idx", Partition: "p", Collection: "c"}
-	if _, err := s.Hashes(ctx, c, "a"); err == nil || !strings.Contains(err.Error(), "schema before") {
+	if _, err := s.Hashes(ctx, c, "a"); err == nil || !errors.Is(err, vector.ErrLegacySchema) {
 		t.Fatalf("Hashes over legacy tables: %v, want the schema error", err)
 	}
 	if err := s.DeleteIndex(ctx, "idx"); err != nil {

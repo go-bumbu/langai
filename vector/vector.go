@@ -30,6 +30,12 @@ var (
 	// ErrModelMismatch reports a write or a search naming another model than
 	// the one a collection's vectors were made with.
 	ErrModelMismatch = errors.New("vector: collection holds another model's vectors")
+	// ErrLegacySchema reports an index a SQL store finds in the tables of
+	// the schema of v0.1.1 and earlier.
+	// Every read and write of it is refused until DeleteIndex drops those
+	// tables, or the store is opened WithGeneration for a table set of its
+	// own; then it is indexed again.
+	ErrLegacySchema = errors.New("vector: index has tables of the schema before this version")
 	// ErrEmptyIndex reports a Coord, or an index handed to DeleteIndex,
 	// whose index is empty: the index is the isolation boundary and must be
 	// named. Every method of every Store checks it first.

@@ -322,8 +322,8 @@ serving the old vectors while the new ones are built, use a generation instead (
 A store opened with `WithGeneration` keeps further table sets of its own, so a migration
 can build a second model's vectors next to the current ones before switching over; the
 new generation's store then retires the old one with `DropGeneration`. The SQL stores
-refuse the tables of the schema before this version with an error that says so: delete
-the index (`DeleteIndex`) or build a new generation, and index again.
+refuse the tables of the schema before this version with `vector.ErrLegacySchema`:
+delete the index (`DeleteIndex`) or build a new generation, and index again.
 
 The first `yzma.New` downloads the llama.cpp libraries (~18 MB) and the default model,
 `google/embeddinggemma-300m` (~329 MB, 768 dimensions, multilingual); both are pinned by
@@ -1099,8 +1099,8 @@ Everything the library stores is derived from your own documents, so an upgrade 
 indexing time, never data.
 
 - **Search tables of v0.1.1 are refused.** The SQL stores have a new table layout, and
-  every read and write of an index written before it fails with an error that says so
-  (`vector: index "…" has sqlite tables of the schema before this version: …`). Drop
+  every read and write of an index written before it fails with `vector.ErrLegacySchema`
+  (`vector: index has tables of the schema before this version: index "…" (sqlite): …`). Drop
   the index with `Store.DeleteIndex`, or open the store `WithGeneration` for a table set
   of its own, and index again. That is all a v0.1.1 search index needs; the next three
   points are for one written, with the new tables, by a version in between.

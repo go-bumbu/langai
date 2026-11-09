@@ -347,7 +347,7 @@ func TestLegacySchemaIsRefused(t *testing.T) {
 	}
 	c := vector.Coord{Index: "idx", Partition: "p", Collection: "c"}
 	_, err = s.Search(ctx, c, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0}}, Limit: 10})
-	if err == nil || !strings.Contains(err.Error(), "schema before") {
+	if err == nil || !errors.Is(err, vector.ErrLegacySchema) {
 		t.Fatalf("Search over legacy tables: %v, want the schema error", err)
 	}
 	if err := s.DeleteIndex(ctx, "idx"); err != nil {
