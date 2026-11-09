@@ -580,11 +580,12 @@ its two halves and their mean, since a short page's header and body land in diff
 halves. A long member teaches its tag with its piece closest to the tag's name, not with
 the mean of all of them. On the 24 long golden documents (7 to 31 KB, 93 side topics past
 the first 2 KB), against a catalog of 158 name-only tags made of the topic labels of all
-of them, side topics were found 0.68 of the time, against 0.58 by the mean of the pieces
-and 0.45 without `ChunkBytes`, with precision unchanged (0.78) and one passing mention of
-54 tagged, as before (`TestTaggerLongTags`). The best piece alone found 0.74 but let single
-paragraphs pull in tags that match none of a document's topics (3.5 a document, against
-2.0). The two cutoffs
+of them, every main topic and 0.90 of the side topics were found, against 0.65 of the side
+topics without `ChunkBytes`, at a precision of 0.80 (0.86 without) and with one passing
+mention of 54 tagged in both (`TestTaggerLongTags`). In the experiment that chose the rule,
+scored by exact label, the mean of the pieces found 0.75 of the side topics where this rule
+found 0.89, and the best piece alone 0.96, but that let single paragraphs pull in the tags
+of other documents (5.0 a document, against 3.5). The two cutoffs
 hold unchanged: pieces score on the scale of short items. Changing `ChunkBytes` embeds only
 the pieces the cache does not hold.
 
@@ -738,12 +739,17 @@ old `data/autotag-<model>.sqlite` files can be deleted.
 - **Second and side topics.** Without `ChunkBytes` a page is one embedding of its first
   ~2 KB. When pairs of single-tag golden documents are stitched into one page (2.3 to
   2.9 KB), both tags are assigned 0.80 of the time, 0.87 with `ChunkBytes` 2000. On long
-  items a third of the side topics are still missed with `ChunkBytes` (see **Long items**),
+  items one side topic in ten is still missed with `ChunkBytes` (see **Long items**),
   and a topic a single paragraph covers rarely gets its tag, by design.
-- **Documents that fit no tag** can still get one: with a document's own tags removed,
-  0.64 of the golden documents get no tag, and 0.81 none but an ancestor of their own
-  tags (`cooking` for a recipe once `cooking / recipes` is gone), which the path
-  implies. The rest get a sibling or a child, a related tag but a wrong one.
+- **Documents that fit no tag** got none on the golden set, by a small margin: with the
+  whole family of a document's tags removed (the tag, its parent, its siblings and its
+  children), none of the 84 documents got one of the tags left, and the closest came
+  within 0.016 of its cutoff. That is 15 tags in five families and one model, so expect
+  a wrong tag now and then on a larger vocabulary.
+- **A document whose own tag is missing gets a related one.** With only a document's own
+  tags removed, 0.64 of the golden documents get no tag, and 0.81 none but an ancestor
+  of their own tags (`cooking` for a recipe once `cooking / recipes` is gone), which the
+  path implies. The rest get a sibling or a child, a related tag but a wrong one.
 - **Siblings are the usual mistake.** Nearly every wrong suggestion is a tag of the
   right family: `cooking / baking` for a recipe, a parent next to its child. Unrelated
   tags are all but never suggested.
@@ -753,8 +759,8 @@ old `data/autotag-<model>.sqlite` files can be deleted.
   the model's scores sit in a narrow band, so ±0.04 on the name cutoff already costs a
   lot of precision or recall. Re-check them on real data, and measure them again for
   another model. Both the essences and the long documents score a little better at a
-  name cutoff of 0.43 (F1 +0.02), which costs stitched two-topic pages 0.04; the default
-  stays 0.42.
+  name cutoff of 0.43 (F1 +0.02 and +0.03), which costs stitched two-topic pages 0.04;
+  the default stays 0.42.
 
 ### Generating tags
 
@@ -842,11 +848,12 @@ measured on long documents and not on essences.
   about 6 KB, one LLM call each, a short first line (the title) repeated at the head of
   every window, so pass the text as `title\n` + body; the names merge, and each is scored by its best cosine
   over the 2 KB chunks of the text. On 24 synthetic documents of 7 to 31 KB (93 side
-  topics, all past the first 2 KB) that scored F1 0.82 against 0.54 for reading the first
-  2 KB only: side-topic recall 0.71 against 0.25, main-topic recall 1.0 in both, and no
-  passing mention tagged. Scoring by the best chunk won because the mean of the chunks and
+  topics, all past the first 2 KB) that scored a mean F1 of 0.82 against 0.49 for reading
+  the first 2 KB only: side-topic recall 0.76 against 0.24, precision 0.89 against 0.78,
+  main-topic recall 1.0 in both, and no passing mention tagged (`TestGenerateLongTags`).
+  Scoring by the best chunk won because the mean of the chunks and
   the top-k mean dilute exactly the section topics the windows find. 6 KB windows beat
-  2 KB ones (F1 0.84 against 0.74 in the experiment) because the model needs some context to name a
+  2 KB ones (F1 0.84 against 0.74 in the experiment, under an earlier scoring rule) because the model needs some context to name a
   section's topic, and 2 KB windows give many near-duplicates at 2.7 times the calls.
   The price is time: about 3 LLM calls and 15 s for a document of 16 KB on the test
   laptop's iGPU, and a 64 KB text is about 11 calls. `zarf/examples`' autotag pays this
@@ -877,7 +884,8 @@ over the queries that must cross a language; tagging by tag name (precision, rec
 F1 at 0.46, each tag judged on its own, plus the floor each model would need); and timings. tagging's
 `TestGoldenTagging` replays the same set through a `Tagger` with simulated hand-tagging
 (a tag's members are up to every other document carrying it) and checks tagging by name
-only and with members, how many documents get no unrelated tag once their own tags are removed,
+only and with members, how many documents stay untagged once the whole families of their
+tags are removed (and how many get none but an ancestor once only their own tags are),
 and two-topic pages. Both need the runtime libraries above and cache the downloads in
 `~/.cache/semsearch-yzma`:
 
