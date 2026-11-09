@@ -269,7 +269,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
   media/ffmpeg's sampler does not implement search.Fingerprinter, so changing its config does not re-index videos.
 - [x] ffmpeg: restrict protocols
   Consider -protocol_whitelist file,pipe so a crafted playlist cannot make ffmpeg fetch URLs. Cut can leave a partial out file on failure.
-- [ ] SearchIndexed costs one store search per stored chunk
+- [x] SearchIndexed costs one store search per stored chunk
   Fine for short documents; a very long document or a 64-frame video runs many searches.
 
 ## tagging and eval
@@ -348,25 +348,25 @@ and `todo list --json` cover the common actions — run `todo --help`.
 
 ## second pass
 
-- [ ] document ids are not sanitized
+- [x] document ids are not sanitized
   An id with invalid UTF-8 fails every Postgres call of its batch, and on SQLite is stored but never found again by Hashes, Delete or Exclude. Reject such ids in vector.CheckWrite with a sentinel; IndexBatch puts the doc in Failed.
-- [ ] tables-exist cache never invalidates across Store values
+- [x] tables-exist cache never invalidates across Store values
   After another store or process deletes an index, every read and write of it fails with no such table until restart. On an undefined-table error drop the cached entry and reopen once.
-- [ ] pg: concurrent first write reads as an old schema; DeleteIndex not atomic
+- [x] pg: concurrent first write reads as an old schema; DeleteIndex not atomic
   open checks meta then docs in two statements, so another store's creation in between looks legacy (2 of 160 first writes); DeleteIndex drops four tables in separate statements.
-- [ ] a collection's model record outlives its documents
+- [x] a collection's model record outlives its documents
   After deleting every doc, an Upsert with a new model still returns ErrModelMismatch; the only way out is DeleteIndex, which drops every collection. Overwrite the record when the collection is empty.
-- [ ] sqlstore.open does database I/O under the store-wide mutex
+- [x] sqlstore.open does database I/O under the store-wide mutex
   The first write of a new index holds the mutex while waiting for SQLite's write lock, stalling reads of every other index (a 200 ms deadline returned after 1.9 s).
-- [ ] SearchIndexed is N exact scans
+- [x] SearchIndexed is N exact scans
   Measured on sqlitevec at 20.5k chunks x 768: one search 49 ms, a 10-chunk doc 0.49 s, 64 frames 3.3 s, 500 chunks 24.9 s. Cap the query vectors or rank several vectors in one scan.
-- [ ] Validate checks the norm in float64, backends compute in float32
+- [x] Validate checks the norm in float64, backends compute in float32
   A stored {1e-25, 1e-25, 0, 0} passes Validate and scores +Inf on SQLite, topping every search.
-- [ ] pg: deadlock between Delete and Upsert of the same ids
+- [x] pg: deadlock between Delete and Upsert of the same ids
   Upsert locks docs rows in id order, DELETE ... IN in scan order: 9 deadlock errors in 6 s with 4 writers and 4 deleters.
-- [ ] chunker drops headings that have no body
+- [x] chunker drops headings that have no body
   Sibling headings without text vanish from the index, and an indented # comment in a code block is read as a heading.
-- [ ] empty-index and driver errors inconsistent
+- [x] empty-index and driver errors inconsistent
   errEmptyIndex is unexported and some methods return tablename's bare error; search.New accepts an empty index; sqlstore returns raw driver errors without the vector: prefix.
 - [x] an embedder outage is recorded as a finished rebuild
   With every Embed failing, members are skipped, the state is recorded and after recovery the tag stays name-only until the space's next revision (score 0 where a healthy build gives -0.24 at another cutoff). Skip a member only on evidence the embedder works; otherwise fail the rebuild and record nothing.
@@ -489,3 +489,9 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Commits a518f98 f56738d. Cut refuses an out that is its input, writes under a temp name next to out and renames on success, and never removes a file it did not write. Frame times are read only from the showinfo filter's own lines, by frame number, so a video title cannot forge them. The sampler fingerprint is ffmpeg/2 because frames now spread over the video stream's length, so sampled videos re-index once.
 - [x] fetch second pass: install ownership, symlinks, lock
   Commits 23e9aec 4c76695 80fd6eb e088c44 ee889a5. An install touches only siblings named <dir>.langai-download/-staging/-retired that carry its marker or record (anything else there is an error) and no longer sweeps temp files in the parent directory. A symlinked library directory is installed where it points. A process already running the directory's libraries skips the install lock, and a lock wait that outlasts ctx returns ctx's error (before, it went on unlocked). yzma reinstalls a managed directory whose record names another llama.cpp tag. Off unix each process uses its own partial file; installs there are still not serialized across processes.
+- [x] vector second pass: multi-vector search (breaking)
+  Commit 4270a7a. vector.Query.Vector is replaced by Vectors [][]float32 and Match gained Query (which vector a hit matched); one scan scores each chunk against its closest query vector, so SearchIndexed no longer runs one search per stored chunk. Measured on 20k chunks x 256 dims for 1 / 16 / 64 vectors: sqlitevec 26 ms / 163 ms / 589 ms (was 28 ms / 444 ms / 1.89 s), pgvec 12 ms / 39 ms / 114 ms (was 13 / 182 / 698), MemStore 9 / 50 / 182 (was 8.5 / 93 / 333). search sends at most DefaultMaxQueryVectors = 64, evenly spaced (WithMaxQueryVectors, WithMediaMaxQueryVectors). Results equal the old merge of single searches on all three stores (conformance case).
+- [x] vector second pass: ids, models, schema races (breaking)
+  Commits baf6aea 47975e1 70ffe86 872d33f 711f151 ab7184e. Ids, partitions, collections and models with invalid UTF-8 or NUL are refused with vector.ErrInvalidID (search.ErrEmptyID wraps it; in IndexBatch such a doc lands in Failed); vector.ErrEmptyIndex is exported and checked everywhere, also in search.New; driver errors are wrapped as vector: <backend> <op>. An emptied collection gives up its model record, Store.DeleteCollection and Store.Model are new on the port, the search indexes check the model before embedding and gained Reset(ctx) for a model migration. Tables are created and dropped in one locked transaction (no more spurious old-schema error on a concurrent first write), a store reopens an index another store dropped, opening an index does no I/O under the store-wide lock, pgvec locks deleted rows in id order and retries on deadlock, and vectors whose float32 norm underflows or overflows are refused. vectortest gained RunShared for several stores on one database. Open: content hashes and chunk text are not checked for invalid UTF-8 at the Store level (search cleans text first).
+- [x] chunker: bodiless headings and code blocks
+  Commit f811299. A heading with no text and no subheading becomes a chunk of its heading path instead of vanishing; ATX headings allow at most 3 spaces of indent and are not read inside fenced code. The chunker fingerprint is markdown/2, so text collections re-index once.
