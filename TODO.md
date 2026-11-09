@@ -368,23 +368,23 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Sibling headings without text vanish from the index, and an indented # comment in a code block is read as a heading.
 - [ ] empty-index and driver errors inconsistent
   errEmptyIndex is unexported and some methods return tablename's bare error; search.New accepts an empty index; sqlstore returns raw driver errors without the vector: prefix.
-- [ ] an embedder outage is recorded as a finished rebuild
+- [x] an embedder outage is recorded as a finished rebuild
   With every Embed failing, members are skipped, the state is recorded and after recovery the tag stays name-only until the space's next revision (score 0 where a healthy build gives -0.24 at another cutoff). Skip a member only on evidence the embedder works; otherwise fail the rebuild and record nothing.
-- [ ] a rebuild longer than each caller's deadline never completes
+- [x] a rebuild longer than each caller's deadline never completes
   With a 60 ms catalog read and sequential callers on 40 ms deadlines, 0 of 15 succeed and the catalog is read 15 times, because the run is cancelled when its last waiter leaves. Keep an abandoned run alive for a grace period.
-- [ ] parser keeps scaffolding and glues tags
+- [x] parser keeps scaffolding and glues tags
   Hashtag lists, CJK and Arabic separators and full-width colons glue or keep labels; JSON objects with scores leak numbers; No tags. becomes a tag.
-- [ ] parser drops or truncates legitimate tags
+- [x] parser drops or truncates legitimate tags
   (re)insurance, 5" floppy and x < y are dropped; Topic modeling: LDA becomes LDA.
-- [ ] Prune's cutoff guard does not protect recent reads
+- [x] Prune's cutoff guard does not protect recent reads
   A cutoff of age A only protects reads from the last A minus 24 h, and MemCache and sqlcache differ at exactly 24 h.
-- [ ] Generator retries a closed Completer on every window
+- [x] Generator retries a closed Completer on every window
   A closed or down model is called 22 times on a 64 KB text.
-- [ ] FakeEmbedder and FakeImageEmbedder ignore ctx and cannot fail
+- [x] FakeEmbedder and FakeImageEmbedder ignore ctx and cannot fail
   Cancellation and outage paths tested with them pass wrongly.
-- [ ] three spellings of one coordinate in tagging
+- [x] three spellings of one coordinate in tagging
   Prune takes Space, Scope takes two strings, vector uses Coord.
-- [ ] lazy loaders: recovery from a kept load failure is undocumented
+- [x] lazy loaders: recovery from a kept load failure is undocumented
   The docs never say to build a new lazy value to retry.
 - [ ] video segment files pile up in the temp dir
   embedSegments removes cuts only at the end, so a 100-segment video has 100 files on disk at once, plus the full remux for a duration-less file.
@@ -477,3 +477,9 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Commit 5f62c53. Sampler.Fingerprint() covers every setting that changes the frames, so a changed config re-indexes videos. Every ffmpeg and ffprobe input gets -protocol_whitelist file, so a crafted playlist cannot fetch URLs. Cut removes its output on failure or cancel.
 - [x] fakes and example tests
   Commits 0c54f46 2b42534 61d9093. langaitest.FakeVideoEmbedder added; the hand-written chat and video stubs in tagging, search and the examples use the fakes. README samples are mirrored as Example tests (lazy loader, search.New, NewMediaIndex, provider constructors, sqlitecache). README, package docs and the Makefile were brought in step with the code. llama.cpp errors caused by a caller's cancellation are logged at Debug; the abort status value and log texts were matched against the pinned binaries, not llama.cpp's source.
+- [x] tagging second pass: outages, rebuild grace, Prune guarantee (breaking)
+  Commits 659bf96 6e48974 a4a1c48 6634611 9b50dbf. An embedder outage no longer gets recorded as a finished rebuild: a text is skipped as bad only once another Embed has worked (a later text or a canary); otherwise the rebuild fails with ErrNotRebuilt and records nothing, ErrClosed and context errors end the call at once, and a dead embedder costs at most 5 calls. Scope.Incomplete lists the tags built without a member, with no Logger needed. An abandoned rebuild keeps running for TaggerConfig.RebuildGrace (default 30 s, negative cancels at once), so short request deadlines cannot starve a space. Prune refuses a cutoff younger than MinPruneAge (2 x CacheRefreshAfter) and documents its guarantee; both caches refresh at exactly CacheRefreshAfter. Tagger.Scope takes a Space, and Scope.Space returns it. Open: Catalog and TagIndex still take (index, partition) strings; a per-text deadline from the embedder now fails the rebuild instead of skipping the member.
+- [x] tagging second pass: parser and Generator
+  Commits 3b78f7a 8f8043f. Hashtag runs and CJK/Arabic separators split into several tags, full-width colons and CJK label words are cut, JSON replies are read by their tag members only (tags, keywords, labels, topics; name/tag/label per item) and never also by lines, key: number items are dropped, and a reply that is only No tags / None / N/A (and a few es/de forms) gives no tags. Kept now: (re)insurance, 5" floppy, x < y, dev > go in flat mode, Topic modeling: LDA whole; in tree mode -> separates levels. A closed Completer is asked once (was 22 times on a 64 KB text) and a long text stops after two failed windows with none read.
+- [x] langaitest: fakes honour ctx and can fail
+  Commit ce5915f. FakeEmbedder gained Err, Fail func(text) error and Calls; FakeImageEmbedder gained Err and Calls; both check ctx first.
