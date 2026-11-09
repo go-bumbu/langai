@@ -46,7 +46,7 @@ type fakeVision struct {
 	evalErr        error
 	embeddingsErr  error
 	buf            []float32 // what embeddings returns
-	nEmbdValue     int32     // what nEmbd reports; 0 = len(buf)
+	nEmbdValue     int32     // what nEmbdOut reports; 0 = len(buf)
 	lastPrompt     string
 	lastBitmaps    int
 }
@@ -78,8 +78,8 @@ func (f *fakeVision) nCtxTrain(model uintptr) int32 {
 	f.record("nCtxTrain", model)
 	return f.trainCtx
 }
-func (f *fakeVision) nEmbd(model uintptr) int32 {
-	f.record("nEmbd", model)
+func (f *fakeVision) nEmbdOut(model uintptr) int32 {
+	f.record("nEmbdOut", model)
 	if f.nEmbdValue != 0 {
 		return f.nEmbdValue
 	}
@@ -206,7 +206,7 @@ func TestOpenVision_LoadsProbesAndFreesOnFailure(t *testing.T) {
 	if v.Dimensions() != 4 || v.Accel() != "cpu" || v.SegmentLength() != DefaultSegmentLength || v.template != "{{ jinja }}" || v.instruction != DefaultInstruction {
 		t.Errorf("vision = %+v", v)
 	}
-	want := []string{"load", "devices", "loadModel", "chatTemplate", "nCtxTrain", "newVisionContext", "loadProjector", "applyTemplate", "tokenizeMedia", "memoryClear", "evalChunks", "nEmbd", "embeddings", "freeChunks"}
+	want := []string{"load", "devices", "loadModel", "chatTemplate", "nCtxTrain", "newVisionContext", "loadProjector", "applyTemplate", "tokenizeMedia", "memoryClear", "evalChunks", "nEmbdOut", "embeddings", "freeChunks"}
 	if got := f.names(); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("calls = %v\nwant    %v", got, want)
 	}

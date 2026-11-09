@@ -74,7 +74,7 @@ func (ffiAPI) freeModel(model uintptr) { _ = llama.ModelFree(llama.Model(model))
 
 func (ffiAPI) nCtxTrain(model uintptr) int32 { return llama.ModelNCtxTrain(llama.Model(model)) }
 
-func (ffiAPI) nEmbd(model uintptr) int32 { return llama.ModelNEmbd(llama.Model(model)) }
+func (ffiAPI) nEmbdOut(model uintptr) int32 { return llama.ModelNEmbdOut(llama.Model(model)) }
 
 // poolingTypes maps this package's pooling names onto llama.cpp's; openLlama
 // validates the name first, so a lookup never misses.

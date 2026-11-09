@@ -33,7 +33,10 @@ type llamaAPI interface {
 	loadModel(path string, gpuLayers int32) (model uintptr, err error)
 	freeModel(model uintptr)
 	nCtxTrain(model uintptr) int32
-	nEmbd(model uintptr) int32
+	// nEmbdOut is the length of the vectors the model puts out (n_embd_out):
+	// the size of a pooled embedding, which is not the hidden size (n_embd)
+	// for a model that ends in a projection to another width.
+	nEmbdOut(model uintptr) int32
 	// newContext creates an embedding context whose context, batch and
 	// micro-batch sizes are all nCtx, so one text of up to nCtx tokens fits a
 	// single batch (required for encoder models), pooling token outputs the
@@ -179,7 +182,7 @@ func openLlama(api llamaAPI, rt *runtimeLoader, libDir, modelPath string, thread
 		model: model,
 		ctx:   ctx,
 		mem:   mem,
-		embd:  api.nEmbd(model),
+		embd:  api.nEmbdOut(model),
 		lim:   lim,
 		accel: used,
 	}, nil

@@ -235,7 +235,10 @@ type visionAPI interface {
 	loadModel(path string, gpuLayers int32) (model uintptr, err error)
 	freeModel(model uintptr)
 	nCtxTrain(model uintptr) int32
-	nEmbd(model uintptr) int32
+	// nEmbdOut is the length of the vectors the model puts out (n_embd_out):
+	// the size of a pooled embedding, which is not the hidden size (n_embd)
+	// for a model that ends in a projection to another width.
+	nEmbdOut(model uintptr) int32
 	// newVisionContext creates a context of nCtx tokens that decodes batches
 	// of up to batch tokens, with embeddings on and last-token pooling.
 	// nCtxGot and batchGot are what llama.cpp granted; mem is the KV cache.
@@ -595,7 +598,7 @@ func (v *Vision) embedLocked(_ context.Context, user string, bitmaps []uintptr) 
 	}
 	dims := v.dims
 	if dims == 0 { // the probe: the model says
-		dims = int(v.api.nEmbd(v.model))
+		dims = int(v.api.nEmbdOut(v.model))
 	}
 	view, err := v.api.embeddings(v.ctx, int32(dims)) //nolint:gosec // a model's width, a small int
 	if err != nil {

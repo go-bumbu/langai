@@ -52,7 +52,7 @@ type fakeAPI struct {
 	embeddingsErr error   // embeddings fails with it
 	nilEmbeddings bool    // embeddings returns no vector
 	// buf is the one buffer every embeddings call returns, standing in for
-	// the llama.cpp memory the real view aliases; nEmbd is its length.
+	// the llama.cpp memory the real view aliases; nEmbdOut is its length.
 	buf []float32
 
 	// backtraceAtLoad is GGML_NO_BACKTRACE as load saw it.
@@ -144,8 +144,8 @@ func (f *fakeAPI) nCtxTrain(model uintptr) int32 {
 	return f.trainCtx
 }
 
-func (f *fakeAPI) nEmbd(model uintptr) int32 {
-	f.record("nEmbd", model)
+func (f *fakeAPI) nEmbdOut(model uintptr) int32 {
+	f.record("nEmbdOut", model)
 	return int32(len(f.buf))
 }
 
