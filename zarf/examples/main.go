@@ -29,6 +29,7 @@ import (
 	"github.com/go-bumbu/langai/search"
 	"github.com/go-bumbu/langai/tagging"
 	"github.com/go-bumbu/langai/vector/sqlitevec"
+	"github.com/go-bumbu/langai/zarf/examples/assets"
 	"github.com/go-bumbu/langai/zarf/examples/autotag"
 	"github.com/go-bumbu/langai/zarf/examples/mediasearch"
 )
@@ -165,6 +166,7 @@ func run() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", home)
+	mux.Handle("/assets/", http.StripPrefix("/assets", assets.Handler()))
 	mux.Handle("/mediasearch/", http.StripPrefix("/mediasearch", mediasearch.Handler(lib)))
 	mux.Handle("/autotag/", http.StripPrefix("/autotag", autotag.Handler(notebook)))
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}

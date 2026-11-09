@@ -1,0 +1,92 @@
+/* What every page of the example service shares: the colours, the header
+   with its navigation, buttons and form controls, and the small pieces a
+   debug view is made of (score bars, state pills, banners, tables). */
+:root {
+  --bg: #15171a;
+  --panel: #1e2126;
+  --line: #2c3037;
+  --text: #e6e8eb;
+  --muted: #9aa1ab;
+  --accent: #5aa9ff;
+  --ok: #4cc38a;
+  --warn: #f2b84b;
+  --bad: #ff6b6b;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  flex-wrap: wrap;
+}
+header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+.home { color: var(--muted); text-decoration: none; }
+.home:hover { color: var(--text); }
+nav { display: flex; gap: 2px; align-items: center; font-size: 12px; }
+nav a { color: var(--muted); text-decoration: none; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+nav a:hover { color: var(--text); background: #2a2f37; }
+nav a.here { color: var(--text); background: #2a2f37; }
+.info { color: var(--muted); font-size: 12px; flex: 1; min-width: 200px; }
+.info b { color: var(--text); font-weight: 500; }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.button {
+  background: #2a2f37;
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+.button:hover { border-color: var(--accent); }
+.button[disabled] { opacity: .5; cursor: wait; }
+.button[hidden] { display: none; }
+.button.small { padding: 2px 8px; font-size: 12px; }
+.button.danger:hover { border-color: var(--bad); color: var(--bad); }
+.check { display: flex; gap: 4px; align-items: center; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.check input { accent-color: var(--accent); margin: 0; }
+select { background: var(--bg); border: 1px solid var(--line); color: var(--text); padding: 4px 6px; border-radius: 6px; font: inherit; }
+.error { color: var(--bad); }
+.toast { position: fixed; bottom: 16px; left: 16px; background: #2a2f37; border: 1px solid var(--line); padding: 8px 12px; border-radius: 6px; font-size: 12px; max-width: 80vw; z-index: 3; }
+
+/* a problem the page can do something about, with its action next to it */
+.banner {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  margin: 12px 16px 0; padding: 10px 12px;
+  border: 1px solid var(--warn); border-radius: 8px; background: rgba(242, 184, 75, .08);
+  font-size: 13px;
+}
+.banner[hidden] { display: none; }
+.banner .what { flex: 1; min-width: 240px; }
+.banner b { color: var(--warn); font-weight: 600; }
+
+/* the state of a model or of a scan */
+.pill {
+  display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+}
+.pill.ok { color: var(--ok); border-color: var(--ok); }
+.pill.busy { color: var(--accent); border-color: var(--accent); }
+.pill.warn { color: var(--warn); border-color: var(--warn); }
+.pill.bad { color: var(--bad); border-color: var(--bad); }
+
+/* a score with its bar */
+.scorebar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; position: relative; }
+.scorebar i { display: block; height: 100%; background: var(--accent); }
+.scorebar .cut { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--warn); }
+.num { font-variant-numeric: tabular-nums; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
