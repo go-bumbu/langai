@@ -68,6 +68,63 @@ func Run(t *testing.T, newStore func(t *testing.T) vector.Store) {
 	}
 }
 
+// RunShared runs the cases that need several Stores over one database, the
+// way several processes, or an application and a maintenance CLI, share
+// one: newStores returns n distinct Stores (n >= 2) over one database that
+// holds nothing yet, each with a cache of its own. A backend whose Stores
+// share nothing (MemStore) passes the same Store n times.
+func RunShared(t *testing.T, newStores func(t *testing.T, n int) []vector.Store) {
+	cases := []struct {
+		name string
+		n    int
+		run  func(t *testing.T, s []vector.Store)
+	}{
+		{"OtherStoreDeletesIndex", 2, otherStoreDeletesIndex},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) { c.run(t, newStores(t, c.n)) })
+	}
+}
+
+// otherStoreDeletesIndex: after another Store drops an index this one has
+// used, this one's reads find nothing and its writes create the index anew,
+// instead of failing on tables it remembers.
+func otherStoreDeletesIndex(t *testing.T, s []vector.Store) {
+	ctx := context.Background()
+	a, b := s[0], s[1]
+	upsert(t, a, coord, "m", doc("x", axis(0)))
+	if got := hashes(t, a, coord, "x"); len(got) != 1 {
+		t.Fatalf("Hashes before = %v", got)
+	}
+	if err := b.DeleteIndex(ctx, coord.Index); err != nil {
+		t.Fatalf("DeleteIndex: %v", err)
+	}
+	if got := hashes(t, a, coord, "x"); len(got) != 0 {
+		t.Errorf("Hashes after the other store's DeleteIndex = %v", got)
+	}
+	if got, err := a.Docs(ctx, coord, "", 0); err != nil || len(got) != 0 {
+		t.Errorf("Docs = %v, %v", got, err)
+	}
+	if got, err := a.Chunks(ctx, coord, "x"); err != nil || len(got) != 0 {
+		t.Errorf("Chunks = %v, %v", got, err)
+	}
+	if got := search(t, a, coord, vector.Query{Vector: axis(0), Limit: 10, Model: "m"}); len(got) != 0 {
+		t.Errorf("Search = %v", ids(got))
+	}
+	if err := a.Delete(ctx, coord, "x"); err != nil {
+		t.Errorf("Delete: %v", err)
+	}
+	// a write right after the drop, with no read in between, recreates too
+	upsert(t, b, coord, "m", doc("y", axis(0)))
+	if err := b.DeleteIndex(ctx, coord.Index); err != nil {
+		t.Fatalf("DeleteIndex: %v", err)
+	}
+	upsert(t, a, coord, "m2", doc("z", axis(1)))
+	if got := hashes(t, b, coord, "x", "y", "z"); len(got) != 1 || got["z"] != "h-z" {
+		t.Errorf("the other store sees %v, want only z", got)
+	}
+}
+
 // axis returns the unit vector along axis i, so cosine scores are easy to
 // predict: 1 with itself, 0 with another axis.
 func axis(i int) []float32 {

@@ -277,7 +277,11 @@ like any other, not a wildcard. A `vector.Query` opens a coordinate only when as
 `Store.Search` ranks documents, not chunks: it returns the best chunk of each of the
 best documents, so one long document or one many-framed video never crowds out the
 rest, in score order, then by document id, then by chunk. `DeleteIndex` removes an
-index with everything in it, e.g. when a tenant leaves. Every method checks its
+index with everything in it, e.g. when a tenant leaves; another Store on the same
+database (another process, a maintenance CLI) notices: its reads of that index find
+nothing and its next write creates it again. The first write of a new index never
+stalls the store's calls on other indexes, and a call waiting for an index another
+call is creating gives up when its context does. Every method checks its
 arguments first, alike in every backend, and an error of the database underneath comes
 back wrapped with `vector:`, the backend and the operation (`vector: postgres upsert:
 …`).

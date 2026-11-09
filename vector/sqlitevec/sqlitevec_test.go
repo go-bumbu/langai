@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -49,6 +50,97 @@ func newStore(t *testing.T, dims int, opts ...Option) *Store {
 
 func TestConformance(t *testing.T) {
 	vectortest.Run(t, func(t *testing.T) vector.Store { return newStore(t, vectortest.Dims) })
+}
+
+// TestConformanceShared runs the shared cases with every Store on a handle
+// of its own to one database file, as separate processes would be.
+func TestConformanceShared(t *testing.T) {
+	vectortest.RunShared(t, func(t *testing.T, n int) []vector.Store {
+		path := filepath.Join(t.TempDir(), "search.db")
+		stores := make([]vector.Store, n)
+		for i := range stores {
+			stores[i] = storeAt(t, path)
+		}
+		return stores
+	})
+}
+
+// storeAt returns a Store of vectortest.Dims dimensions on a handle of its
+// own to the database file at path, opened the way the package doc
+// recommends.
+func storeAt(t *testing.T, path string) *Store {
+	t.Helper()
+	db, err := sql.Open("sqlite3", path+recommendedDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	s, err := New(t.Context(), db, vectortest.Dims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestOpenDoesNotStallOtherIndexes: while the first write of a new index
+// waits for SQLite's write lock, which another process holds, a read of an
+// index already in use goes ahead at once, and a read of the new index gives
+// up when its context does, instead of all of them queueing behind the
+// creation for up to the busy timeout.
+func TestOpenDoesNotStallOtherIndexes(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "search.db")
+	s := storeAt(t, path)
+	ready := vector.Coord{Index: "ready", Partition: "p", Collection: "c"}
+	v := []float32{1, 0, 0, 0}
+	if err := s.Upsert(ctx, ready, "", vector.Doc{ID: "x", Chunks: []vector.Chunk{{Vector: v}}}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := sql.Open("sqlite3", path+recommendedDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	conn, err := other.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	fresh := vector.Coord{Index: "fresh", Partition: "p", Collection: "c"}
+	created := make(chan error, 1)
+	go func() {
+		created <- s.Upsert(ctx, fresh, "", vector.Doc{ID: "y", Chunks: []vector.Chunk{{Vector: v}}})
+	}()
+	time.Sleep(200 * time.Millisecond) // the creation is waiting for the lock by now
+	for _, tc := range []struct {
+		name    string
+		c       vector.Coord
+		wantErr error
+	}{
+		{"ready index", ready, nil},
+		{"index being created", fresh, context.DeadlineExceeded},
+	} {
+		short, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		start := time.Now()
+		_, err := s.Hashes(short, tc.c, "x")
+		took := time.Since(start)
+		cancel()
+		if !errors.Is(err, tc.wantErr) {
+			t.Errorf("%s: Hashes = %v, want %v", tc.name, err, tc.wantErr)
+		}
+		if took > time.Second {
+			t.Errorf("%s: Hashes took %v behind another index's creation", tc.name, took)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-created; err != nil {
+		t.Fatalf("the creation failed: %v", err)
+	}
 }
 
 // tableNames lists the tables and indexes of db that are not SQLite's own.

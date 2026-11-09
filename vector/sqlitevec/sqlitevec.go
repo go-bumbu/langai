@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 
@@ -94,6 +95,10 @@ var dialect = sqlstore.Dialect{
 	IDs:         `SELECT value FROM json_each(?)`,
 	Encode:      func(v []float32) any { return encode(v) },
 	Decode:      decode,
+	// SQLite reports a missing table with the generic SQLITE_ERROR code and
+	// only its message tells it apart, in every driver: the message is the
+	// only signal there is
+	MissingTable: func(err error) bool { return err != nil && strings.Contains(err.Error(), "no such table") },
 }
 
 // New returns a Store using db and checks the sqlite-vec extension is

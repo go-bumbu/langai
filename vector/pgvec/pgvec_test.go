@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-bumbu/testdbs"
@@ -34,6 +35,9 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// dbSeq numbers the databases newDB hands out.
+var dbSeq atomic.Int64
+
 // newDB returns a handle on a database of its own in the pgvector container,
 // so tests never see each other's tables, and skips the test when
 // TESTDBS_ALL is unset. Postgres scopes extensions per database; New creates
@@ -44,7 +48,8 @@ func newDB(t *testing.T) *sql.DB {
 	if len(dbs) == 0 {
 		t.Skip("set TESTDBS_ALL=1 (needs Docker) to run the Postgres tests")
 	}
-	db, err := dbs[0].ConnDbName(t.Name()).DB()
+	// numbered, so that -count=N runs every test on a fresh database
+	db, err := dbs[0].ConnDbName(fmt.Sprintf("n%d_%s", dbSeq.Add(1), t.Name())).DB()
 	if err != nil {
 		t.Fatalf("db handle: %v", err)
 	}
@@ -66,6 +71,23 @@ func TestConformance(t *testing.T) {
 	vectortest.Run(t, func(t *testing.T) vector.Store {
 		s, _ := newStore(t, vectortest.Dims)
 		return s
+	})
+}
+
+// TestConformanceShared runs the shared cases with n Stores, each with a
+// cache of its own, on one database, as separate processes would be.
+func TestConformanceShared(t *testing.T) {
+	vectortest.RunShared(t, func(t *testing.T, n int) []vector.Store {
+		db := newDB(t)
+		stores := make([]vector.Store, n)
+		for i := range stores {
+			s, err := New(t.Context(), db, vectortest.Dims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stores[i] = s
+		}
+		return stores
 	})
 }
 

@@ -73,6 +73,10 @@ type Dialect struct {
 	// to, and Decode turns what the column scans into back into a vector.
 	Encode func([]float32) any
 	Decode func(src any) ([]float32, error)
+	// MissingTable reports whether err says a statement named a table that
+	// does not exist: another Store, in this process or another, dropped the
+	// index after this one found its tables.
+	MissingTable func(err error) bool
 }
 
 // Store implements vector.Store on SQL. It is safe for concurrent use as far
@@ -83,8 +87,11 @@ type Store struct {
 	dims       int
 	generation string
 
-	mu    sync.Mutex
-	ready map[string]bool // indexes whose tables exist and have dims
+	// mu guards ready and opening and is never held across a database call,
+	// so a slow open of one index stalls no other
+	mu      sync.Mutex
+	ready   map[string]bool          // indexes whose tables exist and have dims
+	opening map[string]chan struct{} // indexes being opened; closed when done
 }
 
 var _ vector.Store = (*Store)(nil)
@@ -102,7 +109,10 @@ func New(db *sql.DB, d Dialect, dims int, generation string) (*Store, error) {
 	if err := tablename.CheckGeneration(generation); err != nil {
 		return nil, err
 	}
-	return &Store{db: db, d: d, dims: dims, generation: generation, ready: map[string]bool{}}, nil
+	return &Store{
+		db: db, d: d, dims: dims, generation: generation,
+		ready: map[string]bool{}, opening: map[string]chan struct{}{},
+	}, nil
 }
 
 // tables are the names of one index's tables.
@@ -142,46 +152,114 @@ func (s *Store) q(query string) string {
 	return b.String()
 }
 
+// withTables runs fn on the tables of index, opening them first (see open)
+// and creating them when create is set; when the index has no tables (and
+// create is not set) it runs nothing and reports false. When fn finds a
+// table missing, because another Store dropped the index after this one
+// opened it, the index is forgotten and opened once more, so a read then
+// finds nothing and a write creates the tables again; fn must start over
+// from scratch on that second run.
+func (s *Store) withTables(ctx context.Context, index string, create bool, fn func(tables) error) (bool, error) {
+	for retried := false; ; retried = true {
+		t, ok, err := s.open(ctx, index, create)
+		if err != nil || !ok {
+			return false, err
+		}
+		err = fn(t)
+		if retried || err == nil || !s.d.MissingTable(err) {
+			return true, err
+		}
+		s.forget(index)
+	}
+}
+
+// forget drops what the store remembers of index's tables, so the next call
+// looks them up again.
+func (s *Store) forget(index string) {
+	s.mu.Lock()
+	delete(s.ready, index)
+	s.mu.Unlock()
+}
+
 // open returns the tables of index and whether they exist, creating them
 // when create is set. Either way it checks that they hold vectors of the
 // store's dimensions and are not of the schema before the meta table. Only a
 // positive answer is remembered, so a reader notices the tables a writer
 // creates later.
+//
+// The answer for a remembered index costs no database call. Otherwise one
+// caller per index looks it up while the others for that index wait for it
+// (or for their context), and callers for other indexes go on: the store's
+// mutex is never held across a database call, so the first write of a new
+// index waiting for SQLite's write lock stalls nobody else.
 func (s *Store) open(ctx context.Context, index string, create bool) (tables, bool, error) {
 	t, err := s.tables(index)
 	if err != nil {
 		return tables{}, false, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ready[index] {
-		return t, true, nil
+	for {
+		s.mu.Lock()
+		if s.ready[index] {
+			s.mu.Unlock()
+			return t, true, nil
+		}
+		if busy, ok := s.opening[index]; ok {
+			s.mu.Unlock()
+			select {
+			case <-busy:
+				continue // look again: it is ready now, or this caller tries itself
+			case <-ctx.Done():
+				return tables{}, false, ctx.Err()
+			}
+		}
+		done := make(chan struct{})
+		s.opening[index] = done
+		s.mu.Unlock()
+
+		ok, known, err := s.probe(ctx, t, index, create)
+
+		s.mu.Lock()
+		delete(s.opening, index)
+		if known {
+			s.ready[index] = true
+		}
+		s.mu.Unlock()
+		close(done)
+		if err != nil {
+			return tables{}, false, err
+		}
+		return t, ok, nil
 	}
+}
+
+// probe looks index's tables up for open, creating them when create is set:
+// whether they exist, and whether they record the store's dimensions, which
+// they do not yet while another process is creating them.
+func (s *Store) probe(ctx context.Context, t tables, index string, create bool) (ok, known bool, err error) {
 	exists, err := s.exists(ctx, t.meta)
 	if err != nil {
-		return tables{}, false, err
+		return false, false, err
 	}
 	if !exists {
 		legacy, err := s.exists(ctx, t.legacy)
 		if err != nil {
-			return tables{}, false, err
+			return false, false, err
 		}
 		if legacy {
-			return tables{}, false, ownf("vector: index %q has %s tables of the schema before this version: delete them (DeleteIndex) or open the store WithGeneration and index again", index, s.d.Name)
+			return false, false, ownf("vector: index %q has %s tables of the schema before this version: delete them (DeleteIndex) or open the store WithGeneration and index again", index, s.d.Name)
 		}
 		if !create {
-			return t, false, nil
+			return false, false, nil
 		}
 		if err := s.create(ctx, t); err != nil {
-			return tables{}, false, fmt.Errorf("create schema for index %q: %w", index, err)
+			return false, false, fmt.Errorf("create schema for index %q: %w", index, err)
 		}
 	}
-	known, err := s.checkDims(ctx, index, t.meta)
+	known, err = s.checkDims(ctx, index, t.meta)
 	if err != nil {
-		return tables{}, false, err
+		return false, false, err
 	}
-	s.ready[index] = known
-	return t, true, nil
+	return true, known, nil
 }
 
 func (s *Store) exists(ctx context.Context, table string) (bool, error) {
@@ -261,10 +339,14 @@ func (s *Store) Upsert(ctx context.Context, c vector.Coord, model string, docs .
 }
 
 func (s *Store) upsert(ctx context.Context, c vector.Coord, model string, docs []vector.Doc) error {
-	t, _, err := s.open(ctx, c.Index, true)
-	if err != nil {
-		return err
-	}
+	_, err := s.withTables(ctx, c.Index, true, func(t tables) error {
+		return s.writeDocs(ctx, t, c, model, docs)
+	})
+	return err
+}
+
+// writeDocs is Upsert's transaction.
+func (s *Store) writeDocs(ctx context.Context, t tables, c vector.Coord, model string, docs []vector.Doc) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -273,11 +355,15 @@ func (s *Store) upsert(ctx context.Context, c vector.Coord, model string, docs [
 	if err := s.claimModel(ctx, tx, t.meta, c.Collection, model); err != nil {
 		return err
 	}
-	insert, err := tx.PrepareContext(ctx, s.q(`INSERT INTO `+t.chunks+` (partition, collection, doc_id, seq, text, embedding) VALUES (?, ?, ?, ?, ?, ?)`))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = insert.Close() }()
+	// the chunks insert is prepared after the first docs row is written, so
+	// that the transaction takes its locks in the order every other one
+	// does: meta, docs, chunks
+	var insert *sql.Stmt
+	defer func() {
+		if insert != nil {
+			_ = insert.Close()
+		}
+	}()
 	sorted := slices.SortedFunc(slices.Values(docs), func(a, b vector.Doc) int { return strings.Compare(a.ID, b.ID) })
 	for _, d := range sorted {
 		if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO `+t.docs+` (partition, collection, doc_id, content_hash) VALUES (?, ?, ?, ?)
@@ -288,6 +374,11 @@ func (s *Store) upsert(ctx context.Context, c vector.Coord, model string, docs [
 		if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM `+t.chunks+` WHERE partition = ? AND collection = ? AND doc_id = ?`),
 			c.Partition, c.Collection, d.ID); err != nil {
 			return err
+		}
+		if insert == nil {
+			if insert, err = tx.PrepareContext(ctx, s.q(`INSERT INTO `+t.chunks+` (partition, collection, doc_id, seq, text, embedding) VALUES (?, ?, ?, ?, ?, ?)`)); err != nil {
+				return err
+			}
 		}
 		for _, ch := range d.Chunks {
 			if _, err := insert.ExecContext(ctx, c.Partition, c.Collection, d.ID, ch.Seq, ch.Text, s.d.Encode(ch.Vector)); err != nil {
@@ -326,30 +417,32 @@ func (s *Store) Delete(ctx context.Context, c vector.Coord, ids ...string) error
 	if err := vector.CheckRead(c, ids...); err != nil {
 		return err
 	}
+	if len(ids) == 0 {
+		return nil
+	}
 	return s.wrap("delete", s.delete(ctx, c, ids))
 }
 
 func (s *Store) delete(ctx context.Context, c vector.Coord, ids []string) error {
-	t, ok, err := s.open(ctx, c.Index, false)
-	if err != nil || !ok || len(ids) == 0 {
-		return err
-	}
 	list, err := jsonIDs(ids)
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	for _, table := range []string{t.docs, t.chunks} {
-		if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM `+table+` WHERE partition = ? AND collection = ? AND doc_id IN (`+s.d.IDs+`)`),
-			c.Partition, c.Collection, list); err != nil {
+	_, err = s.withTables(ctx, c.Index, false, func(t tables) error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
 			return err
 		}
-	}
-	return tx.Commit()
+		defer func() { _ = tx.Rollback() }()
+		for _, table := range []string{t.docs, t.chunks} {
+			if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM `+table+` WHERE partition = ? AND collection = ? AND doc_id IN (`+s.d.IDs+`)`),
+				c.Partition, c.Collection, list); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	})
+	return err
 }
 
 // DeleteIndex implements vector.Store by dropping the index's tables, those
@@ -362,9 +455,7 @@ func (s *Store) DeleteIndex(ctx context.Context, index string) error {
 	if err != nil {
 		return s.wrap("delete index", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.ready, index)
+	defer s.forget(index)
 	for _, table := range []string{t.meta, t.docs, t.chunks, t.legacy} {
 		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS `+table); err != nil {
 			return s.wrap("delete index", err)
@@ -383,32 +474,35 @@ func (s *Store) Hashes(ctx context.Context, c vector.Coord, ids ...string) (map[
 }
 
 func (s *Store) hashes(ctx context.Context, c vector.Coord, ids []string) (map[string]string, error) {
-	t, ok, err := s.open(ctx, c.Index, false)
-	if err != nil {
-		return nil, err
-	}
 	out := make(map[string]string, len(ids))
-	if !ok || len(ids) == 0 {
+	if len(ids) == 0 {
 		return out, nil
 	}
 	list, err := jsonIDs(ids)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT doc_id, content_hash FROM `+t.docs+` WHERE partition = ? AND collection = ? AND doc_id IN (`+s.d.IDs+`)`),
-		c.Partition, c.Collection, list)
+	_, err = s.withTables(ctx, c.Index, false, func(t tables) error {
+		clear(out)
+		rows, err := s.db.QueryContext(ctx, s.q(`SELECT doc_id, content_hash FROM `+t.docs+` WHERE partition = ? AND collection = ? AND doc_id IN (`+s.d.IDs+`)`),
+			c.Partition, c.Collection, list)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var id, hash string
+			if err := rows.Scan(&id, &hash); err != nil {
+				return err
+			}
+			out[id] = hash
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var id, hash string
-		if err := rows.Scan(&id, &hash); err != nil {
-			return nil, err
-		}
-		out[id] = hash
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Docs implements vector.Store.
@@ -421,30 +515,33 @@ func (s *Store) Docs(ctx context.Context, c vector.Coord, after string, limit in
 }
 
 func (s *Store) docs(ctx context.Context, c vector.Coord, after string, limit int) ([]vector.DocInfo, error) {
-	t, ok, err := s.open(ctx, c.Index, false)
-	if err != nil || !ok {
-		return nil, err
-	}
-	query := `SELECT doc_id, content_hash FROM ` + t.docs + ` WHERE partition = ? AND collection = ? AND doc_id > ? ORDER BY doc_id`
 	args := []any{c.Partition, c.Collection, after}
+	paging := ""
 	if limit > 0 {
-		query += ` LIMIT ?`
+		paging = ` LIMIT ?`
 		args = append(args, limit)
 	}
-	rows, err := s.db.QueryContext(ctx, s.q(query), args...)
+	var out []vector.DocInfo
+	_, err := s.withTables(ctx, c.Index, false, func(t tables) error {
+		out = nil
+		rows, err := s.db.QueryContext(ctx, s.q(`SELECT doc_id, content_hash FROM `+t.docs+` WHERE partition = ? AND collection = ? AND doc_id > ? ORDER BY doc_id`+paging), args...)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var d vector.DocInfo
+			if err := rows.Scan(&d.ID, &d.Hash); err != nil {
+				return err
+			}
+			out = append(out, d)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-	var out []vector.DocInfo
-	for rows.Next() {
-		var d vector.DocInfo
-		if err := rows.Scan(&d.ID, &d.Hash); err != nil {
-			return nil, err
-		}
-		out = append(out, d)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Chunks implements vector.Store.
@@ -457,29 +554,32 @@ func (s *Store) Chunks(ctx context.Context, c vector.Coord, id string) ([]vector
 }
 
 func (s *Store) chunks(ctx context.Context, c vector.Coord, id string) ([]vector.Chunk, error) {
-	t, ok, err := s.open(ctx, c.Index, false)
-	if err != nil || !ok {
-		return nil, err
-	}
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT seq, text, embedding FROM `+t.chunks+`
-		WHERE partition = ? AND collection = ? AND doc_id = ? ORDER BY seq, id`), c.Partition, c.Collection, id)
+	var out []vector.Chunk
+	_, err := s.withTables(ctx, c.Index, false, func(t tables) error {
+		out = nil
+		rows, err := s.db.QueryContext(ctx, s.q(`SELECT seq, text, embedding FROM `+t.chunks+`
+			WHERE partition = ? AND collection = ? AND doc_id = ? ORDER BY seq, id`), c.Partition, c.Collection, id)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var ch vector.Chunk
+			var src any
+			if err := rows.Scan(&ch.Seq, &ch.Text, &src); err != nil {
+				return err
+			}
+			if ch.Vector, err = s.d.Decode(src); err != nil {
+				return fmt.Errorf("chunk %d: %w", ch.Seq, err)
+			}
+			out = append(out, ch)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-	var out []vector.Chunk
-	for rows.Next() {
-		var ch vector.Chunk
-		var src any
-		if err := rows.Scan(&ch.Seq, &ch.Text, &src); err != nil {
-			return nil, err
-		}
-		if ch.Vector, err = s.d.Decode(src); err != nil {
-			return nil, fmt.Errorf("chunk %d: %w", ch.Seq, err)
-		}
-		out = append(out, ch)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Search implements vector.Store with one exact query: every chunk in scope
@@ -491,48 +591,54 @@ func (s *Store) Search(ctx context.Context, c vector.Coord, q vector.Query) ([]v
 	if err := vector.CheckSearch(c, s.dims, q); err != nil {
 		return nil, err
 	}
+	if q.Limit <= 0 {
+		return nil, nil
+	}
 	out, err := s.search(ctx, c, q)
 	return out, s.wrap("search", err)
 }
 
 func (s *Store) search(ctx context.Context, c vector.Coord, q vector.Query) ([]vector.Match, error) {
-	t, ok, err := s.open(ctx, c.Index, false)
-	if err != nil || !ok || q.Limit <= 0 {
-		return nil, err
-	}
-	if err := s.checkModel(ctx, t.meta, c.Collection, q); err != nil {
-		return nil, err
-	}
 	where, args, err := s.scope(c, q)
 	if err != nil {
 		return nil, err
 	}
 	args = append([]any{s.d.Encode(q.Vector)}, args...)
 	args = append(args, q.Limit)
-	query := `SELECT c.partition, c.collection, c.doc_id, c.seq, c.text, b.d FROM (
-			SELECT id, partition, collection, doc_id, seq, d FROM (
-				SELECT id, partition, collection, doc_id, seq, d,
-					row_number() OVER (PARTITION BY partition, collection, doc_id ORDER BY d, seq) AS rn
-				FROM (SELECT id, partition, collection, doc_id, seq, ` + s.d.Distance + ` AS d FROM ` + t.chunks + where + `) scored
-			) ranked WHERE rn = 1 ORDER BY d, doc_id, seq, partition, collection LIMIT ?
-		) b JOIN ` + t.chunks + ` c ON c.id = b.id
-		ORDER BY b.d, b.doc_id, b.seq, b.partition, b.collection`
-	rows, err := s.db.QueryContext(ctx, s.q(query), args...)
+	var out []vector.Match
+	_, err = s.withTables(ctx, c.Index, false, func(t tables) error {
+		out = nil
+		if err := s.checkModel(ctx, t.meta, c.Collection, q); err != nil {
+			return err
+		}
+		query := `SELECT c.partition, c.collection, c.doc_id, c.seq, c.text, b.d FROM (
+				SELECT id, partition, collection, doc_id, seq, d FROM (
+					SELECT id, partition, collection, doc_id, seq, d,
+						row_number() OVER (PARTITION BY partition, collection, doc_id ORDER BY d, seq) AS rn
+					FROM (SELECT id, partition, collection, doc_id, seq, ` + s.d.Distance + ` AS d FROM ` + t.chunks + where + `) scored
+				) ranked WHERE rn = 1 ORDER BY d, doc_id, seq, partition, collection LIMIT ?
+			) b JOIN ` + t.chunks + ` c ON c.id = b.id
+			ORDER BY b.d, b.doc_id, b.seq, b.partition, b.collection`
+		rows, err := s.db.QueryContext(ctx, s.q(query), args...)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			m := vector.Match{Coord: vector.Coord{Index: c.Index}}
+			var dist float64
+			if err := rows.Scan(&m.Coord.Partition, &m.Coord.Collection, &m.DocID, &m.Seq, &m.Text, &dist); err != nil {
+				return err
+			}
+			m.Score = 1 - dist
+			out = append(out, m)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-	var out []vector.Match
-	for rows.Next() {
-		m := vector.Match{Coord: vector.Coord{Index: c.Index}}
-		var dist float64
-		if err := rows.Scan(&m.Coord.Partition, &m.Coord.Collection, &m.DocID, &m.Seq, &m.Text, &dist); err != nil {
-			return nil, err
-		}
-		m.Score = 1 - dist
-		out = append(out, m)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // scope returns the WHERE clause of q's scope within c's index and its

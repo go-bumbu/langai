@@ -13,6 +13,14 @@ import (
 // what lets `make coverage` measure vectortest.
 func TestMemStore_Conformance(t *testing.T) {
 	vectortest.Run(t, func(*testing.T) vector.Store { return vector.NewMemStore() })
+	vectortest.RunShared(t, func(_ *testing.T, n int) []vector.Store {
+		s := vector.NewMemStore()
+		stores := make([]vector.Store, n)
+		for i := range stores {
+			stores[i] = s
+		}
+		return stores
+	})
 }
 
 func TestValidate(t *testing.T) {

@@ -28,4 +28,19 @@ func TestConformance_SQLite(t *testing.T) {
 		}
 		return s
 	})
+	vectortest.RunShared(t, func(t *testing.T, n int) []vector.Store {
+		path := filepath.Join(t.TempDir(), "search.db")
+		stores := make([]vector.Store, n)
+		for i := range stores {
+			db, err := sql.Open("sqlite3", path+"?_busy_timeout=5000&_journal_mode=WAL")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			if stores[i], err = sqlitevec.New(t.Context(), db, vectortest.Dims); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return stores
+	})
 }

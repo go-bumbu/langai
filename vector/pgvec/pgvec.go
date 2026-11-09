@@ -85,6 +85,22 @@ var dialect = sqlstore.Dialect{
 		}
 		return v.Slice(), nil
 	},
+	MissingTable: func(err error) bool { return sqlState(err) == undefinedTable },
+}
+
+// undefinedTable is the SQLSTATE of a statement naming a table that does not
+// exist.
+const undefinedTable = "42P01"
+
+// sqlState returns the SQLSTATE code of a Postgres error, "" for any other.
+// Both pgx (pgconn.PgError) and lib/pq (pq.Error) report it through a
+// SQLState method, so no driver is imported.
+func sqlState(err error) string {
+	var e interface{ SQLState() string }
+	if errors.As(err, &e) {
+		return e.SQLState()
+	}
+	return ""
 }
 
 // New returns a Store using db and ensures the pgvector extension exists.
