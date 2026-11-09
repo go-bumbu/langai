@@ -374,6 +374,28 @@ func (l *Library) removeGone(ctx context.Context, seen map[string]bool) int {
 	return removed
 }
 
+// Reset empties the index's collection (search.MediaIndex.Reset) and
+// forgets the content hashes, so that the next Scan embeds every file
+// again. It is the way to another model: the store refuses a model's
+// vectors while the collection holds another's. The catalog keeps its
+// items, which have nothing to be found by until that scan. It fails with
+// ErrScanning while a scan runs.
+func (l *Library) Reset(ctx context.Context) error {
+	if !l.scanning.CompareAndSwap(false, true) {
+		return ErrScanning
+	}
+	defer l.scanning.Store(false)
+	if err := l.cfg.Index.Reset(ctx); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	l.hashes = map[string]string{}
+	l.last = ScanStats{}
+	l.mu.Unlock()
+	l.logger.Info("index reset")
+	return l.saveCatalog()
+}
+
 // saveCatalog writes the hashes to the catalog file, if there is one.
 func (l *Library) saveCatalog() error {
 	if l.cfg.CatalogFile == "" {

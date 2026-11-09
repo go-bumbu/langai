@@ -133,3 +133,26 @@ func TestNotebook_KeepCachePrunedRunsUntilItsContextEnds(t *testing.T) {
 		t.Errorf("want the first run to log removed=1 and none to fail; log:\n%s", out)
 	}
 }
+
+// TestNotebook_LastPruneRemembersTheOutcome: the status page reads the last
+// prune from the notebook, a refused one with its error.
+func TestNotebook_LastPruneRemembersTheOutcome(t *testing.T) {
+	ctx := context.Background()
+	nb, _ := agedNotebook(t)
+	if got := nb.LastPrune(); !got.At.IsZero() {
+		t.Errorf("LastPrune before any prune = %+v", got)
+	}
+	cutoff := time.Now().Add(-30 * 24 * time.Hour)
+	if _, err := nb.PruneCache(ctx, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if got := nb.LastPrune(); got.At.IsZero() || got.Removed != 1 || !got.UnusedSince.Equal(cutoff) || got.Err != nil {
+		t.Errorf("LastPrune = %+v; want 1 removed at the cutoff", got)
+	}
+	if _, err := nb.PruneCache(ctx, time.Now()); err == nil {
+		t.Fatal("a cutoff of now was accepted")
+	}
+	if got := nb.LastPrune(); got.Err == nil || got.Removed != 0 {
+		t.Errorf("LastPrune after a refused prune = %+v; want its error", got)
+	}
+}

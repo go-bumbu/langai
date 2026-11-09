@@ -125,6 +125,21 @@ type Notebook struct {
 	// under the same id never comes back at a revision the Tagger has seen.
 	rev    int64
 	tagRev map[string]int64
+
+	pruneMu   sync.Mutex
+	lastPrune PruneResult
+}
+
+// PruneResult is the outcome of one PruneCache.
+type PruneResult struct {
+	// At is when it ran; zero when none has yet.
+	At time.Time
+	// Removed is how many embeddings it removed, the ones last used before
+	// UnusedSince.
+	Removed     int64
+	UnusedSince time.Time
+	// Err is why it removed nothing.
+	Err error
 }
 
 // New loads the notebook file, if there is one, builds a Tagger over it (the
@@ -196,7 +211,19 @@ func (nb *Notebook) Close() error { return nb.tagger.Close() }
 // never reads again, are marked as used first. unusedSince must be at least
 // tagging.MinPruneAge in the past.
 func (nb *Notebook) PruneCache(ctx context.Context, unusedSince time.Time) (int64, error) {
-	return nb.tagger.Prune(ctx, unusedSince, nb.scope.Space())
+	removed, err := nb.tagger.Prune(ctx, unusedSince, nb.scope.Space())
+	nb.pruneMu.Lock()
+	nb.lastPrune = PruneResult{At: time.Now(), Removed: removed, UnusedSince: unusedSince, Err: err}
+	nb.pruneMu.Unlock()
+	return removed, err
+}
+
+// LastPrune returns the outcome of the last PruneCache, whoever called it;
+// its At is zero before the first.
+func (nb *Notebook) LastPrune() PruneResult {
+	nb.pruneMu.Lock()
+	defer nb.pruneMu.Unlock()
+	return nb.lastPrune
 }
 
 // KeepCachePruned prunes the cache of what was unused for unusedFor (see

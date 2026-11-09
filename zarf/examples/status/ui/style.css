@@ -1,0 +1,36 @@
+/* The status page; the shared look is assets/base.css. */
+main { padding: 4px 16px 32px; max-width: 1280px; }
+section { margin-top: 20px; }
+section[hidden] { display: none; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 8px; }
+.hint { color: var(--muted); font-size: 12px; max-width: 920px; margin: 0 0 10px; }
+code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; color: var(--text); }
+
+.pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.page {
+  display: block; text-decoration: none; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+}
+.page:hover { border-color: var(--accent); }
+.page b { display: block; color: var(--accent); font-weight: 600; margin-bottom: 2px; }
+.page span { color: var(--muted); font-size: 12px; }
+
+.rows { display: grid; gap: 10px; }
+.row {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; align-items: start;
+}
+.row.bad { border-color: var(--bad); }
+.row.warn { border-color: var(--warn); }
+.row .title { font-weight: 600; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row .title small { color: var(--muted); font-weight: 400; }
+.row .act { display: flex; gap: 8px; align-items: center; }
+.row .facts {
+  grid-column: 1 / -1; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px;
+  font-size: 12px; color: var(--muted);
+}
+.row .facts b { color: var(--text); font-weight: 500; word-break: break-word; }
+.row .facts b.mono { word-break: break-all; }
+.row .problem { grid-column: 1 / -1; font-size: 12px; color: var(--bad); white-space: pre-wrap; word-break: break-word; }
+.row .recovery { grid-column: 1 / -1; font-size: 12px; color: var(--warn); }
+.none { color: var(--muted); font-size: 12px; font-style: italic; }

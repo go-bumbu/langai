@@ -31,6 +31,7 @@ import (
 	"github.com/go-bumbu/langai/zarf/examples/autotag"
 	"github.com/go-bumbu/langai/zarf/examples/duplicates"
 	"github.com/go-bumbu/langai/zarf/examples/mediasearch"
+	"github.com/go-bumbu/langai/zarf/examples/status"
 	"github.com/go-bumbu/langai/zarf/examples/textsearch"
 )
 
@@ -139,11 +140,11 @@ func run(o options) error {
 	}
 	defer st.Close()
 
-	lib, err := openMedia(ctx, o, media, sampler, st, logger)
+	lib, libAt, err := openMedia(ctx, o, media, sampler, st, logger)
 	if err != nil {
 		return err
 	}
-	docs, err := openText(ctx, o, text, st, logger)
+	docs, docsAt, err := openText(ctx, o, text, st, logger)
 	if err != nil {
 		return err
 	}
@@ -158,9 +159,17 @@ func run(o options) error {
 		return err
 	}
 	defer closeTagging()
+	// the home page: what is loaded and how
+	board, err := openStatus(o, service{
+		text: text, chat: chat, media: media, lib: lib, libAt: libAt, docs: docs, docsAt: docsAt,
+		dups: dups, notebook: notebook, stores: st,
+	})
+	if err != nil {
+		return err
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", home)
+	mux.Handle("/", status.Handler(board))
 	mux.Handle("/assets/", http.StripPrefix("/assets", assets.Handler()))
 	mux.Handle("/mediasearch/", http.StripPrefix("/mediasearch", mediasearch.Handler(lib)))
 	mux.Handle("/textsearch/", http.StripPrefix("/textsearch", textsearch.Handler(docs)))
@@ -198,18 +207,18 @@ const (
 
 // openMedia builds the media search page: a MediaIndex over the media
 // model in that model's own vector store.
-func openMedia(ctx context.Context, o options, m *mediaModel, sampler *ffmpeg.Sampler, st *stores, logger *slog.Logger) (*mediasearch.Library, error) {
-	store, _, base, err := st.vectors(ctx, m.name, m.embedder.Dimensions())
+func openMedia(ctx context.Context, o options, m *mediaModel, sampler *ffmpeg.Sampler, st *stores, logger *slog.Logger) (*mediasearch.Library, indexed, error) {
+	store, where, base, err := st.vectors(ctx, m.name, m.embedder.Dimensions())
 	if err != nil {
-		return nil, err
+		return nil, indexed{}, err
 	}
 	coord := vector.Coord{Index: indexName, Partition: indexPartition, Collection: "media"}
 	opts := append([]search.MediaOption{search.WithSampler(sampler), search.WithMediaMinScore(o.minScore)}, m.opts...)
 	ix, err := search.NewMediaIndex(m.embedder, store, coord.Index, coord.Partition, coord.Collection, opts...)
 	if err != nil {
-		return nil, err
+		return nil, indexed{}, err
 	}
-	return mediasearch.New(mediasearch.Config{
+	lib, err := mediasearch.New(mediasearch.Config{
 		Dir:         o.mediaDir,
 		Index:       ix,
 		Sampler:     sampler,
@@ -220,24 +229,25 @@ func openMedia(ctx context.Context, o options, m *mediaModel, sampler *ffmpeg.Sa
 		ModelState:  m.state,
 		Logger:      logger,
 	})
+	return lib, indexed{store: store, coord: coord, where: where}, err
 }
 
 // openText builds the text search page: a search.Index over the shared text
 // embedder in that model's own vector store. The chunker is the index's
 // default, handed to both, so the page shows the chunks the index embeds.
-func openText(ctx context.Context, o options, text *textModel, st *stores, logger *slog.Logger) (*textsearch.Library, error) {
+func openText(ctx context.Context, o options, text *textModel, st *stores, logger *slog.Logger) (*textsearch.Library, indexed, error) {
 	store, where, _, err := st.vectors(ctx, text.name, text.Dimensions())
 	if err != nil {
-		return nil, err
+		return nil, indexed{}, err
 	}
 	coord := vector.Coord{Index: indexName, Partition: indexPartition, Collection: "docs"}
 	chunker := &search.MarkdownChunker{}
 	ix, err := search.New(text, store, coord.Index, coord.Partition, coord.Collection,
 		search.WithChunker(chunker), search.WithMinScore(o.textMinScore))
 	if err != nil {
-		return nil, err
+		return nil, indexed{}, err
 	}
-	return textsearch.New(textsearch.Config{
+	lib, err := textsearch.New(textsearch.Config{
 		Dir:        o.docsDir,
 		Index:      ix,
 		Chunker:    chunker,
@@ -248,6 +258,7 @@ func openText(ctx context.Context, o options, text *textModel, st *stores, logge
 		Examples:   textsearch.SampleQueries(o.samples, 4),
 		Logger:     logger,
 	})
+	return lib, indexed{store: store, coord: coord, where: where}, err
 }
 
 // serve runs the HTTP server until ctx ends.
@@ -265,22 +276,6 @@ func serve(ctx context.Context, addr string, handler http.Handler, logger *slog.
 		return err
 	}
 	return nil
-}
-
-// home lists the features.
-func home(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprint(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>langai examples</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;background:#15171a;color:#e6e8eb;max-width:640px;margin:48px auto;padding:0 16px}
-a{color:#5aa9ff}li{margin:8px 0}</style></head><body>
-<h1>langai examples</h1>
-<ul>
-<li><a href="/mediasearch/">Media search</a> — images and videos that look like an image, a video or a text</li>
-<li><a href="/textsearch/">Text search</a> — documents that answer a question, in any language, with the chunk that matched</li>
-<li><a href="/duplicates/">Duplicates</a> — exact and near-exact copies of pictures, found by perceptual hashes without a model</li>
-<li><a href="/autotag/">Auto tagging</a> — tags for notes, picked among your own tags or written new by a chat model</li>
-</ul>
-</body></html>`)
 }
 
 func homeDir() string {

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>langai · status</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="assets/base.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <nav id="nav" data-root="./" data-page=""><a class="home" href="./">langai examples</a></nav>
+  <h1>Status</h1>
+  <div id="info" class="info">loading…</div>
+  <div class="actions">
+    <button id="refresh" class="button">refresh</button>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>Pages</h2>
+    <div id="pages" class="pages"></div>
+  </section>
+  <section>
+    <h2>Models</h2>
+    <p class="hint">A model behind one of the library's lazy loaders (<code>langai.LazyEmbedder</code>, <code>LazyImageEmbedder</code>, <code>LazyCompleter</code>) loads on the first call that needs it; its identity and dimensions come from its spec, so the stores are set up before anything loads. <b>load now</b> calls <code>Load</code>.</p>
+    <div id="models"></div>
+  </section>
+  <section>
+    <h2>Collections</h2>
+    <p class="hint">Every index a page keeps, with the model the store recorded its vectors under (<code>vector.Store.Model</code>). A collection that records another model than the page runs refuses writes and searches (<code>vector.ErrModelMismatch</code>) until <b>reset</b> empties it (<code>Index.Reset</code>, <code>MediaIndex.Reset</code>); the page's next scan builds it again.</p>
+    <div id="collections"></div>
+  </section>
+  <section id="cachesection" hidden>
+    <h2>Embedding cache</h2>
+    <p class="hint">The Tagger keeps every embedding it makes in a <code>tagging.EmbeddingCache</code>, keyed by model and text. <code>Tagger.Prune</code> removes what was not used for a while, after marking what the notebook's tags are built from as used.</p>
+    <div id="cache"></div>
+  </section>
+</main>
+<script src="assets/ui.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
