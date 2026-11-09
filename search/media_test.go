@@ -497,11 +497,11 @@ func hugePNG() []byte {
 }
 
 func TestDecodeImage_RefusesHugePictures(t *testing.T) {
-	if _, err := decodeImage(bytes.NewReader(hugePNG())); err == nil || !strings.Contains(err.Error(), "pixels") {
+	if _, err := decodeImage(hugePNG()); err == nil || !strings.Contains(err.Error(), "pixels") {
 		t.Errorf("err = %v, want a pixel-count refusal", err)
 	}
 	// a real picture still decodes whole after the config pass
-	img, err := decodeImage(bytes.NewReader(encoded(t, pic(300, 200, red, blue))))
+	img, err := decodeImage(encoded(t, pic(300, 200, red, blue)))
 	if err != nil {
 		t.Fatal(err)
 	}

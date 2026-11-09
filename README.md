@@ -341,8 +341,9 @@ stored, so the next run tries it again rather than keep an item that is never fo
   video costs its decode plus one embedding per frame. Embedding, the ffmpeg run and the
   hash of a video all run per call; the background job that indexes decides how many run
   at once.
-- **Limits.** Pictures are embedded as decoded: a JPEG whose EXIF orientation says to
-  rotate it is seen unrotated. The SigLIP 2 text tower is not wired, so text queries
+- **Limits.** A JPEG is turned upright by its EXIF orientation (all eight, read by a
+  small parser of its own that takes a broken block for none) before it is embedded;
+  other formats are embedded as decoded. The SigLIP 2 text tower is not wired, so text queries
   need the vision model below. The CUDA and CoreML paths are wired but were not run on a
   GPU in this release; the CPU path is what the real-model tests cover.
 

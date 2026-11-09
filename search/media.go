@@ -154,7 +154,8 @@ func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, par
 		return nil, fmt.Errorf("search: the text embedder's vectors have %d dimensions, the image embedder's %d: they must be one model", ix.text.Dimensions(), embedder.Dimensions())
 	}
 	dims := embedder.Dimensions()
-	ix.imageSettings = settings("image", ix.model, dims)
+	// image/2: JPEGs are turned upright by their EXIF orientation
+	ix.imageSettings = settings("image/2", ix.model, dims)
 	ix.framesSettings = settings("frames", ix.model, dims)
 	switch {
 	case ix.video != nil:
@@ -193,7 +194,7 @@ func (ix *MediaIndex) IndexImage(ctx context.Context, docID string, r io.Reader)
 	if same, err := ix.unchanged(ctx, docID, hash); err != nil || same {
 		return err
 	}
-	img, err := decodeImage(bytes.NewReader(data))
+	img, err := decodeImage(data)
 	if err != nil {
 		return fmt.Errorf("search: decode image %q: %w", docID, err)
 	}
@@ -347,7 +348,7 @@ func (ix *MediaIndex) SearchImage(ctx context.Context, r io.Reader, limit int) (
 	if err != nil {
 		return nil, err
 	}
-	img, err := decodeImage(bytes.NewReader(data))
+	img, err := decodeImage(data)
 	if err != nil {
 		return nil, fmt.Errorf("search: decode query image: %w", err)
 	}
@@ -472,18 +473,26 @@ func (ix *MediaIndex) search(ctx context.Context, queries []queryVector, limit i
 }
 
 // decodeImage decodes one picture in any registered format, refusing one
-// that claims more than maxImagePixels before any pixel is allocated.
-func decodeImage(r io.Reader) (image.Image, error) {
-	var head bytes.Buffer
-	cfg, _, err := image.DecodeConfig(io.TeeReader(r, &head))
+// that claims more than maxImagePixels before any pixel is allocated, and
+// turns a JPEG upright by its EXIF orientation, which image/jpeg ignores: a
+// phone stores a portrait photo as landscape pixels plus that tag, and
+// embedded unturned it would match its own upright video frames less.
+func decodeImage(data []byte) (image.Image, error) {
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width*cfg.Height > maxImagePixels {
 		return nil, fmt.Errorf("image is %dx%d pixels, more than %d", cfg.Width, cfg.Height, maxImagePixels)
 	}
-	img, _, err := image.Decode(io.MultiReader(&head, r))
-	return img, err
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if format == "jpeg" {
+		img = orient(img, jpegOrientation(data))
+	}
+	return img, nil
 }
 
 // fileHash is the SHA-256 of the file, hex, streamed: the content IndexVideo
