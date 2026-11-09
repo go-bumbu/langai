@@ -386,29 +386,29 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Prune takes Space, Scope takes two strings, vector uses Coord.
 - [x] lazy loaders: recovery from a kept load failure is undocumented
   The docs never say to build a new lazy value to retry.
-- [ ] video segment files pile up in the temp dir
+- [x] video segment files pile up in the temp dir
   embedSegments removes cuts only at the end, so a 100-segment video has 100 files on disk at once, plus the full remux for a duration-less file.
-- [ ] segments are cut into the source's extension
+- [x] segments are cut into the source's extension
   Only an empty extension falls back to .mkv; .divx, .rmvb, .mp4.part and others fail at cut segment 0.
-- [ ] container duration is trusted
+- [x] container duration is trusted
   A duration near MaxInt64 panics in make, a 1000 h claim plans 180,000 segments, and audio longer than video yields phantom tail segments with duplicate vectors.
-- [ ] ffmpeg Cut deletes files it did not write
+- [x] ffmpeg Cut deletes files it did not write
   Cut(ctx, p, 0, 1s, p) removes the source after ffmpeg refuses; a missing binary removes a pre-existing out.
-- [ ] InstallDir deletes siblings it does not own
+- [x] InstallDir deletes siblings it does not own
   Every Open removes <LibDir>.old and <LibDir>.staging unconditionally and sweeps .partial-* and .download-* files in the parent directory, which can be the home directory.
-- [ ] metadata can forge a showinfo line
+- [x] metadata can forge a showinfo line
   A video title spelling a showinfo line moves frame timestamps or fails Sample. Anchor the pattern to the filter's log prefix.
-- [ ] Vision's identity misses settings that change stored output
+- [x] Vision's identity misses settings that change stored output
   Vision has no Fingerprint, so raising MaxSegments never re-indexes truncated videos; ContextTokens now changes long-text vectors but not the model id.
-- [ ] a symlinked managed LibDir is replaced by a real directory
+- [x] a symlinked managed LibDir is replaced by a real directory
   swap renames the symlink itself.
-- [ ] short videos reach libmtmd under the caller's raw path
+- [x] short videos reach libmtmd under the caller's raw path
   The file: hardening covers only the Cutter. Pass an absolute path.
-- [ ] install lock is taken before the already-usable check
+- [x] install lock is taken before the already-usable check
   A process that already loaded the library waits on the lock while another process downloads.
-- [ ] yzma never compares the install record's tag
+- [x] yzma never compares the install record's tag
   A managed dir left by an older pinned build counts as ready and then fails the version check for the life of the process.
-- [ ] no cross-process download lock off unix
+- [x] no cross-process download lock off unix
   Two Windows processes can interleave writes to one .partial file. No Windows build is pinned today.
 
 # change log
@@ -483,3 +483,9 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Commits 3b78f7a 8f8043f. Hashtag runs and CJK/Arabic separators split into several tags, full-width colons and CJK label words are cut, JSON replies are read by their tag members only (tags, keywords, labels, topics; name/tag/label per item) and never also by lines, key: number items are dropped, and a reply that is only No tags / None / N/A (and a few es/de forms) gives no tags. Kept now: (re)insurance, 5" floppy, x < y, dev > go in flat mode, Topic modeling: LDA whole; in tree mode -> separates levels. A closed Completer is asked once (was 22 times on a 64 KB text) and a long text stops after two failed windows with none read.
 - [x] langaitest: fakes honour ctx and can fail
   Commit ce5915f. FakeEmbedder gained Err, Fail func(text) error and Calls; FakeImageEmbedder gained Err and Calls; both check ctx first.
+- [x] vision second pass: segment planning and temp files (breaking)
+  Commits 2689210 01995a0 e0ee71e f4d5884 73ceb80. Segments are planned from the video stream's duration (then Matroska's per-stream tag, then the container's); NaN, non-positive or over-a-week values count as unknown; the count is overflow-safe. MaxSegments 0 now means yzma.DefaultMaxSegments = 720, not all. Cut returns media.ErrPastEnd past the real end, so audio longer than video no longer yields duplicate tail segments. Cuts go into the source's container only where it is known to take the stream, else Matroska; each cut is removed once embedded; VisionOptions.TempDir sets where they go. Videos reach libmtmd under an absolute path. Vision.Fingerprint() covers segment length and cap, and the context cap is now part of the model id (ctx= for Vision, max_tokens= for Embedder), so every yzma identity string changed and stored vectors re-embed once. Open: libmtmd's own ffmpeg has no protocol whitelist for short videos (a local playlist naming local files gets through).
+- [x] ffmpeg second pass: Cut and Sample
+  Commits a518f98 f56738d. Cut refuses an out that is its input, writes under a temp name next to out and renames on success, and never removes a file it did not write. Frame times are read only from the showinfo filter's own lines, by frame number, so a video title cannot forge them. The sampler fingerprint is ffmpeg/2 because frames now spread over the video stream's length, so sampled videos re-index once.
+- [x] fetch second pass: install ownership, symlinks, lock
+  Commits 23e9aec 4c76695 80fd6eb e088c44 ee889a5. An install touches only siblings named <dir>.langai-download/-staging/-retired that carry its marker or record (anything else there is an error) and no longer sweeps temp files in the parent directory. A symlinked library directory is installed where it points. A process already running the directory's libraries skips the install lock, and a lock wait that outlasts ctx returns ctx's error (before, it went on unlocked). yzma reinstalls a managed directory whose record names another llama.cpp tag. Off unix each process uses its own partial file; installs there are still not serialized across processes.
