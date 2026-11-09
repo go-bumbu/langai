@@ -157,7 +157,10 @@ go get github.com/go-bumbu/langai
   (anything else there stops the install with an error). A `libs.old` of yours stays.
   A `LibDir` that is a symbolic link (to another disk, say) is filled where it points
   and stays a link; the lock and the staging are then next to its target, and the link
-  and its target are one directory to a process that names both.
+  and its target are one directory to a process that names both. An open waits for the
+  lock until its context ends, and then fails with the context's error; a process that
+  already runs the libraries from the directory does not take the lock at all, so its
+  next open is not held up by another process's download.
   Libraries a process has loaded are never replaced under it:
   asking by name for another build in the same process (`AccelCPU` first and
   `AccelVulkan` later, `ProviderCPU` and then `ProviderCUDA`) is an error, so open the

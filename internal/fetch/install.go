@@ -61,13 +61,22 @@ type DirInstall struct {
 	// held: loading the libraries there keeps another process from replacing
 	// them halfway through the load.
 	Use func() error
+	// Loaded, when set, reports whether this process already runs what is in
+	// Dir: it has loaded the libraries from there. Such a process does not
+	// take the lock when Ready also says the directory holds what is wanted.
+	// It has nothing to install and nothing to load, and would otherwise wait
+	// at every open for as long as another process downloads a build into
+	// the directory. Ready and Use then run without the lock.
+	Loaded func() bool
 }
 
 // InstallDir makes in.Dir hold what in describes and runs in.Use on it.
 // Installs into one directory are serialized, between goroutines and
 // (where the platform has file locks) between processes, by a lock file
 // next to the directory, and whether an install is needed is decided under
-// that lock. The download and the extraction happen next to the final
+// that lock. The wait for the lock ends with ctx, as an error. Only a
+// process that already runs what the directory holds does not wait at all
+// (see DirInstall.Loaded). The download and the extraction happen next to the final
 // directory, which is renamed into place at the end: an interrupted install
 // never leaves a half-filled in.Dir. A directory that holds anything this
 // package's caller did not install is not touched; that is an error.
@@ -90,6 +99,15 @@ func (d Downloader) InstallDir(ctx context.Context, in DirInstall) (installed bo
 	if in.Dir, err = ResolveDir(in.Dir); err != nil {
 		return false, err
 	}
+	if in.Loaded != nil && in.Loaded() {
+		// before any lock: neither another process's download nor a goroutine
+		// of this one that waits for it holds up a process that needs nothing
+		// done to the directory. Anything but a plain yes is decided again
+		// under the lock, where the directory holds still.
+		if ready, err := in.ready(); err == nil && ready {
+			return false, in.use()
+		}
+	}
 	release, err := inProcess.acquire(ctx, in.Dir)
 	if err != nil {
 		return false, err
@@ -98,6 +116,11 @@ func (d Downloader) InstallDir(ctx context.Context, in DirInstall) (installed bo
 	lock, lockErr := lockDir(ctx, in.Dir)
 	if lockErr == nil {
 		defer func() { _ = lock.Close() }()
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		// the lock is someone's and the wait for it ran out: that is not a
+		// directory that cannot be locked, and nothing may be loaded from it
+		// while its holder works on it
+		return false, fmt.Errorf("wait for %s: %w", in.Dir+lockSuffix, ctxErr)
 	}
 	ready, err := in.ready()
 	if err != nil {
@@ -115,12 +138,15 @@ func (d Downloader) InstallDir(ctx context.Context, in DirInstall) (installed bo
 		}
 		installed = true
 	}
-	if in.Use != nil {
-		if err := in.Use(); err != nil {
-			return installed, err
-		}
+	return installed, in.use()
+}
+
+// use runs in.Use, which may be nil.
+func (in DirInstall) use() error {
+	if in.Use == nil {
+		return nil
 	}
-	return installed, nil
+	return in.Use()
 }
 
 // maxLinkHops is how many symbolic links ResolveDir follows by hand, one

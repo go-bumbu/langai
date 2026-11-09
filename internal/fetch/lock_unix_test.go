@@ -4,11 +4,76 @@ package fetch
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+// TestInstallDir_AProcessThatLoadedDoesNotWait: while another process holds
+// the directory's lock, downloading a build into it, a process that already
+// runs the libraries from that directory must not queue behind the download
+// at its next open: it has nothing to install and nothing to load. Whoever
+// has not loaded waits its turn, and gives up with its context's error.
+func TestInstallDir_AProcessThatLoadedDoesNotWait(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// queued says that another goroutine of this process waits for the
+		// lock too, holding the directory's turn inside the process
+		queued  bool
+		loaded  func() bool
+		ready   bool
+		wantErr error
+		used    int
+	}{
+		{name: "loaded and ready", loaded: func() bool { return true }, ready: true, used: 1},
+		{name: "loaded and ready, behind a goroutine that waits", queued: true, loaded: func() bool { return true }, ready: true, used: 1},
+		{name: "loaded, but the directory is not ready", loaded: func() bool { return true }, wantErr: context.DeadlineExceeded},
+		{name: "ready, but not loaded", loaded: func() bool { return false }, ready: true, wantErr: context.DeadlineExceeded},
+		{name: "ready, not loaded, behind a goroutine that waits", queued: true, loaded: func() bool { return false }, ready: true, wantErr: context.DeadlineExceeded},
+		{name: "ready, and nobody says whether it is loaded", ready: true, wantErr: context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(realTemp(t), "libs")
+			// another process: the file lock, held through another open file
+			other, err := openLocked(context.Background(), dir+lockSuffix)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = other.Close() }()
+			if tc.queued {
+				release, err := inProcess.acquire(context.Background(), dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+			}
+
+			used := 0
+			in := DirInstall{
+				Dir: dir, What: "libx 1.0", RecordFile: testRecord,
+				Archive: Asset{URL: "http://127.0.0.1:1/unreachable"},
+				Loaded:  tc.loaded,
+				Ready:   func() (bool, error) { return tc.ready, nil },
+				Use:     func() error { used++; return nil },
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*lockPoll)
+			defer cancel()
+			start := time.Now()
+			installed, err := dl(cap).InstallDir(ctx, in)
+			if installed || !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
+				t.Errorf("InstallDir = %v, %v; want no install and %v", installed, err, tc.wantErr)
+			}
+			if used != tc.used {
+				t.Errorf("Use ran %d times, want %d", used, tc.used)
+			}
+			if tc.wantErr == nil && time.Since(start) > 2*lockPoll {
+				t.Errorf("the call took %v: it waited for the lock", time.Since(start))
+			}
+		})
+	}
+}
 
 // TestTryLock_ExcludesAnotherOpenFile: a flock belongs to the open file, so
 // a second open of the same path, which is what another process has, is

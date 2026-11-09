@@ -195,7 +195,9 @@ type libsWant struct {
 // wanted, under the directory's lock (see fetch.InstallDir), and the
 // download and install are logged to logger. It is never filled over files
 // this package did not install, and never while this process runs the
-// libraries in it. An operator directory is only checked, never written to.
+// libraries in it; a process that does run them, and wants nothing else,
+// does not wait for the lock. An operator directory is only checked, never
+// written to.
 func ensureLibs(ctx context.Context, w libsWant, logger *slog.Logger) error {
 	if !w.managed {
 		if _, err := os.Stat(filepath.Join(w.dir, libFile())); err != nil {
@@ -215,6 +217,9 @@ func ensureLibs(ctx context.Context, w libsWant, logger *slog.Logger) error {
 		RecordFile: libRecordFile, Record: rec,
 		Ready: func() (bool, error) { return w.ready(logger) },
 		Use:   w.load,
+		// a process that runs the libraries from here does not queue behind
+		// another process's download at its next open
+		Loaded: func() bool { return w.loadedDir != nil && w.loadedDir() == w.dir },
 	})
 	if installed {
 		logger.Info("installed llama.cpp "+LibTag, logComponent, slog.String("dir", w.dir), slog.String("build", w.build))

@@ -206,8 +206,9 @@ type libsWant struct {
 // it is empty or when its record names another version or variant, under
 // the directory's lock (see fetch.InstallDir), and the download and install
 // are logged to logger. It is never filled over files this package did not
-// install, and never while this process runs the library in it. An operator
-// directory is only checked, never written to.
+// install, and never while this process runs the library in it; a process
+// that does run it, and wants nothing else, does not wait for the lock. An
+// operator directory is only checked, never written to.
 func ensureLibs(ctx context.Context, w libsWant, logger *slog.Logger) error {
 	if !w.managed {
 		if _, err := libraryPath(w.dir); err != nil {
@@ -231,6 +232,9 @@ func ensureLibs(ctx context.Context, w libsWant, logger *slog.Logger) error {
 		RecordFile: installRecordFile, Record: record,
 		Ready: func() (bool, error) { return w.ready(logger) },
 		Use:   w.load,
+		// a process that runs the library from here does not queue behind
+		// another process's download at its next open
+		Loaded: func() bool { return w.loadedDir != nil && w.loadedDir() == w.dir },
 	})
 	if installed {
 		logger.Info("installed onnxruntime "+LibVersion, logComponent, slog.String("dir", w.dir), slog.String("variant", w.variant))
