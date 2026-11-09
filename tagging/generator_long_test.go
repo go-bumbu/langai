@@ -395,8 +395,10 @@ func TestGenerate_LongTextKeepsTheTagsOfTheWindowsThatWorked(t *testing.T) {
 	}
 }
 
-// TestGenerate_LongTextWithNoWindowReadIsAnError: when every window fails
-// there is nothing partial about the result: no tags, and the causes.
+// TestGenerate_LongTextWithNoWindowReadIsAnError: when no window is read
+// there is nothing partial about the result: no tags, and the causes. The
+// third window is not asked about once the first two have failed (see
+// maxFailedWindowsAtStart).
 func TestGenerate_LongTextWithNoWindowReadIsAnError(t *testing.T) {
 	for name, tc := range map[string]struct {
 		llm   *langaitest.FakeCompleter
@@ -412,8 +414,8 @@ func TestGenerate_LongTextWithNoWindowReadIsAnError(t *testing.T) {
 			if !errors.Is(err, tc.cause) || errors.Is(err, ErrPartial) || got != nil {
 				t.Fatalf("got %v, %v; want no tags and an error wrapping the cause, not ErrPartial", got, err)
 			}
-			if len(tc.llm.Calls()) != 6 || len(emb.calls) != 0 {
-				t.Errorf("asked %d times and embedded %v, want each of 3 windows twice and nothing embedded", len(tc.llm.Calls()), emb.calls)
+			if len(tc.llm.Calls()) != 2*maxFailedWindowsAtStart || len(emb.calls) != 0 {
+				t.Errorf("asked %d times and embedded %v, want the first two windows twice each and nothing embedded", len(tc.llm.Calls()), emb.calls)
 			}
 		})
 	}

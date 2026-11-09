@@ -544,7 +544,8 @@ pictures and clips, and an image finds the stretch of a video it appears in.
    4. The LLM writes up to `Candidates` tags (10 by default) per call, either as short
       words or as tree paths, optionally extending the app's existing paths. A call that
       fails or replies with nothing is made once more; a window that fails twice is left
-      out and reported with `ErrPartial`.
+      out and reported with `ErrPartial`. A closed model, or one that fails on the first
+      two windows, is not asked about the rest.
    5. The library embeds the text (in 2 KB chunks when it is long) and each candidate
       tag. Nothing is cached.
    6. Each candidate is scored by the cosine between its vector and the text's vector;
@@ -882,11 +883,15 @@ measured on long documents and not on essences.
   (`a / b`). A name left with a bracket or a quote that does not close, with an HTML
   element, or longer than four words or 40 characters, is not a tag.
 - **A bad answer is asked for again, once.** A model call that fails or replies with
-  nothing is repeated, unless the context has ended. If it fails again on a short text,
+  nothing is repeated, unless the context has ended or the error wraps
+  `langai.ErrClosed`: a closed model is asked once. If it fails again on a short text,
   `Generate` returns the error; a model that twice says nothing is
   `tagging.ErrEmptyReply`, not "no tags". On a long text the other windows still count:
   `Generate` returns their tags *and* an error wrapping `tagging.ErrPartial` that names
-  the windows it lost, so check the error before you discard the tags:
+  the windows it lost. A model that is gone is not asked about the rest of the text: a
+  closed one stops the reading at once, and when the first two windows fail with none
+  read yet the others are skipped, so a model that is down costs four calls, not two per
+  window. Check the error before you discard the tags:
 
   ```go
   tags, err := gen.Generate(ctx, text, tagging.DefaultGeneratorMinScore)

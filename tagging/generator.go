@@ -282,11 +282,15 @@ func languageName(code string) string {
 // nobody. A model that writes no usable tag is not an error.
 //
 // A model call that fails, or answers with nothing at all, is made once more,
-// unless ctx has ended. On a short text a second failure is the error of
-// Generate, wrapping the model's or ErrEmptyReply. On a long text the windows
-// that were read still count: Generate returns their tags together with an
-// error wrapping ErrPartial and the causes, so a result may hold tags and an
-// error at once; only when no window could be read does it return no tags.
+// unless ctx has ended or the model's error wraps langai.ErrClosed, which
+// asking again cannot change. On a short text a second failure is the error
+// of Generate, wrapping the model's or ErrEmptyReply. On a long text the
+// windows that were read still count: Generate returns their tags together
+// with an error wrapping ErrPartial and the causes, so a result may hold tags
+// and an error at once; only when no window could be read does it return no
+// tags. A model that is gone is not asked about the rest of a long text: one
+// that is closed, and one that failed on the first two windows with none read
+// yet, so a model that is down costs four calls, not two per window.
 //
 // A text of at most GeneratorConfig.ChunkBytes is written about in one model
 // call and every tag is scored against the whole of it. A longer one is read
@@ -360,15 +364,18 @@ var ErrEmptyReply = errors.New("tagging: the model replied with nothing")
 // with it are good, and may be none: they are the ones of the windows that
 // were read, scored against the whole text as usual, so topics of the windows
 // that failed can be missing. The error also wraps each window's cause and
-// says which windows they are. Test for it with errors.Is, and keep the tags
-// or call again as suits the application.
+// says which windows they are, and how many were not read in all: the windows
+// after one the model was closed at (langai.ErrClosed) are not asked about.
+// Test for it with errors.Is, and keep the tags or call again as suits the
+// application.
 var ErrPartial = errors.New("tagging: tags of a part of the text only")
 
 // write asks the model for the tags of text, a short text whole or one window
 // of a long one, and returns its reply. A call that fails, and a reply with
 // nothing to read (see ErrEmptyReply), is asked once more: one bad answer in
 // the many a long text takes must not cost the others. It does not ask again
-// once ctx has ended, and returns the last failure.
+// once ctx has ended, nor a model that says it is closed (an error wrapping
+// langai.ErrClosed), which would say so again, and returns the last failure.
 func (g *Generator) write(ctx context.Context, text string) (string, error) {
 	var failure error
 	for range 2 {
@@ -377,6 +384,8 @@ func (g *Generator) write(ctx context.Context, text string) (string, error) {
 		}
 		answer, err := g.llm.Complete(ctx, g.prompt, text)
 		switch {
+		case errors.Is(err, langai.ErrClosed):
+			return "", err
 		case err != nil:
 			failure = err
 		case strings.TrimSpace(stripScaffolding(answer)) == "":
