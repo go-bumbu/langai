@@ -405,8 +405,8 @@ near := h.Distance(other) <= 4   // Hamming distance; h.String() is the hex
 perceptual hash and returns the bits as a unit vector of ±1/√bits entries, so the cosine
 of two pictures is exactly `1 - 2·hamming/bits` and `MediaIndex` and every store work on
 it as on a model's vectors. It is pure Go, downloads nothing and hashes a 1920×1080
-picture in about 2.5 ms (6 ms for a decoded JPEG), so a de-duplication job does not pay
-for a model.
+picture in about 2 ms (5 ms for a decoded JPEG; `BenchmarkHash`, one core of an AMD Ryzen
+AI 9 HX PRO 370), so a de-duplication job does not pay for a model.
 
 - **What it finds.** The same picture again: saved as a JPEG, scaled up or down,
   slightly brightened, or with a small mark stamped on it. Not a crop, a rotated or

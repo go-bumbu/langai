@@ -26,8 +26,8 @@
 // it, and unrelated pictures come closer. Config.Bits selects 256 bits
 // instead of 64 (a 64×64 grid and 16×16 frequencies, or a 17×16 grid), which
 // puts duplicates and unrelated pictures much further apart. Reading the
-// pixels is nearly all of the cost, the same for all four: about 2.5 ms for
-// a 1920×1080 RGBA and 6 ms for a decoded JPEG of that size on one core of a
+// pixels is nearly all of the cost, the same for all four: about 2 ms for a
+// 1920×1080 RGBA and 5 ms for a decoded JPEG of that size on one core of a
 // laptop (BenchmarkHash).
 //
 // A score is a Hamming distance read another way, 1 - 2*distance/bits: with
