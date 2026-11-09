@@ -65,7 +65,9 @@ func ExtractTarGz(archive, dir string, want func(path string) bool, limit int64)
 }
 
 // writeFile writes one extracted file, executable (shared libraries must
-// be), bounded by limit bytes.
+// be), bounded by limit bytes, and flushes it to disk: the directory it is
+// in gets its final name next, and must not hold empty libraries after a
+// crash.
 func writeFile(dest string, r io.Reader, limit int64) (err error) {
 	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec // dest is a base name the caller's filter accepted inside its staging directory, writes are capped, and shared libraries must be executable
 	if err != nil {
@@ -83,5 +85,5 @@ func writeFile(dest string, r io.Reader, limit int64) (err error) {
 	if n > limit {
 		return fmt.Errorf("%s exceeds the %d byte cap", dest, limit)
 	}
-	return nil
+	return out.Sync()
 }

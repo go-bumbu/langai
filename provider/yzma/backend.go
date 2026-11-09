@@ -60,7 +60,10 @@ var libs = &runtimeLoader{}
 // outcome: a failure is permanent, which matches langai.LazyEmbedder's
 // cached-error contract, and a second directory is refused.
 type runtimeLoader struct {
-	once    sync.Once
+	once sync.Once
+	// mu guards the outcome below for loadedDir, which an install asks while
+	// another goroutine may be loading
+	mu      sync.Mutex
 	err     error
 	dir     string
 	version string   // what the loaded libraries reported, kept for Open's load log line
@@ -77,17 +80,24 @@ func (r *runtimeLoader) load(api runtimeAPI, libDir string, logger *slog.Logger)
 		if os.Getenv("GGML_NO_BACKTRACE") == "" {
 			_ = os.Setenv("GGML_NO_BACKTRACE", "1")
 		}
-		if err := api.load(libDir, logger); err != nil {
-			r.err = err
-			return
+		err := api.load(libDir, logger)
+		var v string
+		var devs []device
+		if err == nil {
+			if v = api.version(); !strings.HasPrefix(v, libVersion) {
+				err = fmt.Errorf("llama.cpp in %s reports version %q but provider/yzma is pinned to %s (build %s): the Go bindings only match that build", libDir, v, libVersion, LibTag)
+			} else {
+				devs = api.devices()
+			}
 		}
-		v := api.version()
-		if !strings.HasPrefix(v, libVersion) {
-			r.err = fmt.Errorf("llama.cpp in %s reports version %q but provider/yzma is pinned to %s (build %s): the Go bindings only match that build", libDir, v, libVersion, LibTag)
-			return
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.err = err; err == nil {
+			r.dir, r.version, r.devices = libDir, v, devs
 		}
-		r.dir, r.version, r.devices = libDir, v, api.devices()
 	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.err != nil {
 		return r.err
 	}
@@ -95,6 +105,14 @@ func (r *runtimeLoader) load(api runtimeAPI, libDir string, logger *slog.Logger)
 		return fmt.Errorf("llama.cpp is already loaded from %s; cannot load %s in the same process", r.dir, libDir)
 	}
 	return nil
+}
+
+// loadedDir is the directory the libraries were loaded from, "" while they
+// have not been (or failed to).
+func (r *runtimeLoader) loadedDir() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dir
 }
 
 // llamaBackend is the backend over one loaded model and one llama.cpp

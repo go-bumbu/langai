@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -171,6 +174,12 @@ func TestWantLib(t *testing.T) {
 	}
 }
 
+// ensureLibsFor asks ensureLibs for build b in libDir on plat, in a process
+// that has loaded nothing and loads nothing.
+func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, b build, logger *slog.Logger) error {
+	return ensureLibs(ctx, libsWant{plat: plat, dir: libDir, managed: managed, build: b, explicit: true}, logger)
+}
+
 func TestEnsureLibsFor_ManagedDownloadsAndInstalls(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the pinned archives hold Linux .so files")
@@ -180,12 +189,15 @@ func TestEnsureLibsFor_ManagedDownloadsAndInstalls(t *testing.T) {
 	t.Cleanup(func() { delete(libAssets, "test/arch/cpu") })
 
 	libDir := filepath.Join(t.TempDir(), "llama-cpp", LibTag)
-	// a directory left behind by an interrupted install (no libllama.so) is replaced
+	// a directory of this package's that lost its libraries (it has the
+	// record, no libllama.so) is replaced
 	if err := os.MkdirAll(libDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(libDir, "stale"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"stale", libRecordFile} {
+		if err := os.WriteFile(filepath.Join(libDir, name), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := ensureLibsFor(context.Background(), "test/arch", libDir, true, "cpu", discardLogger()); err != nil {
 		t.Fatal(err)
@@ -194,16 +206,135 @@ func TestEnsureLibsFor_ManagedDownloadsAndInstalls(t *testing.T) {
 		t.Fatalf("libllama.so missing after install: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(libDir, "stale")); err == nil {
-		t.Fatal("the interrupted install's leftovers survived")
+		t.Fatal("the broken install's leftovers survived")
 	}
+	// the directory and its lock file: no archive, no staging
 	entries, _ := os.ReadDir(filepath.Dir(libDir))
-	if len(entries) != 1 {
-		t.Fatalf("staging directory left behind: %v", entries)
+	if len(entries) != 2 {
+		t.Fatalf("staging left behind: %v", entries)
 	}
 	// installed libraries are reused: the second call must not need the network
 	libAssets["test/arch/cpu"] = asset{URL: "http://127.0.0.1:1/unreachable", SHA256: a.SHA256}
 	if err := ensureLibsFor(context.Background(), "test/arch", libDir, true, "cpu", discardLogger()); err != nil {
 		t.Fatalf("installed libraries must be reused, got %v", err)
+	}
+}
+
+// TestEnsureLibsFor_ManagedNeverWipesForeignFiles: ManagedLibDir on a
+// directory that holds something else (LibDir "/opt/app") must not delete
+// it. Without the libraries nothing can be installed there, and with
+// libraries of unknown origin they are used for the CPU and not replaced by
+// a GPU build.
+func TestEnsureLibsFor_ManagedNeverWipesForeignFiles(t *testing.T) {
+	_, a := serve(t, tarGz(t, "llama-b11429", releaseLibs()))
+	libAssets["test/arch/cpu"], libAssets["test/arch/vulkan"] = a, a
+	t.Cleanup(func() { delete(libAssets, "test/arch/cpu"); delete(libAssets, "test/arch/vulkan") })
+	app := t.TempDir()
+	precious := filepath.Join(app, "app.conf")
+	if err := os.WriteFile(precious, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := ensureLibsFor(context.Background(), "test/arch", app, true, "cpu", discardLogger())
+	if err == nil || !strings.Contains(err.Error(), "refusing to replace") || !strings.Contains(err.Error(), libRecordFile) {
+		t.Fatalf("err = %v, want a refusal naming the record file", err)
+	}
+	if err := os.WriteFile(filepath.Join(app, libFile()), []byte("someone's build"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureLibsFor(context.Background(), "test/arch", app, true, "cpu", discardLogger()); err != nil {
+		t.Errorf("libraries that are there serve the CPU as they are: %v", err)
+	}
+	if err := ensureLibsFor(context.Background(), "test/arch", app, true, "vulkan", discardLogger()); err == nil || !strings.Contains(err.Error(), "refusing to replace") {
+		t.Errorf("a GPU build over foreign libraries: err = %v", err)
+	}
+	if got, _ := os.ReadFile(precious); string(got) != "precious" {
+		t.Fatal("the directory's own file is gone")
+	}
+}
+
+// TestEnsureLibs_NeverReplacesLoadedLibraries: once the process runs the
+// libraries of a directory they stay. A build picked from the hardware
+// gives way with a warning; one asked for by name is an error.
+func TestEnsureLibs_NeverReplacesLoadedLibraries(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the pinned archives hold Linux .so files")
+	}
+	_, cpu := serve(t, tarGz(t, "llama-b11429", releaseLibs()))
+	libAssets["test/arch/cpu"] = cpu
+	libAssets["test/arch/vulkan"] = asset{URL: "http://127.0.0.1:1/unreachable", SHA256: cpu.SHA256}
+	t.Cleanup(func() { delete(libAssets, "test/arch/cpu"); delete(libAssets, "test/arch/vulkan") })
+	libDir := filepath.Join(t.TempDir(), "llama-cpp", LibTag)
+	loader := &runtimeLoader{}
+	f := newFakeAPI()
+	want := libsWant{plat: "test/arch", dir: libDir, managed: true, build: "cpu", explicit: true, loadedDir: loader.loadedDir,
+		use: func() error { return loader.load(f, libDir, nil) }}
+	if err := ensureLibs(context.Background(), want, discardLogger()); err != nil {
+		t.Fatal(err)
+	}
+	if loader.loadedDir() != libDir || f.count("load") != 1 {
+		t.Fatalf("loaded from %q, %d loads", loader.loadedDir(), f.count("load"))
+	}
+	want.build = "vulkan"
+	err := ensureLibs(context.Background(), want, discardLogger())
+	if err == nil || !strings.Contains(err.Error(), "already loaded") || !strings.Contains(err.Error(), "vulkan") {
+		t.Errorf("explicit vulkan over loaded cpu libraries: err = %v", err)
+	}
+	var logs bytes.Buffer
+	want.explicit = false
+	if err := ensureLibs(context.Background(), want, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		t.Errorf("a build picked from the hardware must give way: %v", err)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "already loaded") {
+		t.Errorf("no warning that the loaded build stays:\n%s", logs.String())
+	}
+	if f.count("load") != 1 {
+		t.Errorf("the libraries were loaded %d times", f.count("load"))
+	}
+}
+
+// TestEnsureLibs_ConcurrentOpensInstallOnceAndLoadAfter: two goroutines on a
+// fresh managed directory take turns; one downloads, and neither loads
+// while the other installs.
+func TestEnsureLibs_ConcurrentOpensInstallOnceAndLoadAfter(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the pinned archives hold Linux .so files")
+	}
+	var requests atomic.Int32
+	body := tarGz(t, "llama-b11429", releaseLibs())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	sum := sha256.Sum256(body)
+	libAssets["test/arch/cpu"] = asset{URL: srv.URL + "/libs.tgz", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(body))}
+	t.Cleanup(func() { delete(libAssets, "test/arch/cpu") })
+	libDir := filepath.Join(t.TempDir(), "llama-cpp", LibTag)
+	var wg sync.WaitGroup
+	errs := make([]error, 6)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = ensureLibs(context.Background(), libsWant{plat: "test/arch", dir: libDir, managed: true, build: "cpu",
+				use: func() error {
+					// what a load needs: the library, whole
+					got, err := os.ReadFile(filepath.Join(libDir, "libllama.so"))
+					if err == nil && string(got) != "llama" {
+						err = errors.New("a half-installed library")
+					}
+					return err
+				}}, discardLogger())
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("open %d: %v", i, err)
+		}
+	}
+	if n := requests.Load(); n != 1 {
+		t.Errorf("the build was downloaded %d times", n)
 	}
 }
 

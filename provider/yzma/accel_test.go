@@ -244,7 +244,7 @@ func TestRuntime_PrepareInstallsTheBuildTheHardwareNeeds(t *testing.T) {
 	})
 	libDir := filepath.Join(t.TempDir(), "llama-cpp", LibTag)
 	rt := Runtime{LibDir: libDir, ManagedLibDir: true}
-	got, _, err := (&rt).prepare(context.Background())
+	got, _, err := (&rt).prepare(context.Background(), newFakeAPI(), &runtimeLoader{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,21 +256,21 @@ func TestRuntime_PrepareInstallsTheBuildTheHardwareNeeds(t *testing.T) {
 	}
 
 	bad := Runtime{LibDir: libDir, Accel: Accel("opencl")}
-	if _, _, err := (&bad).prepare(context.Background()); err == nil || !strings.Contains(err.Error(), "opencl") {
+	if _, _, err := (&bad).prepare(context.Background(), newFakeAPI(), &runtimeLoader{}); err == nil || !strings.Contains(err.Error(), "opencl") {
 		t.Errorf("bad accel: %v", err)
 	}
 	none := Runtime{}
-	if _, _, err := (&none).prepare(context.Background()); err == nil {
+	if _, _, err := (&none).prepare(context.Background(), newFakeAPI(), &runtimeLoader{}); err == nil {
 		t.Error("no LibDir: want error")
 	}
 	// an unmanaged directory with libraries passes whatever the hardware says
 	unmanaged := Runtime{LibDir: libDir}
-	if _, _, err := (&unmanaged).prepare(context.Background()); err != nil {
+	if _, _, err := (&unmanaged).prepare(context.Background(), newFakeAPI(), &runtimeLoader{}); err != nil {
 		t.Errorf("unmanaged: %v", err)
 	}
 	// an unmanaged, empty directory still fails as before
 	empty := Runtime{LibDir: t.TempDir()}
-	if _, _, err := (&empty).prepare(context.Background()); err == nil || !errors.Is(err, err) {
+	if _, _, err := (&empty).prepare(context.Background(), newFakeAPI(), &runtimeLoader{}); err == nil || !errors.Is(err, err) {
 		t.Errorf("unmanaged empty: %v", err)
 	}
 }

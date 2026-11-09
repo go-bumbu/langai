@@ -175,50 +175,98 @@ func ensureModelFile(ctx context.Context, spec ModelSpec, logger *slog.Logger) e
 	return downloader(logger).EnsureFile(ctx, "model "+spec.Name, a, spec.File)
 }
 
-// ensureLibs makes sure libDir holds the ONNX Runtime build the variant
-// needs. A managed directory (owned by this package) is filled from
-// libAssets when empty or when its record names another version or
-// variant, and the download and install are logged to logger; an operator
-// directory is only checked, never written to.
-func ensureLibs(ctx context.Context, libDir string, managed bool, variant string, logger *slog.Logger) error {
-	return ensureLibsFor(ctx, platform(), libDir, managed, variant, logger)
+// libsWant is what ensureLibs is asked for: a directory, the runtime build
+// it should hold, and what to do with it once it does.
+type libsWant struct {
+	// plat is the first part of the libAssets key, "linux/amd64".
+	plat string
+	// dir is the absolute library directory.
+	dir string
+	// managed marks dir as owned by this package (Config.ManagedLibDir).
+	managed bool
+	// variant is the build dir should hold (see variantFor).
+	variant string
+	// loadedDir is the directory this process loaded the runtime from, ""
+	// while it has not; nil means it has not.
+	loadedDir func() string
+	// use loads the library from dir. It runs while a managed dir is locked,
+	// so no other process replaces it halfway; nil does nothing.
+	use func() error
 }
 
-func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, variant string, logger *slog.Logger) error {
-	_, present := libraryPath(libDir)
-	rec, err := readInstallRecord(libDir)
+// ensureLibs makes sure w.dir holds the ONNX Runtime build of w.variant and
+// then runs w.use on it. A managed directory is filled from libAssets when
+// it is empty or when its record names another version or variant, under
+// the directory's lock (see fetch.InstallDir), and the download and install
+// are logged to logger. It is never filled over files this package did not
+// install, and never while this process runs the library in it. An operator
+// directory is only checked, never written to.
+func ensureLibs(ctx context.Context, w libsWant, logger *slog.Logger) error {
+	if !w.managed {
+		if _, err := libraryPath(w.dir); err != nil {
+			return fmt.Errorf("no %s in %s: unpack the lib/ directory of the onnxruntime %s release there (the %s build for %s), or use a managed LibDir, which gets it downloaded", libFile(), w.dir, LibVersion, w.variant, w.plat)
+		}
+		rec, err := readInstallRecord(w.dir)
+		if err != nil {
+			return err
+		}
+		if err := checkInstallRecord(w.dir, rec, w.variant); err != nil {
+			return err
+		}
+		return w.load()
+	}
+	record, err := json.Marshal(installRecord{Version: LibVersion, Variant: w.variant})
 	if err != nil {
 		return err
 	}
-	switch {
-	case present == nil && !managed:
-		return checkInstallRecord(libDir, rec, variant)
-	case present == nil && rec != nil && rec.Version == LibVersion && rec.Variant == variant:
-		return nil
-	case present == nil:
-		logger.Info("replacing the onnxruntime install", logComponent, slog.String("dir", libDir), slog.Any("record", rec), slog.String("want", LibVersion+"/"+variant))
-	case !managed:
-		return fmt.Errorf("no %s in %s: unpack the lib/ directory of the onnxruntime %s release there (the %s build for %s), or use a managed LibDir, which gets it downloaded", libFile(), libDir, LibVersion, variant, plat)
-	}
-	a, ok := libAssets[plat+"/"+variant]
-	if !ok {
-		return fmt.Errorf("no pinned onnxruntime %s build for %s: use an unmanaged LibDir holding the release's lib/ directory", variant, plat)
-	}
-	record, err := json.Marshal(installRecord{Version: LibVersion, Variant: variant})
-	if err != nil {
-		return err
-	}
-	// the staged install (see fetch.InstallDir) also replaces a half-filled
-	// directory from an older crash (no library, see above)
-	err = downloader(logger).InstallDir(ctx, fetch.DirInstall{
-		Dir: libDir, What: "onnxruntime " + LibVersion + " (" + variant + ")", Archive: a, Extract: extractLibs,
+	installed, err := downloader(logger).InstallDir(ctx, fetch.DirInstall{
+		Dir: w.dir, What: "onnxruntime " + LibVersion + " (" + w.variant + ")", Archive: libAssets[w.plat+"/"+w.variant], Extract: extractLibs,
 		RecordFile: installRecordFile, Record: record,
+		Ready: func() (bool, error) { return w.ready(logger) },
+		Use:   w.load,
 	})
-	if err != nil {
-		return err
+	if installed {
+		logger.Info("installed onnxruntime "+LibVersion, logComponent, slog.String("dir", w.dir), slog.String("variant", w.variant))
 	}
-	logger.Info("installed onnxruntime "+LibVersion, logComponent, slog.String("dir", libDir), slog.String("variant", variant))
-	return nil
+	return err
+}
+
+// load runs w.use, which may be nil.
+func (w libsWant) load() error {
+	if w.use == nil {
+		return nil
+	}
+	return w.use()
+}
+
+// ready reports whether the managed w.dir can be used as it is, and
+// refuses, with an error, an install that cannot be made: of a build that
+// is not pinned for the platform, or over a library this process has
+// already loaded, which cannot be swapped under it. A loaded CUDA build
+// stays for a CPU request: it runs the CPU provider too.
+func (w libsWant) ready(logger *slog.Logger) (bool, error) {
+	rec, err := readInstallRecord(w.dir)
+	if err != nil {
+		return false, err
+	}
+	_, missing := libraryPath(w.dir)
+	present := missing == nil
+	if present && rec != nil && rec.Version == LibVersion && rec.Variant == w.variant {
+		return true, nil
+	}
+	if w.loadedDir != nil && w.loadedDir() == w.dir {
+		if rec != nil && rec.Variant == variantCUDA && w.variant == variantCPU {
+			return true, nil
+		}
+		return false, fmt.Errorf("onnxruntime is already loaded from %s, which does not hold the %s build: a library a process has loaded cannot be replaced under it; open with that Provider first, or restart", w.dir, w.variant)
+	}
+	if _, ok := libAssets[w.plat+"/"+w.variant]; !ok {
+		return false, fmt.Errorf("no pinned onnxruntime %s build for %s: use an unmanaged LibDir holding the release's lib/ directory", w.variant, w.plat)
+	}
+	if present {
+		logger.Info("replacing the onnxruntime install", logComponent, slog.String("dir", w.dir), slog.Any("record", rec), slog.String("want", LibVersion+"/"+w.variant))
+	}
+	return false, nil
 }
 
 // checkInstallRecord refuses an operator directory whose record names

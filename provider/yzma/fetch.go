@@ -160,45 +160,94 @@ func ensureModelFile(ctx context.Context, spec ModelSpec, logger *slog.Logger) e
 	return downloader(logger).EnsureFile(ctx, "model "+spec.Name, a, spec.File)
 }
 
-// ensureLibs makes sure libDir holds the llama.cpp libraries of the given
-// build (see chooseBackend). A managed directory (owned by this package) is
-// filled from libAssets when empty or when it holds the CPU build and a GPU
-// build is wanted, and the download and install are logged to logger; an
-// operator directory is only checked, never written to.
-func ensureLibs(ctx context.Context, libDir string, managed bool, b build, logger *slog.Logger) error {
-	return ensureLibsFor(ctx, platform(), libDir, managed, b, logger)
+// libsWant is what ensureLibs is asked for: a directory, the llama.cpp
+// build it should hold, and what to do with it once it does.
+type libsWant struct {
+	// plat is the libAssets key of the platform, "linux/amd64".
+	plat string
+	// dir is the absolute library directory.
+	dir string
+	// managed marks dir as owned by this package (Config.ManagedLibDir).
+	managed bool
+	// build is the build dir should hold (see chooseBackend).
+	build build
+	// explicit says the build was asked for by name (Config.Accel) rather
+	// than picked from the hardware.
+	explicit bool
+	// loadedDir is where this process loaded llama.cpp from, "" while it has
+	// not; nil means it has not.
+	loadedDir func() string
+	// use loads the libraries from dir. It runs while a managed dir is
+	// locked, so no other process replaces them halfway; nil does nothing.
+	use func() error
 }
 
-func ensureLibsFor(ctx context.Context, plat, libDir string, managed bool, b build, logger *slog.Logger) error {
-	if _, err := os.Stat(filepath.Join(libDir, libFile())); err == nil {
-		if !managed {
-			return checkInstallRecord(libDir)
+// ensureLibs makes sure w.dir holds the llama.cpp libraries of w.build and
+// then runs w.use on them. A managed directory is filled from libAssets when
+// it is empty, or when it holds this package's CPU build and a GPU build is
+// wanted, under the directory's lock (see fetch.InstallDir), and the
+// download and install are logged to logger. It is never filled over files
+// this package did not install, and never while this process runs the
+// libraries in it. An operator directory is only checked, never written to.
+func ensureLibs(ctx context.Context, w libsWant, logger *slog.Logger) error {
+	if !w.managed {
+		if _, err := os.Stat(filepath.Join(w.dir, libFile())); err != nil {
+			return fmt.Errorf("no %s in %s: install llama.cpp build %s there with `yzma install --lib %s` (yzma %s installs it by default), or use a managed LibDir, which gets the pinned build downloaded", libFile(), w.dir, LibTag, w.dir, pinnedYzma)
 		}
-		if !needsReinstall(libDir, b) {
-			return nil
+		if err := checkInstallRecord(w.dir); err != nil {
+			return err
 		}
-		logger.Info("replacing llama.cpp "+LibTag+" with its "+b+" build", logComponent, slog.String("dir", libDir))
-	} else if !managed {
-		return fmt.Errorf("no %s in %s: install llama.cpp build %s there with `yzma install --lib %s` (yzma %s installs it by default), or use a managed LibDir, which gets the pinned build downloaded", libFile(), libDir, LibTag, libDir, pinnedYzma)
+		return w.load()
 	}
-	a, ok := libAssets[plat+"/"+b]
-	if !ok {
-		return fmt.Errorf("no pinned llama.cpp %s build for %s: use an unmanaged LibDir populated with `yzma install`", b, plat)
-	}
-	rec, err := json.Marshal(libRecord{Tag: LibTag, Backend: b})
+	rec, err := json.Marshal(libRecord{Tag: LibTag, Backend: w.build})
 	if err != nil {
 		return err
 	}
-	// the staged install (see fetch.InstallDir) also replaces a half-filled
-	// directory from an older crash (no libFile, see above)
-	err = downloader(logger).InstallDir(ctx, fetch.DirInstall{
-		Dir: libDir, What: "llama.cpp " + LibTag, Archive: a, Extract: extractLibs, RecordFile: libRecordFile, Record: rec,
+	installed, err := downloader(logger).InstallDir(ctx, fetch.DirInstall{
+		Dir: w.dir, What: "llama.cpp " + LibTag, Archive: libAssets[w.plat+"/"+w.build], Extract: extractLibs,
+		RecordFile: libRecordFile, Record: rec,
+		Ready: func() (bool, error) { return w.ready(logger) },
+		Use:   w.load,
 	})
-	if err != nil {
-		return err
+	if installed {
+		logger.Info("installed llama.cpp "+LibTag, logComponent, slog.String("dir", w.dir), slog.String("build", w.build))
 	}
-	logger.Info("installed llama.cpp "+LibTag, logComponent, slog.String("dir", libDir), slog.String("build", b))
-	return nil
+	return err
+}
+
+// load runs w.use, which may be nil.
+func (w libsWant) load() error {
+	if w.use == nil {
+		return nil
+	}
+	return w.use()
+}
+
+// ready reports whether the managed w.dir can be used as it is, and
+// refuses, with an error, an install that cannot be made: of a build that
+// is not pinned for the platform, or over libraries this process has
+// already loaded. Those cannot be swapped under it; when the build was only
+// picked from the hardware the process carries on with what it loaded.
+func (w libsWant) ready(logger *slog.Logger) (bool, error) {
+	_, err := os.Stat(filepath.Join(w.dir, libFile()))
+	present := err == nil
+	if present && !needsReinstall(w.dir, w.build) {
+		return true, nil
+	}
+	if w.loadedDir != nil && w.loadedDir() == w.dir {
+		if !w.explicit {
+			logger.Warn("llama.cpp is already loaded from a build without the "+w.build+" backend; keeping it for this process", logComponent, slog.String("dir", w.dir))
+			return true, nil
+		}
+		return false, fmt.Errorf("llama.cpp is already loaded from %s, which does not hold the %s build: libraries a process has loaded cannot be replaced under it; open with that Accel first, or restart", w.dir, w.build)
+	}
+	if _, ok := libAssets[w.plat+"/"+w.build]; !ok {
+		return false, fmt.Errorf("no pinned llama.cpp %s build for %s: use an unmanaged LibDir populated with `yzma install`", w.build, w.plat)
+	}
+	if present {
+		logger.Info("replacing llama.cpp "+LibTag+" with its "+w.build+" build", logComponent, slog.String("dir", w.dir))
+	}
+	return false, nil
 }
 
 // needsReinstall reports whether a managed libDir must be replaced to serve

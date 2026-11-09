@@ -134,6 +134,15 @@ go get github.com/go-bumbu/langai
   require their backend. An operator-supplied `LibDir` is used as it is: whatever
   backends it holds register. Vulkan was run on an AMD iGPU for this release; the CUDA
   build is pinned but was not run.
+- **A managed `LibDir`** (`ManagedLibDir: true`, in both providers) belongs to the
+  provider, so give it a directory of its own. Only a missing or empty directory, or one
+  an earlier install left its record in, is filled or replaced; anything else is an
+  error, never a deletion. Installs take a lock file next to it (`<LibDir>.lock`), so
+  goroutines and processes that start together download once and none loads a
+  half-installed library. Libraries a process has loaded are never replaced under it:
+  asking by name for another build in the same process (`AccelCPU` first and
+  `AccelVulkan` later, `ProviderCPU` and then `ProviderCUDA`) is an error, so open the
+  most capable one first; `Accel` left empty keeps what is loaded.
 - **The vision model** (`yzma.NewVision`) is a 2.7 GB download on first use (the Q8_0
   GGUF and its f16 projector) and needs `ffmpeg` and `ffprobe` on PATH for videos; a
   loaded process holds about 3 GB.

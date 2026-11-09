@@ -138,8 +138,14 @@ type Config struct {
 	LibDir string
 	// ManagedLibDir marks LibDir as owned by this package: when the library
 	// is missing, or was installed for another Provider, the pinned build is
-	// downloaded into it. An operator-supplied LibDir (false) is never
-	// written to, only checked.
+	// downloaded into it. Give it a directory of its own: only a missing or
+	// empty one, or one an earlier install left its record in, is ever filled
+	// or replaced, and anything else is an error rather than a deletion.
+	// Installs are serialized by a lock file next to it ("<LibDir>.lock"),
+	// between goroutines and processes, and the library a process has loaded
+	// is never replaced under it: CUDA after CPU in the same process is an
+	// error (CPU after CUDA runs on the CUDA build). An operator-supplied
+	// LibDir (false) is never written to, only checked.
 	ManagedLibDir bool
 	// Provider is what runs the model; "" means ProviderCPU.
 	Provider Provider
@@ -343,17 +349,28 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	}
 	ctx, cancel := fetch.WithDefaultTimeout(ctx, downloadTimeout)
 	defer cancel()
-	if err := ensureLibs(ctx, libDir, rt.ManagedLibDir, variantFor(provider), logger); err != nil {
-		return nil, err
+	if from := libs.loadedDir(); rt.ManagedLibDir && from != "" && from != libDir {
+		// before anything is installed into a directory that cannot be loaded
+		return nil, fmt.Errorf("onnx: onnxruntime is already loaded from %s; cannot load %s in the same process", from, libDir)
 	}
-	if err := ensureModelFile(ctx, spec, logger); err != nil {
-		return nil, err
-	}
-	libPath, err := libraryPath(libDir)
+	// Install and load are one step under the directory's lock (see
+	// ensureLibs): nothing replaces the library between the check and the
+	// load, and a loaded library is never replaced.
+	var libPath string
+	err = ensureLibs(ctx, libsWant{
+		plat: platform(), dir: libDir, managed: rt.ManagedLibDir, variant: variantFor(provider),
+		loadedDir: libs.loadedDir,
+		use: func() (err error) {
+			if libPath, err = libraryPath(libDir); err != nil {
+				return err
+			}
+			return libs.load(api, libPath, logger)
+		},
+	}, logger)
 	if err != nil {
 		return nil, err
 	}
-	if err := libs.load(api, libPath, logger); err != nil {
+	if err := ensureModelFile(ctx, spec, logger); err != nil {
 		return nil, err
 	}
 	sess, dims, err := api.open(spec.File, sessionOptions{

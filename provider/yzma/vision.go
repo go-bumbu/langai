@@ -207,7 +207,7 @@ func OpenVision(ctx context.Context, spec VisionSpec, cfg VisionConfig) (*Vision
 	ctx, cancel := fetch.WithDefaultTimeout(ctx, visionDownloadTimeout)
 	defer cancel()
 	rt := cfg.runtime()
-	libDir, logger, err := rt.prepare(ctx)
+	libDir, logger, err := rt.prepare(ctx, visionLib, libs)
 	if err != nil {
 		return nil, err
 	}

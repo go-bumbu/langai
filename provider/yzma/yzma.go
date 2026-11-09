@@ -103,8 +103,14 @@ type Config struct {
 	// Required.
 	LibDir string
 	// ManagedLibDir marks LibDir as owned by this package: when the libraries
-	// are missing, the pinned build is downloaded into it. An operator-supplied
-	// LibDir (false) is never written to, only checked.
+	// are missing, the pinned build is downloaded into it. Give it a directory
+	// of its own: only a missing or empty one, or one an earlier install left
+	// its record in, is ever filled or replaced, and anything else is an
+	// error rather than a deletion. Installs are serialized by a lock file
+	// next to it ("<LibDir>.lock"), between goroutines and processes, and the
+	// libraries a process has loaded are never replaced under it: asking for
+	// another build by name in the same process is an error. An
+	// operator-supplied LibDir (false) is never written to, only checked.
 	ManagedLibDir bool
 	// Threads is the thread count for model evaluation; <= 0 picks a default
 	// of at most four.
@@ -168,11 +174,15 @@ type Runtime struct {
 	Logger        *slog.Logger
 }
 
-// prepare validates rt, fills its defaults, and makes sure libDir holds the
-// build rt.Accel needs (downloading it into a managed directory). It
-// returns the absolute library directory and the logger this package logs
-// to. ctx bounds the download.
-func (rt *Runtime) prepare(ctx context.Context) (libDir string, logger *slog.Logger, err error) {
+// prepare validates rt, fills its defaults, makes sure libDir holds the
+// build rt.Accel needs (downloading it into a managed directory) and loads
+// the libraries from it through api, once per process (see runtimeLoader).
+// Install and load are one step under the directory's lock (see
+// ensureLibs): nothing replaces the libraries between the check and the
+// load, and loaded libraries are never replaced. It returns the absolute
+// library directory and the logger this package logs to. ctx bounds the
+// download.
+func (rt *Runtime) prepare(ctx context.Context, api runtimeAPI, loader *runtimeLoader) (libDir string, logger *slog.Logger, err error) {
 	logger = rt.Logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -190,6 +200,10 @@ func (rt *Runtime) prepare(ctx context.Context) (libDir string, logger *slog.Log
 	if rt.Threads <= 0 {
 		rt.Threads = defaultThreads()
 	}
+	if from := loader.loadedDir(); rt.ManagedLibDir && from != "" && from != libDir {
+		// before anything is installed into a directory that cannot be loaded
+		return "", nil, fmt.Errorf("yzma: llama.cpp is already loaded from %s; cannot load %s in the same process", from, libDir)
+	}
 	report := detectHW()
 	b, err := chooseBackend(rt.Accel, report, platform())
 	if err != nil {
@@ -201,7 +215,12 @@ func (rt *Runtime) prepare(ctx context.Context) (libDir string, logger *slog.Log
 	// the load line says what runs the model; the findings behind the choice
 	// are for whoever asks
 	logger.Debug("hardware", logComponent, slog.String("found", report.String()), slog.String("accel", string(rt.Accel)), slog.String("build", b))
-	if err := ensureLibs(ctx, libDir, rt.ManagedLibDir, b, logger); err != nil {
+	err = ensureLibs(ctx, libsWant{
+		plat: platform(), dir: libDir, managed: rt.ManagedLibDir, build: b, explicit: rt.Accel != AccelAuto,
+		loadedDir: loader.loadedDir,
+		use:       func() error { return loader.load(api, libDir, rt.Logger) },
+	}, logger)
+	if err != nil {
 		return "", nil, err
 	}
 	return libDir, logger, nil
@@ -265,7 +284,7 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	// This package logs to logger. rt.Logger itself goes to llama.cpp as
 	// given, so a nil one keeps llama.cpp's lines silenced on the C side
 	// instead of routing each through a Go callback only to discard it.
-	libDir, logger, err := rt.prepare(ctx)
+	libDir, logger, err := rt.prepare(ctx, api, libs)
 	if err != nil {
 		return nil, err
 	}

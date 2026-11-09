@@ -122,7 +122,7 @@ func OpenCompleter(ctx context.Context, spec CompleterSpec, rt Runtime) (*Comple
 	}
 	ctx, cancel := fetch.WithDefaultTimeout(ctx, completerDownloadTimeout)
 	defer cancel()
-	libDir, logger, err := rt.prepare(ctx)
+	libDir, logger, err := rt.prepare(ctx, chatLib, libs)
 	if err != nil {
 		return nil, err
 	}
