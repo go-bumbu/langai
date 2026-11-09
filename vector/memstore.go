@@ -63,8 +63,8 @@ func (s *MemStore) Upsert(_ context.Context, c Coord, model string, docs ...Doc)
 	if err := ix.checkModel(c.Collection, model, false); err != nil {
 		return err
 	}
-	if model != "" && ix.models[c.Collection] == "" {
-		ix.models[c.Collection] = model
+	if model != "" {
+		ix.models[c.Collection] = model // the same, or the collection held no documents
 	}
 	if ix.dims == 0 {
 		ix.dims = dims
@@ -98,14 +98,55 @@ func firstVector(docs []Doc) []float32 {
 }
 
 // checkModel fails with ErrModelMismatch when model is not empty and the
-// collection, or with all any collection of the index, recorded another.
+// collection, or with all any collection of the index, recorded another
+// and still holds documents.
 func (ix *memIndex) checkModel(collection, model string, all bool) error {
 	if model == "" {
 		return nil
 	}
 	for coll, m := range ix.models {
-		if (all || coll == collection) && m != model {
+		if (all || coll == collection) && m != model && ix.holds(coll) {
 			return fmt.Errorf("%w: collection %q holds %q, not %q", ErrModelMismatch, coll, m, model)
+		}
+	}
+	return nil
+}
+
+// holds reports whether any partition of collection has documents.
+func (ix *memIndex) holds(collection string) bool {
+	for key, docs := range ix.colls {
+		if key.collection == collection && len(docs) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// Model implements Store.
+func (s *MemStore) Model(_ context.Context, c Coord) (string, error) {
+	if err := CheckCoord(c); err != nil {
+		return "", err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ix := s.indexes[c.Index]
+	if ix == nil || !ix.holds(c.Collection) {
+		return "", nil
+	}
+	return ix.models[c.Collection], nil
+}
+
+// DeleteCollection implements Store.
+func (s *MemStore) DeleteCollection(_ context.Context, c Coord) error {
+	if err := CheckCoord(c); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ix := s.indexes[c.Index]; ix != nil {
+		delete(ix.colls, memColl{c.Partition, c.Collection})
+		if !ix.holds(c.Collection) {
+			delete(ix.models, c.Collection)
 		}
 	}
 	return nil

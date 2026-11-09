@@ -114,11 +114,20 @@ type Match struct {
 // index's data appear in another's, and must be safe for concurrent use.
 //
 // Upsert stores docs in c in one atomic step, each replacing what was stored
-// under its id; when model is not empty, the first write to a collection
-// records it, and a later write or search with another non-empty model fails
-// with ErrModelMismatch (every partition of a collection shares its model).
-// Delete removes the documents of the given ids, and DeleteIndex every
-// collection of an index; unknown ids and indexes are no error. Hashes
+// under its id; when model is not empty, the write records it as the
+// collection's model, and while the collection holds documents (in any of
+// its partitions, which share one model) a write or search with another
+// non-empty model fails with ErrModelMismatch. A collection without
+// documents holds no model: the next write records its own, so emptying a
+// collection (DeleteCollection) is how it moves to another model. Model
+// returns the model of c's collection, "" when it records none or holds no
+// documents, so a caller can find a mismatch before it spends time on
+// embedding.
+//
+// Delete removes the documents of the given ids, DeleteCollection every
+// document of c (its partition and collection, other partitions of the
+// collection untouched), and DeleteIndex every collection of an index;
+// unknown ids, collections and indexes are no error. Hashes
 // returns the stored hash of each of the given ids it knows. Docs returns
 // the documents of c ordered by id (byte by byte), at most limit of them
 // (all when limit <= 0) and only those after the id after, so a caller can
@@ -143,10 +152,12 @@ type Match struct {
 type Store interface {
 	Upsert(ctx context.Context, c Coord, model string, docs ...Doc) error
 	Delete(ctx context.Context, c Coord, ids ...string) error
+	DeleteCollection(ctx context.Context, c Coord) error
 	DeleteIndex(ctx context.Context, index string) error
 	Hashes(ctx context.Context, c Coord, ids ...string) (map[string]string, error)
 	Docs(ctx context.Context, c Coord, after string, limit int) ([]DocInfo, error)
 	Chunks(ctx context.Context, c Coord, id string) ([]Chunk, error)
+	Model(ctx context.Context, c Coord) (string, error)
 	Search(ctx context.Context, c Coord, q Query) ([]Match, error)
 }
 

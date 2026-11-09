@@ -268,6 +268,12 @@ func TestReadsCreateNoTables(t *testing.T) {
 	if err := s.Delete(ctx, c, "a"); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.DeleteCollection(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Model(ctx, c); err != nil {
+		t.Fatal(err)
+	}
 	if names := tableNames(t, db); len(names) != 0 {
 		t.Fatalf("reads created %v", names)
 	}

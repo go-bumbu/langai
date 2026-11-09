@@ -14,7 +14,7 @@ models run in-process through llama.cpp and ONNX Runtime.
 | `media` | The ports for decoding video: `Sampler` turns a video file into the `Frame`s that stand for it, `Cutter` measures and cuts it (for a `VideoEmbedder` that embeds in segments). |
 | `media/ffmpeg` | `Sampler` and `Cutter` over the ffmpeg and ffprobe binaries: the first frame, every scene cut and one frame per interval, scaled down, capped per video, or the keyframes only, for long videos; stream-copy cuts for the segment embedder. |
 | `tagging` | Tags for a text. `Tagger` suggests tags among the ones an application already has and learns from the tags people put on items by hand: each tag's vector blends its name with the items tagged with it, and each tag is judged against its own cutoff. The application provides its tags and hand-made links through a `Catalog`; the Tagger keeps only an embedding cache (`MemCache`, `tagging/sqlitecache`, `tagging/pgcache`) and an in-memory index of tag vectors. `Generator` writes tags with no list to start from: a chat model proposes them and the embedding model scores each against the text, so one cutoff means the same on every text. |
-| `vector` | The `Store` interface for search vectors: documents in collections located by a `Coord` (index, partition, collection), batch writes, listing, and one exact `Search` that returns the best chunk of each of the best documents. `Validate`, the argument checks every backend shares (`CheckCoord`, `CheckID`, `CheckWrite`, `CheckSearch`…) and the sentinel errors (`ErrDimensions`, `ErrInvalidVector`, `ErrModelMismatch`, `ErrEmptyIndex`, `ErrInvalidID`), and `MemStore` (exact, in memory, for tests and evaluation). |
+| `vector` | The `Store` interface for search vectors: documents in collections located by a `Coord` (index, partition, collection), batch writes, deletes by id, by collection (`DeleteCollection`) and by index, listing, the collection's model (`Model`), and one exact `Search` that returns the best chunk of each of the best documents. `Validate`, the argument checks every backend shares (`CheckCoord`, `CheckID`, `CheckWrite`, `CheckSearch`…) and the sentinel errors (`ErrDimensions`, `ErrInvalidVector`, `ErrModelMismatch`, `ErrEmptyIndex`, `ErrInvalidID`), and `MemStore` (exact, in memory, for tests and evaluation). |
 | `vector/vectortest` | The conformance suite every `Store` passes. |
 | `vector/sqlitevec` | `Store` on SQLite with the sqlite-vec extension (CGO). |
 | `vector/pgvec` | `Store` on Postgres with pgvector. |
@@ -216,6 +216,7 @@ hits, err := ix.Search(ctx, "how long to boil spaghetti", 10) // []search.Match:
 more, err := ix.SearchIndexed(ctx, "note-42", 10)            // "more like this" with the stored chunks: no model runs
 for d, err := range ix.Docs(ctx) { /* d.ID, d.Hash: what is indexed, by id */ }
 err = ix.Delete(ctx, "note-7", "note-9")                     // e.g. what was deleted while the app was offline
+err = ix.Reset(ctx)                                          // empty the collection, e.g. to rebuild it with a new model
 ```
 
 `Search` and `SearchIndexed` return a `search.Match` per document: its best chunk, by
@@ -248,7 +249,8 @@ that document, by name.
 
 "Unchanged" means the hash stored with the document matches, and that hash covers
 everything that shapes its vectors: the text, the chunker's settings and the embedding
-model (its name, when it implements `langai.Identified`, and its dimensions). A chunker
+model (its name, when it implements `langai.Identified`, and its dimensions; a change of
+a named model is refused before anything is re-indexed, see below). A chunker
 describes its settings through the optional `search.Fingerprinter`; `MarkdownChunker`
 does (`markdown/2 max=1200`), and one without it is described by its Go type name, so
 swapping chunkers re-indexes and changing a custom one's settings does not. The
@@ -292,9 +294,19 @@ Vectors of different models never mix. A store refuses a vector of the wrong len
 overflows in float32, the precision the backends compute in (`vector.ErrInvalidVector`); a
 SQL store opened with other dimensions than an index's tables hold refuses that index.
 When the embedder names its model (`langai.Identified`), `search.New` and
-`search.NewMediaIndex` pass that name on: the first write to a collection records it,
-and a write or search with another model fails with `vector.ErrModelMismatch`. An
-embedder that names no model is not checked.
+`search.NewMediaIndex` pass that name on: a write to a collection records it, and while
+the collection holds documents a write or search with another model fails with
+`vector.ErrModelMismatch`. An embedder that names no model is not checked.
+
+A model change on the same generation therefore goes through emptying the collection:
+`IndexBatch`, `IndexImage`, `IndexVideo` and `IndexFrames` ask the store for the
+collection's model (`Store.Model`) before they embed anything, so a mismatch costs no
+model time, and fail with `vector.ErrModelMismatch`; `Index.Reset` / `MediaIndex.Reset`
+(`Store.DeleteCollection`) empty the collection, and the next indexing run rebuilds it
+with the new model. A collection that holds no documents holds no model, whichever way
+it was emptied. Every partition of a collection shares its model, so a collection with
+documents left in other partitions keeps its model until those are emptied too. To keep
+serving the old vectors while the new ones are built, use a generation instead (below).
 
 A store opened with `WithGeneration` keeps further table sets of its own, so a migration
 can build a second model's vectors next to the current ones before switching over; the

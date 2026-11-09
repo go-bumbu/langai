@@ -1,6 +1,7 @@
 package search
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -118,6 +119,107 @@ func TestIndex_RefusesAnotherModel(t *testing.T) {
 	}
 	if got, err := anonymous.Search(ctx, "goroutines", 10); err != nil || len(got) != 1 {
 		t.Errorf("Search with the same model: %s, %v", hitsOf(got), err)
+	}
+}
+
+// renamedText is a counting text embedder under another model name.
+type renamedText struct {
+	*batchEmbedder
+	model string
+}
+
+func (e renamedText) Model() string { return e.model }
+
+// renamedImages is a counting image embedder under another model name.
+type renamedImages struct {
+	*countingImageEmbedder
+	model string
+}
+
+func (e renamedImages) Model() string { return e.model }
+
+// TestIndex_ModelChangeMigratesThroughReset: after the embedder's model
+// changes, indexing fails with ErrModelMismatch before the new model embeds
+// anything, and Reset empties the collection so the next run rebuilds it
+// with the new model.
+func TestIndex_ModelChangeMigratesThroughReset(t *testing.T) {
+	ctx := context.Background()
+	store := vector.NewMemStore()
+	old, err := New(langaitest.FakeEmbedder{}, store, "i", "p", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := corpus(5)
+	if _, err := old.IndexBatch(ctx, docs); err != nil {
+		t.Fatal(err)
+	}
+	emb := renamedText{batchEmbedder: &batchEmbedder{}, model: "next"}
+	next, err := New(emb, store, "i", "p", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := next.IndexBatch(ctx, docs)
+	if !errors.Is(err, vector.ErrModelMismatch) || !strings.Contains(err.Error(), "Reset") {
+		t.Fatalf("IndexBatch with a new model: %+v, %v; want ErrModelMismatch naming Reset", res, err)
+	}
+	if len(emb.sizes) != 0 {
+		t.Fatalf("the new model embedded %v before the store refused it", emb.sizes)
+	}
+	if err := next.Index(ctx, "doc000", docs[0].Text); !errors.Is(err, vector.ErrModelMismatch) {
+		t.Errorf("Index with a new model: %v, want ErrModelMismatch", err)
+	}
+	if err := next.Reset(ctx); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if res, err := next.IndexBatch(ctx, docs); err != nil || len(res.Indexed) != len(docs) {
+		t.Fatalf("IndexBatch after Reset: %+v, %v; want every document indexed", res, err)
+	}
+	if got, err := next.Search(ctx, docs[3].Text, 1); err != nil || len(got) != 1 || got[0].DocID != "doc003" {
+		t.Errorf("Search after the migration = %s, %v", hitsOf(got), err)
+	}
+	if _, err := old.Search(ctx, docs[3].Text, 1); !errors.Is(err, vector.ErrModelMismatch) {
+		t.Errorf("Search with the old model after the migration: %v, want ErrModelMismatch", err)
+	}
+}
+
+// TestMediaIndex_ModelChangeMigratesThroughReset: as for Index, an image
+// model change fails before the new model runs, and Reset lets the next run
+// rebuild the collection.
+func TestMediaIndex_ModelChangeMigratesThroughReset(t *testing.T) {
+	ctx := context.Background()
+	old, _, store := newMediaIndex(t, WithSampler(&countingSampler{frames: clipFrames()}))
+	img := encoded(t, pic(8, 8, red, blue))
+	if err := old.IndexFrames(ctx, "clip", "h", clipFrames()); err != nil {
+		t.Fatal(err)
+	}
+	emb := renamedImages{countingImageEmbedder: &countingImageEmbedder{}, model: "next"}
+	next, err := NewMediaIndex(emb, store, "t", "p", "c", WithSampler(&countingSampler{frames: clipFrames()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	video := tempFile(t, "clip.mp4", []byte("not really a video"))
+	for name, call := range map[string]func() error{
+		"IndexImage":  func() error { return next.IndexImage(ctx, "photo", bytes.NewReader(img)) },
+		"IndexVideo":  func() error { return next.IndexVideo(ctx, "video", video) },
+		"IndexFrames": func() error { return next.IndexFrames(ctx, "clip", "h", clipFrames()) },
+	} {
+		if err := call(); !errors.Is(err, vector.ErrModelMismatch) {
+			t.Errorf("%s with a new model: %v, want ErrModelMismatch", name, err)
+		}
+	}
+	if n := emb.calls.Load(); n != 0 {
+		t.Fatalf("the new model embedded %d batches before the store refused it", n)
+	}
+	if err := next.Reset(ctx); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if err := next.IndexImage(ctx, "photo", bytes.NewReader(img)); err != nil {
+		t.Fatalf("IndexImage after Reset: %v", err)
+	}
+	for d, err := range next.Docs(ctx) {
+		if err != nil || d.ID != "photo" {
+			t.Errorf("after Reset and one image, Docs lists %v, %v", d.ID, err)
+		}
 	}
 }
 

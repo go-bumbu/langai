@@ -87,6 +87,7 @@ var dialect = sqlstore.Dialect{
 	},
 	MissingTable: func(err error) bool { return sqlState(err) == undefinedTable },
 	LockRows:     `FOR UPDATE`,
+	ShareRows:    `FOR SHARE`,
 	Retryable: func(err error) bool {
 		code := sqlState(err)
 		return code == deadlockDetected || code == serializationFailure

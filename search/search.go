@@ -71,8 +71,9 @@ func WithMinScore(min float64) Option {
 // collection is a value like any other, never a wildcard. An empty index is
 // vector.ErrEmptyIndex, and a partition or collection that is not valid
 // UTF-8 or holds a NUL byte vector.ErrInvalidID. When the embedder
-// names its model (langai.Identified), the store records it with the first
-// vectors written to the collection and refuses another model's afterwards.
+// names its model (langai.Identified), the store records it with the
+// vectors written to the collection and refuses another model's while the
+// collection holds documents; Reset empties it for a new model.
 func New(embedder langai.Embedder, store vector.Store, index, partition, collection string, opts ...Option) (*Index, error) {
 	if embedder == nil {
 		return nil, errors.New("search: nil embedder")
@@ -101,8 +102,13 @@ func New(embedder langai.Embedder, store vector.Store, index, partition, collect
 }
 
 // hash is the hash Index stores with a document of text: it changes with
-// the text, the chunker's settings and the model, so that a change of any
-// of them indexes the document again.
+// the text, the chunker's settings and the model, so that a change of the
+// text or the chunker indexes the document again. A change of a named model
+// (langai.Identified) does not get that far: the store refuses the new
+// model's vectors while the collection holds the old one's, and IndexBatch
+// says so before embedding anything; Reset empties the collection for the
+// new model to rebuild. The model is in the hash all the same, so that the
+// rebuild never finds a document unchanged.
 func (ix *Index) hash(text string) string {
 	return stamp(ix.settings, []byte(text))
 }

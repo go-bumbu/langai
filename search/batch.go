@@ -53,6 +53,9 @@ type BatchResult struct {
 // the call before anything is read or written; an id that is not valid
 // UTF-8 or holds a NUL byte (a Latin-1 file path, say) fails only its
 // document, with vector.ErrInvalidID, before any model time is spent on it.
+// When the collection holds another model's vectors the call fails with
+// vector.ErrModelMismatch before the first changed document is embedded
+// (see Reset).
 func (ix *Index) IndexBatch(ctx context.Context, docs []Doc) (BatchResult, error) {
 	var res BatchResult
 	ids := make([]string, 0, len(docs))
@@ -80,6 +83,7 @@ func (ix *Index) IndexBatch(ctx context.Context, docs []Doc) (BatchResult, error
 	}
 	var group []pendingDoc
 	size := 0
+	checked := false // the collection's model, before the first embedding
 	for _, d := range docs {
 		if res.Failed[d.ID] != nil {
 			continue
@@ -89,6 +93,12 @@ func (ix *Index) IndexBatch(ctx context.Context, docs []Doc) (BatchResult, error
 		if h, ok := stored[d.ID]; ok && h == hash {
 			res.Unchanged = append(res.Unchanged, d.ID)
 			continue
+		}
+		if !checked {
+			if err := checkModel(ctx, ix.store, ix.coord, ix.model); err != nil {
+				return res, err
+			}
+			checked = true
 		}
 		parts := ix.chunker.Chunk(text)
 		group = append(group, pendingDoc{id: d.ID, hash: hash, parts: parts})

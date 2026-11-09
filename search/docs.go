@@ -39,6 +39,48 @@ func (ix *MediaIndex) Delete(ctx context.Context, ids ...string) error {
 	return deleteDocs(ctx, ix.store, ix.coord, ids)
 }
 
+// Reset removes every document of the index's collection (in its
+// partition) in one store call. It is the way to a new embedding model: the
+// store refuses another model's vectors while the collection holds
+// documents (vector.ErrModelMismatch, which IndexBatch returns before the
+// new model embeds anything), so after a model change Reset empties it and
+// the next indexing run rebuilds it with the new model. A collection whose
+// other partitions still hold documents keeps its model until those are
+// emptied too.
+func (ix *Index) Reset(ctx context.Context) error {
+	return resetDocs(ctx, ix.store, ix.coord)
+}
+
+// Reset removes every item of the index's collection, as Index.Reset does.
+func (ix *MediaIndex) Reset(ctx context.Context) error {
+	return resetDocs(ctx, ix.store, ix.coord)
+}
+
+// resetDocs empties c.
+func resetDocs(ctx context.Context, store vector.Store, c vector.Coord) error {
+	if err := store.DeleteCollection(ctx, c); err != nil {
+		return fmt.Errorf("search: reset: %w", err)
+	}
+	return nil
+}
+
+// checkModel fails with vector.ErrModelMismatch, before any model time is
+// spent, when model is not empty and c's collection holds documents of
+// another model.
+func checkModel(ctx context.Context, store vector.Store, c vector.Coord, model string) error {
+	if model == "" {
+		return nil
+	}
+	have, err := store.Model(ctx, c)
+	if err != nil {
+		return fmt.Errorf("search: read the collection's model: %w", err)
+	}
+	if have != "" && have != model {
+		return fmt.Errorf("search: %w: collection %q holds %q, not %q; Reset the index to rebuild it with the new model", vector.ErrModelMismatch, c.Collection, have, model)
+	}
+	return nil
+}
+
 // listDocs pages through the documents of c, docsPage per store call.
 func listDocs(ctx context.Context, store vector.Store, c vector.Coord) iter.Seq2[vector.DocInfo, error] {
 	return func(yield func(vector.DocInfo, error) bool) {

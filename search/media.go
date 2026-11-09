@@ -128,8 +128,9 @@ func WithMaxImageBytes(n int64) MediaOption {
 // the collection at index, partition and collection, which match exactly as
 // for New and are checked as New checks them. When the image embedder names
 // its model (langai.Identified), the
-// store records it with the first vectors written to the collection and
-// refuses another model's afterwards.
+// store records it with the vectors written to the collection and refuses
+// another model's while the collection holds items; Reset empties it for a
+// new model.
 func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, partition, collection string, opts ...MediaOption) (*MediaIndex, error) {
 	if embedder == nil {
 		return nil, errors.New("search: nil embedder")
@@ -264,6 +265,8 @@ func (ix *MediaIndex) IndexFrames(ctx context.Context, docID, contentHash string
 		if same, err := ix.unchanged(ctx, docID, hash); err != nil || same {
 			return err
 		}
+	} else if err := checkModel(ctx, ix.store, ix.coord, ix.model); err != nil {
+		return err
 	}
 	return ix.indexFrames(ctx, docID, hash, frames)
 }
@@ -312,14 +315,18 @@ func (ix *MediaIndex) readImage(r io.Reader, what string) ([]byte, error) {
 }
 
 // unchanged reports whether the store holds hash for docID, so indexing it
-// again would change nothing.
+// again would change nothing. When it does not, it checks the collection's
+// model, so that a model change fails (vector.ErrModelMismatch) before the
+// new model decodes or embeds anything.
 func (ix *MediaIndex) unchanged(ctx context.Context, docID, hash string) (bool, error) {
 	stored, err := ix.store.Hashes(ctx, ix.coord, docID)
 	if err != nil {
 		return false, fmt.Errorf("search: read content hash: %w", err)
 	}
-	h, ok := stored[docID]
-	return ok && h == hash, nil
+	if h, ok := stored[docID]; ok && h == hash {
+		return true, nil
+	}
+	return false, checkModel(ctx, ix.store, ix.coord, ix.model)
 }
 
 // embed runs the frames' images through the embedder and checks it answered

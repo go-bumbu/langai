@@ -14,6 +14,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -55,6 +56,8 @@ func Run(t *testing.T, newStore func(t *testing.T) vector.Store) {
 		{"InvalidVectors", invalidVectors},
 		{"DimensionMismatch", dimensionMismatch},
 		{"ModelMismatch", modelMismatch},
+		{"ModelFollowsDocuments", modelFollowsDocuments},
+		{"ModelTakeoverIsAtomic", modelTakeoverIsAtomic},
 		{"DeleteIndex", deleteIndex},
 		{"TiesAreOrdered", tiesAreOrdered},
 		{"ConcurrentSameDoc", concurrentSameDoc},
@@ -634,6 +637,110 @@ func dimensionMismatch(t *testing.T, s vector.Store) {
 	}
 }
 
+// modelFollowsDocuments: a collection's model holds only while it holds
+// documents. Once every document is deleted, by id or with
+// DeleteCollection, the next write records its own model and searches
+// naming another stop failing; DeleteCollection empties one partition of
+// the collection, and the model holds while any other still has documents.
+func modelFollowsDocuments(t *testing.T, s vector.Store) {
+	ctx := context.Background()
+	model := func(c vector.Coord, want string) {
+		t.Helper()
+		if got, err := s.Model(ctx, c); err != nil || got != want {
+			t.Errorf("Model %v = %q, %v; want %q", c, got, err, want)
+		}
+	}
+	model(coord, "")
+	upsert(t, s, coord, "m1", doc("x", axis(0)))
+	upsert(t, s, other, "m2", doc("y", axis(0)))
+	model(coord, "m1")
+	if err := s.Delete(ctx, coord, "x"); err != nil {
+		t.Fatal(err)
+	}
+	model(coord, "")
+	all := vector.Query{Vector: axis(0), Limit: 10, Model: "m2", AllCollections: true}
+	if got := search(t, s, other, all); !slices.Equal(ids(got), []string{"y"}) {
+		t.Errorf("search with m2 across collections, m1's emptied = %v", ids(got))
+	}
+	upsert(t, s, coord, "m2", doc("x", axis(1))) // the emptied collection takes another model
+	model(coord, "m2")
+	if err := s.Upsert(ctx, coord, "m1", doc("z", axis(0))); !errors.Is(err, vector.ErrModelMismatch) {
+		t.Errorf("Upsert of m1 into m2's collection: %v, want ErrModelMismatch", err)
+	}
+
+	// DeleteCollection empties one partition; the model holds while another
+	// has documents
+	inQ := vector.Coord{Index: coord.Index, Partition: "q", Collection: coord.Collection}
+	upsert(t, s, inQ, "m2", doc("w", axis(0)))
+	if err := s.DeleteCollection(ctx, coord); err != nil {
+		t.Fatalf("DeleteCollection: %v", err)
+	}
+	if got := hashes(t, s, coord, "x"); len(got) != 0 {
+		t.Errorf("DeleteCollection left %v", got)
+	}
+	if got := hashes(t, s, inQ, "w"); len(got) != 1 {
+		t.Errorf("DeleteCollection reached another partition: %v", got)
+	}
+	if got := hashes(t, s, other, "y"); len(got) != 1 {
+		t.Errorf("DeleteCollection reached another collection: %v", got)
+	}
+	if got := search(t, s, coord, vector.Query{Vector: axis(1), Limit: 10}); len(got) != 0 {
+		t.Errorf("search of the emptied collection = %v", ids(got))
+	}
+	model(coord, "m2")
+	if err := s.Upsert(ctx, coord, "m3", doc("x", axis(0))); !errors.Is(err, vector.ErrModelMismatch) {
+		t.Errorf("Upsert of m3 while partition q holds m2: %v, want ErrModelMismatch", err)
+	}
+	if err := s.DeleteCollection(ctx, inQ); err != nil {
+		t.Fatalf("DeleteCollection: %v", err)
+	}
+	model(coord, "")
+	upsert(t, s, coord, "m3", doc("x", axis(0)))
+	model(inQ, "m3")
+	if err := s.DeleteCollection(ctx, vector.Coord{Index: "never-written", Partition: "p", Collection: "c"}); err != nil {
+		t.Errorf("DeleteCollection of an unknown index: %v", err)
+	}
+	model(vector.Coord{Index: "never-written"}, "")
+}
+
+// modelTakeoverIsAtomic: writers of two models racing into an emptied
+// collection never leave it mixed: one model wins, the other's writes fail
+// with ErrModelMismatch, and every document left is the winner's.
+func modelTakeoverIsAtomic(t *testing.T, s vector.Store) {
+	ctx := context.Background()
+	for round := range 10 {
+		if err := s.DeleteCollection(ctx, coord); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		errs := make(chan error, writers)
+		for w := range writers {
+			model := fmt.Sprintf("m%d", w%2)
+			wg.Go(func() { errs <- s.Upsert(ctx, coord, model, doc(fmt.Sprintf("%s-%d", model, w), axis(0))) })
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil && !errors.Is(err, vector.ErrModelMismatch) {
+				t.Fatalf("round %d: %v", round, err)
+			}
+		}
+		won, err := s.Model(ctx, coord)
+		if err != nil || won == "" {
+			t.Fatalf("round %d: Model = %q, %v", round, won, err)
+		}
+		list, err := s.Docs(ctx, coord, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range list {
+			if !strings.HasPrefix(d.ID, won+"-") {
+				t.Fatalf("round %d: the collection records %s and holds %s", round, won, d.ID)
+			}
+		}
+	}
+}
+
 func modelMismatch(t *testing.T, s vector.Store) {
 	ctx := context.Background()
 	upsert(t, s, coord, "", doc("unknown", axis(0))) // no model: nothing recorded
@@ -851,6 +958,12 @@ func unknownIndexReads(t *testing.T, s vector.Store) {
 	if err := s.Delete(ctx, c, "a"); err != nil {
 		t.Errorf("Delete: %v", err)
 	}
+	if err := s.DeleteCollection(ctx, c); err != nil {
+		t.Errorf("DeleteCollection: %v", err)
+	}
+	if got, err := s.Model(ctx, c); err != nil || got != "" {
+		t.Errorf("Model = %q, %v", got, err)
+	}
 }
 
 // emptyIndexIsAnError: every method refuses an empty index with
@@ -882,6 +995,20 @@ func calls(ctx context.Context, s vector.Store, c vector.Coord, id, model string
 		"Hashes": func() error { _, err := s.Hashes(ctx, c, id); return err },
 		"Docs":   func() error { _, err := s.Docs(ctx, c, id, 0); return err },
 		"Chunks": func() error { _, err := s.Chunks(ctx, c, id); return err },
+		// these two take no id: a bad one leaves them nothing to refuse
+		"DeleteCollection": func() error {
+			if id != "" && vector.CheckID(id) != nil {
+				return vector.ErrInvalidID
+			}
+			return s.DeleteCollection(ctx, c)
+		},
+		"Model": func() error {
+			if id != "" && vector.CheckID(id) != nil {
+				return vector.ErrInvalidID
+			}
+			_, err := s.Model(ctx, c)
+			return err
+		},
 		"Search": func() error {
 			_, err := s.Search(ctx, c, vector.Query{Vector: axis(0), Limit: 10, Model: model, Only: []string{id}})
 			return err

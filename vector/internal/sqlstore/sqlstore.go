@@ -87,7 +87,10 @@ type Dialect struct {
 	// first, in id order, the order Upsert takes them, so the two never
 	// deadlock whatever order the delete's plan visits the rows in. A
 	// database that runs one writer at a time (SQLite) needs none.
-	LockRows string
+	// ShareRows is the clause of a shared row lock (FOR SHARE), which a
+	// writer takes on its collection's model record (see claimModel).
+	LockRows  string
+	ShareRows string
 	// Retryable, when set, reports whether err is a transient failure of a
 	// write transaction (a deadlock, a serialization failure) that is worth
 	// running the transaction again for.
@@ -429,12 +432,19 @@ func (s *Store) upsert(ctx context.Context, c vector.Coord, model string, docs [
 	return err
 }
 
+// errContended reports a claim of a collection's model that found the
+// record taken over while it looked (see claimModel): its transaction runs
+// again.
+var errContended = ownf("vector: the collection's model changed while it was being checked; try again")
+
 // retry runs the write transaction fn, and again, up to maxAttempts runs in
-// all, while it fails with an error the Dialect calls Retryable.
+// all, while it fails with an error the Dialect calls Retryable or with
+// errContended.
 func (s *Store) retry(ctx context.Context, fn func() error) error {
 	for attempt := 1; ; attempt++ {
 		err := fn()
-		if err == nil || attempt == maxAttempts || s.d.Retryable == nil || !s.d.Retryable(err) || ctx.Err() != nil {
+		again := errors.Is(err, errContended) || (s.d.Retryable != nil && s.d.Retryable(err))
+		if err == nil || !again || attempt == maxAttempts || ctx.Err() != nil {
 			return err
 		}
 	}
@@ -447,7 +457,7 @@ func (s *Store) writeDocs(ctx context.Context, t tables, c vector.Coord, model s
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := s.claimModel(ctx, tx, t.meta, c.Collection, model); err != nil {
+	if err := s.claimModel(ctx, tx, t, c.Collection, model); err != nil {
 		return err
 	}
 	// the chunks insert is prepared after the first docs row is written, so
@@ -484,26 +494,96 @@ func (s *Store) writeDocs(ctx context.Context, t tables, c vector.Coord, model s
 	return tx.Commit()
 }
 
-// claimModel records model as the collection's when it has none yet and
-// fails with vector.ErrModelMismatch when it has another. An empty model
-// checks nothing. Its first statement is a write (see Upsert); without a
-// model the docs upsert after it is.
-func (s *Store) claimModel(ctx context.Context, tx *sql.Tx, meta, collection, model string) error {
+// claimModel records model as the collection's when it has none yet, or
+// another while it holds no documents, and fails with
+// vector.ErrModelMismatch when another is recorded and the collection still
+// holds documents. An empty model checks nothing. Its first statement is a
+// write (see Upsert); without a model the docs upsert after it is.
+//
+// Where the Dialect locks rows, a writer of the recorded model holds a
+// shared lock on the record until it commits, and taking the record over
+// needs an exclusive one, after which the collection is looked at again: so
+// no writer of the old model can add documents between the look and the
+// takeover, and none can take it over while another writes.
+func (s *Store) claimModel(ctx context.Context, tx *sql.Tx, t tables, collection, model string) error {
 	if model == "" {
 		return nil
 	}
 	key := modelKey + collection
-	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO `+meta+` (name, value) VALUES (?, ?) ON CONFLICT (name) DO NOTHING`), key, model); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO `+t.meta+` (name, value) VALUES (?, ?) ON CONFLICT (name) DO NOTHING`), key, model); err != nil {
 		return err
 	}
-	var have string
-	if err := tx.QueryRowContext(ctx, s.q(`SELECT value FROM `+meta+` WHERE name = ?`), key).Scan(&have); err != nil {
+	read := func(lock string) (string, error) {
+		var have string
+		err := tx.QueryRowContext(ctx, s.q(`SELECT value FROM `+t.meta+` WHERE name = ? `+lock), key).Scan(&have)
+		return have, err
+	}
+	have, err := read("")
+	if err != nil {
 		return err
 	}
-	if have != model {
+	if s.d.LockRows != "" {
+		// a writer of the recorded model shares the record; a takeover locks
+		// it alone from the start, never upgrading a shared lock it holds,
+		// so two takeovers queue rather than deadlock
+		lock := s.d.LockRows
+		if have == model {
+			lock = s.d.ShareRows
+		}
+		if have, err = read(lock); err != nil {
+			return err
+		}
+		if have != model && lock == s.d.ShareRows {
+			// taken over between the two reads: upgrading the shared lock
+			// could deadlock, so the transaction runs again from the start
+			return errContended
+		}
+	}
+	if have == model {
+		return nil
+	}
+	held, err := s.holds(ctx, tx, t, collection)
+	if err != nil {
+		return err
+	}
+	if held {
 		return fmt.Errorf("%w: collection %q holds %q, not %q", vector.ErrModelMismatch, collection, have, model)
 	}
-	return nil
+	_, err = tx.ExecContext(ctx, s.q(`UPDATE `+t.meta+` SET value = ? WHERE name = ?`), model, key)
+	return err
+}
+
+// queryer is what holds reads with: the database or a transaction.
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// holds reports whether any partition of collection has documents.
+func (s *Store) holds(ctx context.Context, q queryer, t tables, collection string) (bool, error) {
+	var held bool
+	err := q.QueryRowContext(ctx, s.q(`SELECT EXISTS (SELECT 1 FROM `+t.docs+` WHERE collection = ?)`), collection).Scan(&held)
+	return held, err
+}
+
+// Model implements vector.Store.
+func (s *Store) Model(ctx context.Context, c vector.Coord) (string, error) {
+	if err := vector.CheckCoord(c); err != nil {
+		return "", err
+	}
+	var model string
+	_, err := s.withTables(ctx, c.Index, false, func(t tables) error {
+		err := s.db.QueryRowContext(ctx, s.q(`SELECT m.value FROM `+t.meta+` m WHERE m.name = ?
+			AND EXISTS (SELECT 1 FROM `+t.docs+` d WHERE d.collection = ?)`), modelKey+c.Collection, c.Collection).Scan(&model)
+		if errors.Is(err, sql.ErrNoRows) {
+			model = ""
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return "", s.wrap("model", err)
+	}
+	return model, nil
 }
 
 // Delete implements vector.Store in one transaction (see deleteWhere), which
@@ -527,37 +607,64 @@ func (s *Store) delete(ctx context.Context, c vector.Coord, ids []string) error 
 	}
 	_, err = s.withTables(ctx, c.Index, false, func(t tables) error {
 		return s.retry(ctx, func() error {
-			return s.deleteWhere(ctx, t, `partition = ? AND collection = ? AND doc_id IN (`+s.d.IDs+`)`, c.Partition, c.Collection, list)
+			return s.deleteWhere(ctx, t, nil, `partition = ? AND collection = ? AND doc_id IN (`+s.d.IDs+`)`, c.Partition, c.Collection, list)
 		})
 	})
 	return err
 }
 
+// DeleteCollection implements vector.Store as Delete does, for every
+// document of c, and drops the collection's model record in the same
+// transaction when no partition of it holds documents any more.
+func (s *Store) DeleteCollection(ctx context.Context, c vector.Coord) error {
+	if err := vector.CheckCoord(c); err != nil {
+		return err
+	}
+	_, err := s.withTables(ctx, c.Index, false, func(t tables) error {
+		return s.retry(ctx, func() error {
+			return s.deleteWhere(ctx, t, &c.Collection, `partition = ? AND collection = ?`, c.Partition, c.Collection)
+		})
+	})
+	return s.wrap("delete collection", err)
+}
+
 // deleteWhere deletes the documents of t that cond, a constant clause over
 // its args, picks, in one transaction: the docs rows first, as Upsert
 // writes them first, after taking their locks in id order where the
-// Dialect locks rows (see Dialect.LockRows), then their chunks.
-func (s *Store) deleteWhere(ctx context.Context, t tables, cond string, args ...any) error {
+// Dialect locks rows (see Dialect.LockRows), then their chunks. With a
+// collection, it then drops that collection's model record if no partition
+// of it holds documents any more, having locked the record first, as
+// claimModel does, so no writer of that model adds documents meanwhile.
+func (s *Store) deleteWhere(ctx context.Context, t tables, collection *string, cond string, args ...any) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if collection != nil && s.d.LockRows != "" {
+		if _, err := tx.ExecContext(ctx, s.q(`SELECT value FROM `+t.meta+` WHERE name = ? `+s.d.LockRows), modelKey+*collection); err != nil {
+			return err
+		}
+	}
 	if s.d.LockRows != "" {
-		rows, err := tx.QueryContext(ctx, s.q(`SELECT doc_id FROM `+t.docs+` WHERE `+cond+` ORDER BY doc_id `+s.d.LockRows), args...)
-		if err != nil {
+		if _, err := tx.ExecContext(ctx, s.q(`SELECT doc_id FROM `+t.docs+` WHERE `+cond+` ORDER BY doc_id `+s.d.LockRows), args...); err != nil {
 			return err
 		}
-		for rows.Next() { // every row read is a row locked
-		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		_ = rows.Close()
 	}
 	for _, table := range []string{t.docs, t.chunks} {
 		if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM `+table+` WHERE `+cond), args...); err != nil {
 			return err
+		}
+	}
+	if collection != nil {
+		held, err := s.holds(ctx, tx, t, *collection)
+		if err != nil {
+			return err
+		}
+		if !held {
+			if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM `+t.meta+` WHERE name = ?`), modelKey+*collection); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
@@ -736,7 +843,7 @@ func (s *Store) search(ctx context.Context, c vector.Coord, q vector.Query) ([]v
 	var out []vector.Match
 	_, err = s.withTables(ctx, c.Index, false, func(t tables) error {
 		out = nil
-		if err := s.checkModel(ctx, t.meta, c.Collection, q); err != nil {
+		if err := s.checkModel(ctx, t, c.Collection, q); err != nil {
 			return err
 		}
 		query := `SELECT c.partition, c.collection, c.doc_id, c.seq, c.text, b.d FROM (
@@ -804,16 +911,18 @@ func (s *Store) scope(c vector.Coord, q vector.Query) (string, []any, error) {
 }
 
 // checkModel fails with vector.ErrModelMismatch when q names a model and a
-// collection in its scope recorded another.
-func (s *Store) checkModel(ctx context.Context, meta, collection string, q vector.Query) error {
+// collection in its scope recorded another and still holds documents.
+func (s *Store) checkModel(ctx context.Context, t tables, collection string, q vector.Query) error {
 	if q.Model == "" {
 		return nil
 	}
-	query := `SELECT name, value FROM ` + meta + ` WHERE name = ? AND value <> ?`
-	args := []any{modelKey + collection, q.Model}
+	// a record holds only while its collection has documents
+	held := ` AND EXISTS (SELECT 1 FROM ` + t.docs + ` d WHERE d.collection = substr(m.name, ?))`
+	query := `SELECT m.name, m.value FROM ` + t.meta + ` m WHERE m.name = ? AND m.value <> ?` + held
+	args := []any{modelKey + collection, q.Model, len(modelKey) + 1}
 	if q.AllCollections {
-		query = `SELECT name, value FROM ` + meta + ` WHERE substr(name, 1, ?) = ? AND value <> ? ORDER BY name LIMIT 1`
-		args = []any{len(modelKey), modelKey, q.Model}
+		query = `SELECT m.name, m.value FROM ` + t.meta + ` m WHERE substr(m.name, 1, ?) = ? AND m.value <> ?` + held + ` ORDER BY m.name LIMIT 1`
+		args = []any{len(modelKey), modelKey, q.Model, len(modelKey) + 1}
 	}
 	var name, have string
 	err := s.db.QueryRowContext(ctx, s.q(query), args...).Scan(&name, &have)
