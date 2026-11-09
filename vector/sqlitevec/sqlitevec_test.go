@@ -248,6 +248,8 @@ func TestDriverErrorsAreWrapped(t *testing.T) {
 		{"hashes", func() error { _, err := s.Hashes(cancelled, c, "a"); return err }},
 		{"docs", func() error { _, err := s.Docs(cancelled, c, "", 0); return err }},
 		{"chunks", func() error { _, err := s.Chunks(cancelled, c, "a"); return err }},
+		{"model", func() error { _, err := s.Model(cancelled, c); return err }},
+		{"delete collection", func() error { return s.DeleteCollection(cancelled, c) }},
 		{"search", func() error {
 			_, err := s.Search(cancelled, c, vector.Query{Vectors: [][]float32{[]float32{1, 0, 0}}, Limit: 1})
 			return err
