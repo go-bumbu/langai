@@ -234,7 +234,10 @@ describes its settings through the optional `search.Fingerprinter`; `MarkdownChu
 does (`markdown/1 max=1200`), and one without it is described by its Go type name, so
 swapping chunkers re-indexes and changing a custom one's settings does not. The
 `MediaIndex` hashes cover the model in the same way, and a video's also the `Sampler`'s or
-the `VideoEmbedder`'s `Fingerprint`, when it has one.
+the `VideoEmbedder`'s `Fingerprint`, when it has one. `yzma.Vision` has: its segment
+length, its cap on segments and the version of its segmenting
+(`yzma-vision/2 segment=20s max_segments=720`), so a video indexed under one cap is
+indexed again under another.
 
 `MarkdownChunker`, the default (`WithChunker` replaces it), cuts a document at its
 headings and packs its paragraphs into chunks of at most `MaxChars` bytes (1200), each
@@ -314,9 +317,16 @@ All three behave alike:
 
 `Model()` on `yzma.Embedder`, `yzma.Vision` and `onnx.Embedder` is the identity of the
 vectors they produce, the string to store next to them: the model's name followed by
-what else decides a vector (the pooling and the prefixes for a text model; the
-instruction, the image token bounds and the video sampling for `Vision`; the tensor and
-the picture preparation for an ONNX model). It is the same on every run and changes
+what else decides a vector (the pooling, the prefixes and the token cap for a text
+model; the instruction, the image token bounds, the video sampling and the context size
+for `Vision`; the tensor and the picture preparation for an ONNX model). The rule is
+one: a setting that can change the vector of some input is in the identity, so
+`ModelSpec.MaxTokens` and `VisionOptions.ContextTokens` are, because a text longer than
+them is cut there, and changing either means embedding again. A setting that changes
+which segments a video yields without changing any of them (`VisionOptions.MaxSegments`)
+is in `Vision.Fingerprint()` instead, which a `MediaIndex` hashes with every video; what
+changes neither (threads, the accelerator, directories) is in nothing. The identity is
+the same on every run and changes
 whenever a vector would, so vectors stored under another identity are stale; the
 specs' `ModelID` gives the same string before the model loads. A call on
 a closed provider, lazy loader or `Tagger` returns an error that wraps `langai.ErrClosed`.

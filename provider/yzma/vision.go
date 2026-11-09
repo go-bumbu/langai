@@ -63,7 +63,9 @@ type VisionOptions struct {
 	// so texts, images and videos embedded under one instruction compare.
 	Instruction string
 	// ContextTokens is the most tokens one input may take, images and
-	// video frames included; 0 means DefaultVisionContextTokens.
+	// video frames included; 0 means DefaultVisionContextTokens. A text
+	// that does not fit is cut to it, so it is part of the vectors'
+	// identity (see Vision.Model): changing it means embedding again.
 	ContextTokens int
 	// ImageMinTokens and ImageMaxTokens bound how many tokens a picture or a
 	// frame becomes (the projector scales it to fit); 0 keeps the model's
@@ -80,7 +82,8 @@ type VisionOptions struct {
 	// MaxSegments caps the segments per video, so a feature film does not
 	// take an hour; 0 means DefaultMaxSegments. What lies past the cap is
 	// not embedded. There is no "all of them": set a number as large as the
-	// longest video you mean to embed whole.
+	// longest video you mean to embed whole. It is part of Fingerprint, so a
+	// search.MediaIndex embeds a video again when it changes.
 	MaxSegments int
 	// Cutter cuts a video into segments and reads its length; media/ffmpeg
 	// has it. Without one EmbedVideo fails.
@@ -146,6 +149,9 @@ func (o VisionOptions) withDefaults() VisionOptions {
 	if o.MaxSegments == 0 {
 		o.MaxSegments = DefaultMaxSegments
 	}
+	if o.ContextTokens == 0 {
+		o.ContextTokens = DefaultVisionContextTokens
+	}
 	return o
 }
 
@@ -165,8 +171,33 @@ func (spec VisionSpec) ModelID(opts VisionOptions) string {
 // visionID builds the identity Vision.Model documents from options with
 // their defaults filled in.
 func visionID(name string, dims int, opts VisionOptions) string {
-	return fmt.Sprintf("%s;instruction=%s;dims=%d;image_tokens=%d-%d;fps=%s;segment=%s", name, shortDigest(opts.Instruction),
-		dims, opts.ImageMinTokens, opts.ImageMaxTokens, strconv.FormatFloat(opts.FPS, 'g', -1, 64), opts.SegmentLength)
+	return fmt.Sprintf("%s;instruction=%s;dims=%d;image_tokens=%d-%d;fps=%s;segment=%s;ctx=%d", name, shortDigest(opts.Instruction),
+		dims, opts.ImageMinTokens, opts.ImageMaxTokens, strconv.FormatFloat(opts.FPS, 'g', -1, 64), opts.SegmentLength, opts.ContextTokens)
+}
+
+// segmenting numbers how a Vision turns a video into segments, beyond what
+// its options say. It is part of Fingerprint, and goes up whenever the same
+// video and options would give other segments:
+//
+//	1: segments planned from the container's length, which is that of its
+//	   longest stream, so sound that ran on after the picture added segments
+//	   holding the last pictures again; no cap unless MaxSegments set one; a
+//	   file without a length embedded whole, as one input
+//	2: planned from the video stream's length and ended where the Cutter
+//	   finds the video over; DefaultMaxSegments when no cap is set; a file
+//	   without a length measured through a copy and cut like any other
+const segmenting = 2
+
+// Fingerprint describes what decides which segments a video yields, the
+// same string for two Visions that cut every video alike: the segment
+// length, the cap on segments, and the version of the segmenting itself. It
+// makes a Vision a search.Fingerprinter: search.MediaIndex folds the string
+// into the hash it stores with every video, so that a video indexed under
+// one cap is indexed again under another instead of being found unchanged
+// with the segments it had. What a segment's vector depends on is in Model,
+// which the hash covers too.
+func (v *Vision) Fingerprint() string {
+	return fmt.Sprintf("yzma-vision/%d segment=%s max_segments=%d", segmenting, v.segment, v.maxSegments)
 }
 
 // validate reports options no Vision runs with.
@@ -473,11 +504,7 @@ func openVision(api visionAPI, rt *runtimeLoader, libDir string, spec VisionSpec
 		api.freeModel(model)
 		return nil, fmt.Errorf("load model %s: no training context length in the GGUF metadata", spec.File)
 	}
-	want := opts.ContextTokens
-	if want == 0 {
-		want = DefaultVisionContextTokens
-	}
-	nCtx := int32(min(int(nCtxTrain), want))
+	nCtx := int32(min(int(nCtxTrain), opts.ContextTokens)) //nolint:gosec // at most nCtxTrain, which is an int32
 	batch := min(nCtx, visionBatch)
 	ctx, nCtxGot, batchGot, mem, err := api.newVisionContext(model, nCtx, batch, run.Threads)
 	if err != nil {
@@ -541,17 +568,24 @@ func (v *Vision) SegmentLength() time.Duration { return v.segment }
 // some input would be. It is the spec's name followed by what else decides
 // a vector:
 //
-//	<VisionSpec.Name>;instruction=<id>;dims=<n>;image_tokens=<min>-<max>;fps=<f>;segment=<duration>
+//	<VisionSpec.Name>;instruction=<id>;dims=<n>;image_tokens=<min>-<max>;fps=<f>;segment=<duration>;ctx=<tokens>
 //
 // <id> is the first eight hex digits of the SHA-256 of the instruction,
 // which sets the space every input lands in; dims is the vector length;
 // image_tokens are ImageMinTokens and ImageMaxTokens, 0 for the model's
 // own, which set the resolution a picture is seen at; fps and segment (as
-// time.Duration prints it) set what a video segment holds. With the
-// defaults that is
-// "Qwen/Qwen3-VL-Embedding-2B;instruction=<id>;dims=2048;image_tokens=0-0;fps=1;segment=20s".
-// The context size, MaxSegments, the threads and the accelerator are not
-// part of it: they do not move the vector of anything that is embedded.
+// time.Duration prints it) set what a video segment holds; ctx is the
+// ContextTokens asked for (DefaultVisionContextTokens for 0), which is
+// where a text too long for it is cut, so that a store filled under a small
+// context is not taken for one filled under a large one. With the defaults
+// that is
+// "Qwen/Qwen3-VL-Embedding-2B;instruction=<id>;dims=2048;image_tokens=0-0;fps=1;segment=20s;ctx=16384".
+//
+// The rule, for this package's embedders: a setting that can change the
+// vector of some input is part of Model; one that changes which segments a
+// video yields without changing any of them (MaxSegments) is part of
+// Fingerprint instead; and what changes neither (the threads, the
+// accelerator, the directories, the Cutter) is part of nothing.
 // VisionSpec.ModelID gives the same string before the model loads.
 func (v *Vision) Model() string { return v.id }
 

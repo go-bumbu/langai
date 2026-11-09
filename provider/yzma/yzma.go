@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -136,7 +137,9 @@ type ModelSpec struct {
 	QueryPrefix    string
 	DocumentPrefix string
 	// MaxTokens caps the context (and so the longest input) below the model's
-	// training window; 0 means min(window, 512).
+	// training window; 0 means min(window, 512). A text longer than the cap
+	// is cut to it, so the cap is part of the vectors' identity (see
+	// Embedder.Model): changing it means embedding again.
 	MaxTokens int
 	// Dims is the size of the model's vectors, known before it loads so a
 	// caller can size its vector store from the spec. Open refuses a model
@@ -172,7 +175,11 @@ func (spec ModelSpec) ModelID() string {
 	if err != nil {
 		pooling = spec.Pooling // Open refuses the spec, so this is never compared
 	}
-	return embedderModel(spec.Name, pooling, spec.QueryPrefix, spec.DocumentPrefix)
+	maxTokens := spec.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultMaxTokens
+	}
+	return embedderModel(spec.Name, pooling, spec.QueryPrefix, spec.DocumentPrefix, maxTokens)
 }
 
 // Runtime is what Open, OpenCompleter and OpenVision need besides the
@@ -440,25 +447,30 @@ func (e *Embedder) Accel() string { return e.accel }
 // different whenever the vectors would be. It is the spec's name followed
 // by what else decides the vector of a text:
 //
-//	<ModelSpec.Name>;pooling=<mean|cls|last>;prefixes=<id>
+//	<ModelSpec.Name>;pooling=<mean|cls|last>;prefixes=<id>;max_tokens=<n>
 //
 // where <id> is "none" for a model without prefixes and otherwise the first
 // eight hex digits of the SHA-256 of the query prefix, a NUL byte and the
-// document prefix. The default model is
-// "google/embeddinggemma-300m;pooling=mean;prefixes=<id>". What does not
-// move a vector (threads, the accelerator, the library directory) is not
-// part of it; neither is the GGUF file, so two quantizations of one model
-// need two names. ModelSpec.ModelID gives the same string before the model
-// loads.
+// document prefix, and <n> is ModelSpec.MaxTokens (512 for 0), where a
+// longer text is cut: the vector of such a text is another under another
+// cap. The default model is
+// "google/embeddinggemma-300m;pooling=mean;prefixes=<id>;max_tokens=512".
+//
+// The rule is the one Vision.Model states: a setting that can change the
+// vector of some input is part of the identity, and what cannot (threads,
+// the accelerator, the library directory) is not. The GGUF file is not
+// part of it either, so two quantizations of one model need two names.
+// ModelSpec.ModelID gives the same string before the model loads.
 func (e *Embedder) Model() string { return e.model }
 
-// embedderModel builds the identity Model documents.
-func embedderModel(name string, pooling Pooling, queryPrefix, documentPrefix string) string {
+// embedderModel builds the identity Model documents; maxTokens is the cap
+// with its default filled in.
+func embedderModel(name string, pooling Pooling, queryPrefix, documentPrefix string, maxTokens int) string {
 	prefixes := "none"
 	if queryPrefix != "" || documentPrefix != "" {
 		prefixes = shortDigest(queryPrefix, documentPrefix)
 	}
-	return name + ";pooling=" + string(pooling) + ";prefixes=" + prefixes
+	return name + ";pooling=" + string(pooling) + ";prefixes=" + prefixes + ";max_tokens=" + strconv.Itoa(maxTokens)
 }
 
 // shortDigest is the first eight hex digits of the SHA-256 of the parts
