@@ -70,7 +70,7 @@ func rank(ctx context.Context, store vector.Store, c vector.Coord, base vector.Q
 	base.Vectors = kept
 	raw, err := store.Search(ctx, c, base)
 	if err != nil {
-		return nil, fmt.Errorf("search: search: %w", err)
+		return nil, fmt.Errorf("search: %w", err)
 	}
 	out := aboveFloor(raw, minScore)
 	for i, m := range out {
