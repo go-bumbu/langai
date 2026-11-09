@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/langai/media"
 )
 
 // Handles the vision fake hands out.
@@ -208,6 +210,9 @@ type fakeCutter struct {
 	durations map[string]time.Duration
 	cuts      []string // "start/length/base"
 	err       error
+	// end, when set, is where the video really ends, whatever durations
+	// says: a cut from there on is media.ErrPastEnd
+	end time.Duration
 }
 
 func (c *fakeCutter) Duration(_ context.Context, path string) (time.Duration, error) {
@@ -222,6 +227,9 @@ func (c *fakeCutter) Cut(_ context.Context, _ string, start, length time.Duratio
 	c.cuts = append(c.cuts, start.String()+"/"+length.String()+"/"+filepath.Base(out))
 	if c.err != nil {
 		return c.err
+	}
+	if c.end > 0 && start >= c.end {
+		return fmt.Errorf("fake cutter: %w", media.ErrPastEnd)
 	}
 	return os.WriteFile(out, []byte("cut"), 0o600)
 }
@@ -673,9 +681,9 @@ func TestVision_EmbedVideoOfUnknownLength(t *testing.T) {
 		end         time.Duration // of the last segment
 	}{
 		{
-			name:      "a recording without a length",
+			name:      "a recording without a length: copied up to the default cap",
 			durations: map[string]time.Duration{"stream.webm": 0, "source.mkv": 45 * time.Second},
-			cuts:      "0s/0s/source.mkv 0s/20s/segment-000.mkv 20s/20s/segment-001.mkv 40s/20s/segment-002.mkv",
+			cuts:      "0s/4h0m0s/source.mkv 0s/20s/segment-000.mkv 20s/20s/segment-001.mkv 40s/20s/segment-002.mkv",
 			segments:  3, end: 45 * time.Second,
 		},
 		{
@@ -688,8 +696,36 @@ func TestVision_EmbedVideoOfUnknownLength(t *testing.T) {
 		{
 			name:      "no length even as a copy: the first segment",
 			durations: map[string]time.Duration{"stream.h264": 0, "source.mkv": 0},
-			cuts:      "0s/0s/source.mkv 0s/20s/segment-000.h264",
+			cuts:      "0s/4h0m0s/source.mkv 0s/20s/segment-000.h264",
 			segments:  1, end: 20 * time.Second,
+		},
+		{
+			name:        "a cap no duration holds: the copy is bounded by the longest video believed",
+			durations:   map[string]time.Duration{"stream.webm": 0, "source.mkv": 30 * time.Second},
+			maxSegments: math.MaxInt,
+			cuts:        "0s/168h0m0s/source.mkv 0s/20s/segment-000.mkv 20s/20s/segment-001.mkv",
+			segments:    2, end: 30 * time.Second,
+		},
+		// a length that cannot be right is no length: the file is measured
+		// like one that states none, instead of being planned from
+		{
+			name:        "a length next to the largest duration",
+			durations:   map[string]time.Duration{"film.mkv": math.MaxInt64 - time.Second, "source.mkv": 45 * time.Second},
+			maxSegments: 3,
+			cuts:        "0s/1m0s/source.mkv 0s/20s/segment-000.mkv 20s/20s/segment-001.mkv 40s/20s/segment-002.mkv",
+			segments:    3, end: 45 * time.Second,
+		},
+		{
+			name:      "a thousand hours",
+			durations: map[string]time.Duration{"film.mkv": 1000 * time.Hour, "source.mkv": 30 * time.Second},
+			cuts:      "0s/4h0m0s/source.mkv 0s/20s/segment-000.mkv 20s/20s/segment-001.mkv",
+			segments:  2, end: 30 * time.Second,
+		},
+		{
+			name:      "a negative length",
+			durations: map[string]time.Duration{"film.mkv": -time.Second, "source.mkv": 30 * time.Second},
+			cuts:      "0s/4h0m0s/source.mkv 0s/20s/segment-000.mkv 20s/20s/segment-001.mkv",
+			segments:  2, end: 30 * time.Second,
 		},
 	}
 	for _, c := range cases {
@@ -718,6 +754,55 @@ func TestVision_EmbedVideoOfUnknownLength(t *testing.T) {
 				if video[1] == source || video[1] == "source.mkv" {
 					t.Errorf("%v was embedded as one input", video[1])
 				}
+			}
+		})
+	}
+}
+
+// TestVision_EmbedVideoStopsAtTheEndAndAtTheCap: a header may say a video
+// is longer than its pictures run. The walk through it ends at the Cutter's
+// media.ErrPastEnd instead of embedding what a cut past the end holds, the
+// last pictures again, as segments of their own; and a video that really is
+// that long ends at the cap, MaxSegments or DefaultMaxSegments.
+func TestVision_EmbedVideoStopsAtTheEndAndAtTheCap(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		claimed     time.Duration
+		end         time.Duration // where the pictures really end, 0: as claimed
+		maxSegments int
+		segments    int
+		cuts        int
+		lastEnd     time.Duration
+		wantErr     string
+	}{
+		{name: "sound runs on after the picture", claimed: 110 * time.Second, end: 25 * time.Second, segments: 2, cuts: 3, lastEnd: 40 * time.Second},
+		{name: "ends on a segment boundary", claimed: 70 * time.Second, end: 40 * time.Second, segments: 2, cuts: 3, lastEnd: 40 * time.Second},
+		{name: "as long as claimed", claimed: 45 * time.Second, segments: 3, cuts: 3, lastEnd: 45 * time.Second},
+		{name: "five hours, no cap set", claimed: 5 * time.Hour, segments: DefaultMaxSegments, cuts: DefaultMaxSegments, lastEnd: DefaultMaxSegments * DefaultSegmentLength},
+		{name: "five hours, a larger cap", claimed: 5 * time.Hour, maxSegments: 2000, segments: 900, cuts: 900, lastEnd: 5 * time.Hour},
+		{name: "a week, a cap of two", claimed: media.MaxDuration, maxSegments: 2, segments: 2, cuts: 2, lastEnd: 40 * time.Second},
+		{name: "no pictures at all", claimed: 45 * time.Second, end: time.Nanosecond, cuts: 1, wantErr: "cut segment 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cutter := &fakeCutter{durations: map[string]time.Duration{"film.mp4": tc.claimed}, end: tc.end}
+			if tc.wantErr != "" {
+				cutter.end = 0
+				cutter.err = fmt.Errorf("fake cutter: %w", media.ErrPastEnd)
+			}
+			v := openVisionFake(t, newFakeVision(), VisionOptions{Cutter: cutter, MaxSegments: tc.maxSegments})
+			segs, err := v.EmbedVideo(context.Background(), "/media/film.mp4")
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want one saying %q", err, tc.wantErr)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if len(segs) != tc.segments || len(cutter.cuts) != tc.cuts {
+				t.Fatalf("%d segments from %d cuts, want %d from %d", len(segs), len(cutter.cuts), tc.segments, tc.cuts)
+			}
+			if tc.segments > 0 && segs[len(segs)-1].End != tc.lastEnd {
+				t.Errorf("the last segment ends at %v, want %v", segs[len(segs)-1].End, tc.lastEnd)
 			}
 		})
 	}

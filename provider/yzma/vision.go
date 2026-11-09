@@ -41,6 +41,11 @@ const (
 	// DefaultFPS is the frame rate a video is sampled at, the one the model
 	// was trained with.
 	DefaultFPS = 1.0
+	// DefaultMaxSegments is the most segments one video is embedded as
+	// unless VisionOptions.MaxSegments says otherwise: four hours at
+	// DefaultSegmentLength. Every segment is a run of the model, and how
+	// many a video asks for comes from its header, so there is always a cap.
+	DefaultMaxSegments = 720
 	// maxImageSide caps a picture before it reaches the projector, which
 	// scales it down to its token budget anyway; it bounds the bitmap copy.
 	maxImageSide = 1536
@@ -73,7 +78,9 @@ type VisionOptions struct {
 	// FPS is the frame rate videos are sampled at; 0 means DefaultFPS.
 	FPS float64
 	// MaxSegments caps the segments per video, so a feature film does not
-	// take an hour; 0 means all of them.
+	// take an hour; 0 means DefaultMaxSegments. What lies past the cap is
+	// not embedded. There is no "all of them": set a number as large as the
+	// longest video you mean to embed whole.
 	MaxSegments int
 	// Cutter cuts a video into segments and reads its length; media/ffmpeg
 	// has it. Without one EmbedVideo fails.
@@ -128,6 +135,9 @@ func (o VisionOptions) withDefaults() VisionOptions {
 	}
 	if o.FPS == 0 {
 		o.FPS = DefaultFPS
+	}
+	if o.MaxSegments == 0 {
+		o.MaxSegments = DefaultMaxSegments
 	}
 	return o
 }
@@ -602,15 +612,23 @@ func (v *Vision) EmbedImages(ctx context.Context, images []image.Image) ([][]flo
 // EmbedVideo implements langai.VideoEmbedder: the video is cut into segments
 // of SegmentLength (the Cutter does it, by stream copy), each sampled at
 // FPS and embedded as one input under the instruction. A video no longer
-// than a segment is one input, uncut.
+// than a segment is one input, uncut. At most MaxSegments segments are
+// embedded (DefaultMaxSegments unless set); what lies past them is left
+// out.
 //
-// A file whose container states no length (a recording that was never
-// finalized, a stream dump) is never taken for a short one. The Cutter
-// first copies it into a Matroska file, which has a length and an index:
-// up to MaxSegments segments of it, or all of it when there is no cap,
-// next to the segments in the temp directory. The copy is then cut like
-// any other video. A file that has no length even as a copy (a raw
-// elementary stream) is embedded as its first segment only.
+// The length is what the Cutter reads from the file, and the file may be
+// wrong. A video that ends before its header says is embedded up to its
+// end: the walk stops at the Cutter's media.ErrPastEnd, and the last
+// segment's End is then where that segment was planned to end, not where
+// the pictures did. A length that no video has (nothing, less, more than
+// media.MaxDuration) is taken for none.
+//
+// A file without a length (a recording that was never finalized, a stream
+// dump) is never taken for a short one. The Cutter first copies it into a
+// Matroska file, which has a length and an index: up to MaxSegments
+// segments of it, next to the segments in the temp directory. The copy is
+// then cut like any other video. A file that has no length even as a copy
+// (a raw elementary stream) is embedded as its first segment only.
 func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
 	if v.cutter == nil {
 		return nil, errors.New("yzma: no Cutter: set VisionOptions.Cutter (media/ffmpeg) to embed videos")
@@ -618,6 +636,9 @@ func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]langai.Segment,
 	duration, err := v.cutter.Duration(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("yzma: probe video: %w", err)
+	}
+	if duration < 0 || duration > media.MaxDuration {
+		duration = 0 // not a length: measured below, like a file that states none
 	}
 	if duration > 0 && duration <= v.segment {
 		vec, err := v.embedVideoFile(ctx, path)
@@ -650,9 +671,14 @@ func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]langai.Segment,
 // embedded: bounded, where the whole file would not be.
 func (v *Vision) measured(ctx context.Context, path, dir string) (string, time.Duration, error) {
 	remux := filepath.Join(dir, "source"+fallbackVideoExt)
-	bound := time.Duration(v.maxSegments) * v.segment // 0: to the end
+	// as much as the cap lets through, and never more than a video is
+	// believed to be long, which also keeps the product inside a Duration
+	bound := media.MaxDuration
+	if int64(v.maxSegments) < int64(media.MaxDuration/v.segment) {
+		bound = time.Duration(v.maxSegments) * v.segment
+	}
 	if err := v.cutter.Cut(ctx, path, 0, bound, remux); err == nil {
-		if d, err := v.cutter.Duration(ctx, remux); err == nil && d > 0 {
+		if d, err := v.cutter.Duration(ctx, remux); err == nil && d > 0 && d <= media.MaxDuration {
 			return remux, d, nil
 		}
 	}
@@ -667,26 +693,39 @@ func (v *Vision) measured(ctx context.Context, path, dir string) (string, time.D
 // has no way to pick a muxer, and Matroska takes any codec.
 const fallbackVideoExt = ".mkv"
 
-// embedSegments cuts the video of the given length into segments, into dir,
-// and embeds each; MaxSegments caps how many.
-func (v *Vision) embedSegments(ctx context.Context, path string, duration time.Duration, dir string) ([]langai.Segment, error) {
-	n := int((duration + v.segment - 1) / v.segment)
-	if v.maxSegments > 0 {
-		n = min(n, v.maxSegments)
+// segmentCount is how many segments of the given length a video of the
+// given duration is cut into, the last one shorter, and at most limit. It
+// divides instead of rounding up by addition, so no duration overflows it.
+func segmentCount(duration, segment time.Duration, limit int) int {
+	n := int64(duration / segment)
+	if duration%segment > 0 {
+		n++
 	}
+	return int(min(n, int64(limit)))
+}
+
+// embedSegments cuts the video of the given length into segments, into dir,
+// and embeds each; MaxSegments caps how many. The length is a plan and not
+// a fact: the walk ends early where the Cutter finds the video over
+// (media.ErrPastEnd), and nothing is sized by the count.
+func (v *Vision) embedSegments(ctx context.Context, path string, duration time.Duration, dir string) ([]langai.Segment, error) {
 	ext := filepath.Ext(path)
 	if ext == "" {
 		ext = fallbackVideoExt
 	}
-	out := make([]langai.Segment, 0, n)
-	for i := range n {
+	var out []langai.Segment
+	for i := range segmentCount(duration, v.segment, v.maxSegments) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		start := time.Duration(i) * v.segment
 		end := min(start+v.segment, duration)
 		cut := filepath.Join(dir, fmt.Sprintf("segment-%03d%s", i, ext))
-		if err := v.cutter.Cut(ctx, path, start, v.segment, cut); err != nil {
+		err := v.cutter.Cut(ctx, path, start, v.segment, cut)
+		if i > 0 && errors.Is(err, media.ErrPastEnd) {
+			break // the video is shorter than its header said
+		}
+		if err != nil {
 			return nil, fmt.Errorf("yzma: cut segment %d: %w", i, err)
 		}
 		vec, err := v.embedVideoFile(ctx, cut)

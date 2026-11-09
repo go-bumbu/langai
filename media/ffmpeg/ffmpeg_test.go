@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-bumbu/langai/media"
 )
 
 func TestNew_FillsDefaults(t *testing.T) {
@@ -122,6 +124,15 @@ func TestParseDuration(t *testing.T) {
 		"N/A\n":       0,
 		"":            0,
 		"-3":          0,
+		// what no video is: taken for unknown, never computed with
+		"nan":                  0,
+		"inf":                  0,
+		"-inf":                 0,
+		"9223372036.854775807": 0, // the largest time.Duration, in seconds
+		"1e300":                0,
+		"3600000":              0, // a thousand hours
+		"604800":               media.MaxDuration,
+		"604800.5":             0,
 	} {
 		if got := parseDuration(in); got != want {
 			t.Errorf("parseDuration(%q) = %v, want %v", in, got, want)
@@ -129,13 +140,70 @@ func TestParseDuration(t *testing.T) {
 	}
 }
 
+// TestPastEnd: the last out_time_us of ffmpeg's progress report decides, and
+// a report that has none decides nothing.
+func TestPastEnd(t *testing.T) {
+	for report, want := range map[string]bool{
+		"frame=50\nout_time_us=2000000\nprogress=end":                            false,
+		"out_time_us=-2000000\nprogress=end":                                     true,
+		"out_time_us=0\nprogress=end":                                            true,
+		"out_time_us=23000\nprogress=end":                                        true, // a container that starts 23 ms in
+		"out_time_us=100000\nprogress=end":                                       false,
+		"out_time_us=-5\nprogress=continue\nout_time_us=1500000\nprogress=end":   false, // the last report counts
+		"out_time_us=1500000\nprogress=continue\nout_time_us=-5\r\nprogress=end": true,
+		"out_time_us=N/A\nprogress=end":                                          false,
+		"":                                                                       false,
+		"partial":                                                                false,
+	} {
+		if got := pastEnd(report); got != want {
+			t.Errorf("pastEnd(%q) = %v, want %v", report, got, want)
+		}
+	}
+}
+
+// TestParseClock: the length a Matroska file notes per stream, as a clock
+// time.
+func TestParseClock(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"00:00:06.000000000": 6 * time.Second,
+		"01:02:03.500000000": time.Hour + 2*time.Minute + 3500*time.Millisecond,
+		"00:00:00.000000000": 0,
+		"6.5":                0, // not a clock time
+		"00:xx:06":           0,
+		"00:-1:06":           0,
+		"99999:00:00":        0, // beyond media.MaxDuration
+		"":                   0,
+	} {
+		if got := parseClock(in); got != want {
+			t.Errorf("parseClock(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestParseProbe: the length is the video stream's when ffprobe states it
+// (as a number, or as the DURATION tag Matroska keeps per stream), since the
+// container's is that of its longest stream, and the container's otherwise.
 func TestParseProbe(t *testing.T) {
 	cases := map[string]probed{
+		// the bare lines of the tests' stand-in ffprobe: the container's
 		"format_name=mov,mp4,m4a,3gp,3g2,mj2\nduration=2.000000\n": {duration: 2 * time.Second},
 		"format_name=image2\nduration=0.040000\n":                  {duration: 40 * time.Millisecond, image2: true},
 		"format_name=png_pipe\r\nduration=N/A\r\n":                 {},
 		"format_name=image2pipe\nduration=N/A\n":                   {},
 		"":                                                         {},
+		// 6 s of video under 11 s of sound
+		"[STREAM]\nduration=6.000000\n[/STREAM]\n[FORMAT]\nformat_name=mov,mp4,m4a,3gp,3g2,mj2\nduration=11.000000\n[/FORMAT]\n": {duration: 6 * time.Second},
+		// Matroska: the stream has no duration field, but a tag
+		"[STREAM]\nduration=N/A\nTAG:DURATION=00:00:06.000000000\n[/STREAM]\n[FORMAT]\nformat_name=matroska,webm\nduration=11.008000\n[/FORMAT]\n": {duration: 6 * time.Second},
+		// neither: the container's
+		"[STREAM]\nduration=N/A\n[/STREAM]\n[FORMAT]\nformat_name=matroska,webm\nduration=11.008000\n[/FORMAT]\n": {duration: 11008 * time.Millisecond},
+		// a transport stream lists the stream twice, once inside its program
+		"[PROGRAM]\n[STREAM]\nduration=6.000000\n[/STREAM]\n[/PROGRAM]\n[STREAM]\nduration=6.000000\n[/STREAM]\n[FORMAT]\nduration=9.000000\n[/FORMAT]\n": {duration: 6 * time.Second},
+		// no video stream at all: the container's, as before
+		"[FORMAT]\nformat_name=mov,mp4,m4a,3gp,3g2,mj2\nduration=1.000000\n[/FORMAT]\n": {duration: time.Second},
+		// a stream that claims what no video is: the container's; both: unknown
+		"[STREAM]\nduration=9223372036.0\n[/STREAM]\n[FORMAT]\nduration=11.000000\n[/FORMAT]\n":        {duration: 11 * time.Second},
+		"[STREAM]\nduration=nan\n[/STREAM]\n[FORMAT]\nformat_name=image2\nduration=1e300\n[/FORMAT]\n": {image2: true},
 	}
 	for out, want := range cases {
 		if got := parseProbe([]byte(out)); got != want {

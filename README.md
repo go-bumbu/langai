@@ -482,13 +482,19 @@ pictures and clips, and an image finds the stretch of a video it appears in.
   time. A cut is written under a name of its own and renamed into place when it is
   whole: one that fails or is cancelled leaves nothing, and never removes a file that
   was already there, and a cut onto its own input is refused. `MaxSegments` caps
-  the work per video. A segment is one vector: the model sees the whole stretch, which
-  is what makes a clip match a description, and what loses the "matched at 4.00 s"
-  precision of the frame route. A file whose container states no
-  length (a recording that was never finalized, a stream dump) is first copied into a
-  Matroska file in the temp directory, `MaxSegments` segments of it or all of it, so
-  that it has one, and is then cut like any other; a file without an extension is cut
-  into `.mkv` segments.
+  the work per video: 720 segments unless you set it (`DefaultMaxSegments`, four hours
+  at 20 s), and what lies past the cap is not embedded. A segment is one vector: the
+  model sees the whole stretch, which is what makes a clip match a description, and
+  what loses the "matched at 4.00 s" precision of the frame route.
+- **A video's length is read, not believed.** The length is the video stream's (a
+  sound track that runs on after the picture does not add segments), and a header can
+  still be wrong. A length no video has (none, or more than a week, `media.MaxDuration`)
+  counts as unknown, and a walk through a video that ends before its header says stops
+  at the `Cutter`'s `media.ErrPastEnd` instead of embedding the last pictures again.
+  A file without a length (a recording that was never finalized, a stream dump) is
+  first copied into a Matroska file in the temp directory, at most `MaxSegments`
+  segments of it, so that it has one, and is then cut like any other; a file without
+  an extension is cut into `.mkv` segments.
 - **Texts are plain text.** The chat template is laid out once, around stand-ins, and
   the instruction and every input are tokenized as parts of their own: a text that
   spells one of the model's control tokens (`<|im_end|>`), libmtmd's media marker or a

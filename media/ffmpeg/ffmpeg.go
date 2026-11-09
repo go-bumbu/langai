@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -161,8 +162,11 @@ func New(cfg Config) (*Sampler, error) {
 
 // samplerVersion numbers how this package picks and prepares frames, beyond
 // what a Config says; it goes up when a release would take other frames, or
-// other pixels, from the same video and Config.
-const samplerVersion = 1
+// other pixels, from the same video and Config:
+//
+//	1: the gap between frames spread MaxFrames over the container's length
+//	2: over the video stream's length, which is shorter when sound runs on
+const samplerVersion = 2
 
 // Fingerprint describes every setting that changes which frames come out
 // and how they look, the same string for two Samplers that take the same
@@ -283,8 +287,12 @@ func (s *Sampler) readFrames(r io.Reader) ([]*image.RGBA, error) {
 // verify the interface is actually satisfied
 var _ media.Cutter = (*Sampler)(nil)
 
-// Duration implements media.Cutter: the container's duration from ffprobe,
-// 0 when it has none (a stream, a still image).
+// Duration implements media.Cutter: the length ffprobe reports for the
+// video stream, or for the container when the stream states none, and 0
+// when neither does (a stream dump, a still image) or what they state is no
+// length a video has (not a number, beyond media.MaxDuration). The
+// container's length is that of its longest stream, so a file whose sound
+// runs on after the picture is as long as its picture here.
 func (s *Sampler) Duration(ctx context.Context, path string) (time.Duration, error) {
 	in, err := s.probe(ctx, path)
 	return in.duration, err
@@ -303,6 +311,10 @@ func (s *Sampler) Duration(ctx context.Context, path string) (time.Duration, err
 // fails or is cancelled, and no partial segment ever appears there. The
 // segment is readable by its owner only. An out that names the input itself,
 // under any spelling or through a link, is refused before anything runs.
+//
+// A start past zero that lies at or past the end of the video stream, or
+// less than a tenth of a second before it, is media.ErrPastEnd, wrapped,
+// and writes nothing (see pastEnd for how it is told).
 func (s *Sampler) Cut(ctx context.Context, path string, start, length time.Duration, out string) error {
 	if path == "" || out == "" {
 		return errors.New("ffmpeg: empty path")
@@ -318,8 +330,12 @@ func (s *Sampler) Cut(ctx context.Context, path string, start, length time.Durat
 	if length > 0 {
 		args = append(args, "-t", seconds(length))
 	}
-	args = append(args, "-map", "0:v:0", "-an", "-sn", "-dn", "-c", "copy", "-movflags", "+faststart", local(tmp))
-	_, err = s.run(ctx, "ffmpeg", s.cfg.FFmpeg, args)
+	args = append(args, "-map", "0:v:0", "-an", "-sn", "-dn", "-c", "copy", "-movflags", "+faststart", "-progress", "pipe:1", local(tmp))
+	var progress tailWriter
+	err = s.exec(ctx, "ffmpeg", s.cfg.FFmpeg, args, &progress)
+	if err == nil && start > 0 && pastEnd(progress.String()) {
+		err = fmt.Errorf("ffmpeg: cut %q from %s: %w", path, start, media.ErrPastEnd)
+	}
 	if err == nil {
 		err = os.Rename(tmp, out)
 	}
@@ -332,6 +348,36 @@ func (s *Sampler) Cut(ctx context.Context, path string, start, length time.Durat
 		return err
 	}
 	return nil
+}
+
+// outTimeKey starts the line of ffmpeg's progress report (-progress) that
+// says how far the output reaches: the end of the last packet written, in
+// microseconds from the start that was asked for.
+const outTimeKey = "out_time_us="
+
+// minCutTail is how much video a cut must hold after its start to count as
+// one. The end of the output is known to within a few frames only (it is
+// read from decoding timestamps, which run ahead of the pictures in a
+// stream with reordering, and a container may start a few milliseconds
+// past zero), and a stretch this short has nothing to see that the stretch
+// before it did not show.
+const minCutTail = 100 * time.Millisecond
+
+// pastEnd reads the end of ffmpeg's progress report for a stream copy and
+// reports whether the cut started at or past the end of the video, to
+// within minCutTail. Such a copy is not empty: ffmpeg writes the last group
+// of pictures before the start again, every packet of it earlier than the
+// start, and exits 0. The report gives it away, since the output then ends
+// at or before zero. A report without a time (a program that writes none,
+// "N/A") says nothing.
+func pastEnd(progress string) bool {
+	i := strings.LastIndex(progress, outTimeKey)
+	if i < 0 {
+		return false
+	}
+	value, _, _ := strings.Cut(progress[i+len(outTimeKey):], "\n")
+	us, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	return err == nil && us < minCutTail.Microseconds()
 }
 
 // sameFile reports whether a and b name one file: they are the same file on
@@ -382,23 +428,33 @@ func input(path string) []string {
 // ctx ended the run and otherwise ends with the end of the program's log.
 func (s *Sampler) run(ctx context.Context, name, bin string, args []string) ([]byte, error) {
 	var stdout bytes.Buffer
-	var stderr tailWriter
-	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // the binary is the operator's configuration and the arguments are built by the callers, each path as one argv entry, never a shell string
-	cmd.Stdout = &limitedWriter{buf: &stdout, limit: maxProbeOutput}
-	cmd.Stderr = &stderr
-	cmd.WaitDelay = s.waitDelay
-	if err := cmd.Run(); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, fmt.Errorf("%s: %w", name, ctxErr)
-		}
-		return nil, fmt.Errorf("%s: %w: %s", name, err, stderr.String())
+	if err := s.exec(ctx, name, bin, args, &limitedWriter{buf: &stdout, limit: maxProbeOutput}); err != nil {
+		return nil, err
 	}
 	return stdout.Bytes(), nil
 }
 
+// exec runs one of the two programs to its end with its stdout going to
+// stdout, which must not block. The error is as run describes it.
+func (s *Sampler) exec(ctx context.Context, name, bin string, args []string, stdout io.Writer) error {
+	var stderr tailWriter
+	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // the binary is the operator's configuration and the arguments are built by the callers, each path as one argv entry, never a shell string
+	cmd.Stdout = stdout
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = s.waitDelay
+	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("%s: %w", name, ctxErr)
+		}
+		return fmt.Errorf("%s: %w: %s", name, err, stderr.String())
+	}
+	return nil
+}
+
 // probed is what ffprobe says about an input.
 type probed struct {
-	// duration is the container's; 0 when it has none.
+	// duration is the video stream's, or the container's when the stream
+	// states none; 0 when neither states one a video can have.
 	duration time.Duration
 	// image2 says that the image demuxer reads the file. It takes a "%d" in
 	// the name for the pattern of a numbered sequence unless told not to.
@@ -410,7 +466,13 @@ type probed struct {
 // ffmpeg refuses it for any other.
 var literalName = []string{"-pattern_type", "none"}
 
-// probe asks ffprobe for the container's duration and demuxer.
+// probeEntries is what probe asks ffprobe for: the first video stream's
+// duration, the DURATION tag Matroska notes per stream in its place, and the
+// container's demuxer and duration. The answer comes in sections ([STREAM],
+// [FORMAT]), which is what tells the two durations apart.
+var probeEntries = []string{"-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration:stream_tags=DURATION:format=format_name,duration", "-of", "default"}
+
+// probe asks ffprobe for the video's duration and the container's demuxer.
 //
 // A name with a percent sign may spell a sequence pattern, and the image
 // demuxer would then read other files than the one named. Such a name is
@@ -423,7 +485,7 @@ func (s *Sampler) probe(ctx context.Context, path string) (probed, error) {
 	if path == "" {
 		return probed{}, errors.New("ffprobe: empty path")
 	}
-	args := slices.Concat([]string{"-v", "error", "-show_entries", "format=format_name,duration", "-of", "default=noprint_wrappers=1"}, input(path))
+	args := slices.Concat(probeEntries, input(path))
 	if !strings.Contains(path, "%") {
 		out, err := s.run(ctx, "ffprobe", s.cfg.FFprobe, args)
 		return parseProbe(out), err
@@ -448,29 +510,65 @@ func (s *Sampler) probe(ctx context.Context, path string) (probed, error) {
 	return in, nil
 }
 
-// parseProbe reads ffprobe's key=value lines.
+// parseProbe reads ffprobe's answer: key=value lines, those of the video
+// stream between [STREAM] and [/STREAM]. The duration is the stream's own,
+// else the stream's DURATION tag, else the container's (a duration outside
+// a stream section).
 func parseProbe(out []byte) probed {
 	var in probed
+	var video, container time.Duration
+	inStream := false
 	for line := range strings.Lines(string(out)) {
 		key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
-		switch key {
-		case "duration":
-			in.duration = parseDuration(value)
-		case "format_name":
+		switch {
+		case key == "[STREAM]":
+			inStream = true
+		case key == "[/STREAM]":
+			inStream = false
+		case key == "format_name":
 			in.image2 = slices.Contains(strings.Split(value, ","), "image2")
+		case key == "duration" && !inStream:
+			container = parseDuration(value)
+		case key == "duration" && video == 0:
+			video = parseDuration(value)
+		case key == "TAG:DURATION" && inStream && video == 0:
+			video = parseClock(value)
 		}
+	}
+	in.duration = video
+	if video == 0 {
+		in.duration = container
 	}
 	return in
 }
 
-// parseDuration reads ffprobe's duration; anything but a number ("N/A",
-// nothing at all) is 0, unknown.
+// parseDuration reads ffprobe's duration in seconds. Anything but a length
+// a video can have is 0, unknown: no number ("N/A", nothing at all, NaN),
+// nothing or less, and more than media.MaxDuration, which also keeps the
+// number inside what a time.Duration holds.
 func parseDuration(out string) time.Duration {
 	secs, err := strconv.ParseFloat(strings.TrimSpace(out), 64)
-	if err != nil || secs <= 0 {
+	if err != nil || math.IsNaN(secs) || secs <= 0 || secs > media.MaxDuration.Seconds() {
 		return 0
 	}
 	return time.Duration(secs * float64(time.Second))
+}
+
+// parseClock reads a duration written as a clock time, hours:minutes:seconds
+// with a fraction, as Matroska's DURATION tag has it; anything else is 0,
+// and so is a time parseDuration would not take.
+func parseClock(out string) time.Duration {
+	parts := strings.Split(strings.TrimSpace(out), ":")
+	if len(parts) != 3 {
+		return 0
+	}
+	hours, errH := strconv.ParseUint(parts[0], 10, 32)
+	minutes, errM := strconv.ParseUint(parts[1], 10, 32)
+	secs, errS := strconv.ParseFloat(parts[2], 64)
+	if errH != nil || errM != nil || errS != nil || math.IsNaN(secs) || secs < 0 {
+		return 0
+	}
+	return parseDuration(strconv.FormatFloat(float64(hours)*3600+float64(minutes)*60+secs, 'f', -1, 64))
 }
 
 // gaps returns the two intervals Sample uses for a video of the given

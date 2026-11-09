@@ -2,6 +2,7 @@ package ffmpeg
 
 import (
 	"context"
+	"errors"
 	"image"
 	"os"
 	"os/exec"
@@ -204,6 +205,83 @@ func times(frames []media.Frame) []time.Duration {
 		out[i] = f.At
 	}
 	return out
+}
+
+// soundOutlastsVideo renders 6 s of video (a keyframe every second) under
+// 11 s of sound into a file of the given name: a container whose length is
+// that of the sound.
+func soundOutlastsVideo(t *testing.T, name string, codec ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	path := filepath.Join(t.TempDir(), name)
+	args := []string{"-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=320x240:d=6:r=25", "-f", "lavfi", "-i", "sine=d=11", "-g", "25"}
+	if out, err := exec.Command("ffmpeg", append(append(args, codec...), path)...).CombinedOutput(); err != nil {
+		t.Fatalf("render %s: %v: %s", name, err, out)
+	}
+	return path
+}
+
+// TestDuration_IsTheVideoStreams: sound that runs on after the picture makes
+// the container longer than its video. Duration is the video's, in a
+// container that states it per stream and in Matroska, which notes it in a
+// tag, so nobody plans segments over a stretch with nothing to see.
+func TestDuration_IsTheVideoStreams(t *testing.T) {
+	for name, codec := range map[string][]string{
+		"clip.mp4": {"-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac"},
+		"clip.mkv": {"-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := New(Config{})
+			d, err := s.Duration(context.Background(), soundOutlastsVideo(t, name, codec...))
+			if err != nil || !near(d, 6*time.Second) {
+				t.Errorf("Duration = %v, %v; want the video's 6 s, not the sound's 11 s", d, err)
+			}
+		})
+	}
+}
+
+// TestCut_PastTheEndIsAnError: a stream copy that starts past the last
+// picture is not empty, ffmpeg writes the last group of pictures again and
+// exits 0. Cut must say media.ErrPastEnd instead and write nothing, so that
+// a caller walking a video in segments stops there; a cut that still holds
+// pictures after its start is a cut like any other. The line between the
+// two is within a tenth of a second of the end.
+func TestCut_PastTheEndIsAnError(t *testing.T) {
+	for _, name := range []string{"clip.mp4", "clip.mkv"} {
+		path := soundOutlastsVideo(t, name, "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac")
+		for _, tc := range []struct {
+			start   time.Duration
+			pastEnd bool
+		}{
+			{0, false},
+			{4 * time.Second, false},
+			{5500 * time.Millisecond, false},
+			{6 * time.Second, true},
+			{8 * time.Second, true},
+			{10 * time.Hour, true},
+		} {
+			t.Run(name+" from "+tc.start.String(), func(t *testing.T) {
+				s, _ := New(Config{})
+				out := filepath.Join(t.TempDir(), "seg"+filepath.Ext(name))
+				err := s.Cut(context.Background(), path, tc.start, 2*time.Second, out)
+				_, statErr := os.Stat(out)
+				if !tc.pastEnd {
+					if err != nil || statErr != nil {
+						t.Errorf("Cut = %v, the file: %v; want a segment", err, statErr)
+					}
+					return
+				}
+				if !errors.Is(err, media.ErrPastEnd) {
+					t.Errorf("Cut = %v, want media.ErrPastEnd", err)
+				}
+				if statErr == nil {
+					t.Error("a cut past the end left a file")
+				}
+			})
+		}
+	}
 }
 
 // TestSample_MetadataCannotForgeAFrameLine: ffmpeg prints a file's metadata
