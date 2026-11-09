@@ -182,26 +182,46 @@ func run(o options) error {
 	mux.Handle("/duplicates/", http.StripPrefix("/duplicates", duplicates.Handler(dups)))
 	mux.Handle("/autotag/", http.StripPrefix("/autotag", autotag.Handler(notebook)))
 
-	// the first scans run behind the server, one after the other, so the
-	// service is up at once and a page shows its scan as it goes; what they
-	// need of a model loads it. They end before anything they use is closed.
+	// the first scans and the notebook's warm-up run behind the server, so
+	// the service is up at once and a page shows its scan as it goes; what
+	// they need of a model loads it. They end before anything they use is
+	// closed.
+	scans := firstScans(ctx, o, dups, notebook, docs, lib, logger)
+	defer func() { stop(); scans.Wait() }()
+	return serve(ctx, o.addr, mux, logger)
+}
+
+// firstScans starts every page's first scan, and the notebook's warm-up, each
+// on a goroutine of its own, and returns the group to wait for them with.
+func firstScans(ctx context.Context, o options, dups *duplicates.Finder, notebook *autotag.Notebook, docs *textsearch.Library, lib *mediasearch.Library, logger *slog.Logger) *sync.WaitGroup {
 	var scans sync.WaitGroup
 	scans.Go(func() {
-		// the cheapest first: hashing takes milliseconds a picture
+		// hashing takes milliseconds a picture
 		if _, err := dups.Scan(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("duplicates scan", "err", err)
 		}
+	})
+	scans.Go(func() {
+		// the notebook's notes: embedded only when the cache lacks them
+		if st, err := notebook.Warm(ctx); err != nil && ctx.Err() == nil {
+			logger.Warn("notebook not warmed: its notes are embedded when the embedder works", "err", err)
+		} else if err == nil {
+			logger.Info("notebook warm", "notes", st.Notes, "tags", st.Tags, "took", time.Duration(st.Ms)*time.Millisecond)
+		}
+	})
+	scans.Go(func() {
 		logger.Info("scanning", "dir", o.docsDir)
 		if _, err := docs.Scan(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("documents scan", "err", err)
 		}
+	})
+	scans.Go(func() {
 		logger.Info("scanning", "dir", o.mediaDir)
 		if _, err := lib.Scan(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("media scan", "err", err)
 		}
 	})
-	defer func() { stop(); scans.Wait() }()
-	return serve(ctx, o.addr, mux, logger)
+	return &scans
 }
 
 // The coordinates of the pages' collections: one index, as a single-user

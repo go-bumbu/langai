@@ -74,7 +74,9 @@
   // a page's own sticky panels where it ends
   const header = document.querySelector('header');
   if (header && window.ResizeObserver) {
-    new ResizeObserver(() => document.documentElement.style.setProperty('--header', header.offsetHeight + 'px')).observe(header);
+    // on the next frame: setting it moves the layout the observer watches
+    const measure = () => document.documentElement.style.setProperty('--header', header.offsetHeight + 'px');
+    new ResizeObserver(() => requestAnimationFrame(measure)).observe(header);
   }
 
   const nav = document.getElementById('nav');

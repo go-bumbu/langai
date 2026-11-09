@@ -157,3 +157,33 @@ func TestHandler_InfoShowsTheModelStates(t *testing.T) {
 		t.Errorf("states of a notebook without them: %q %q %q", plain.EmbedderState(), plain.ChatState(), plain.RunsOn())
 	}
 }
+
+// TestNew_WarmLaterLeavesTheWarmUpToTheCaller: a notebook whose notes a
+// fresh cache does not hold opens without embedding anything, and the
+// caller's Warm embeds them.
+func TestNew_WarmLaterLeavesTheWarmUpToTheCaller(t *testing.T) {
+	ctx := context.Background()
+	file := filepath.Join(t.TempDir(), "notebook.json")
+	var loads atomic.Int64
+	seed, _ := lazyNotebook(t, tagging.NewMemCache(), file, &loads, nil)
+	if _, err := seed.AddNote(ctx, "Sourdough", "Baking bread with a sourdough starter"); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls atomic.Int64
+	nb, err := New(ctx, Config{
+		Cache: tagging.NewMemCache(), Tagging: tagging.TaggerConfig{Model: "fake"},
+		Chat: &langaitest.FakeCompleter{}, Embedder: langaitest.FakeEmbedder{Calls: &calls}, File: file,
+		WarmLater: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = nb.Close() })
+	if calls.Load() != 0 {
+		t.Errorf("New embedded %d times with WarmLater", calls.Load())
+	}
+	if st, err := nb.Warm(ctx); err != nil || st.Notes != 1 || calls.Load() == 0 {
+		t.Errorf("Warm = %+v, %v after %d embedder calls", st, err, calls.Load())
+	}
+}

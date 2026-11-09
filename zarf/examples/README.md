@@ -38,8 +38,9 @@ under `data/media`, your own `.md` and `.txt` files anywhere under `data/docs`,
 and click **rescan** on the page, or restart: a file whose bytes are unchanged
 is a no-op, a changed one is re-embedded, a removed one leaves the index.
 
-The service is up at once. The models sit behind the library's lazy loaders
-and the first scans run behind the server, so a restart over unchanged
+The service is up at once. The models sit behind the library's lazy loaders,
+and the first scans and the notebook's warm-up run behind the server: a page
+opened meanwhile shows its scan as it goes, and a restart over unchanged
 directories serves every page within milliseconds and loads no model at all:
 see [Models: what is lazy and why](#models-what-is-lazy-and-why).
 
@@ -289,7 +290,7 @@ both ways `tagging` tags a text:
   notebook's revision and embeds what its cache lacks. Over a full cache that
   is a millisecond and no model call, which is what the cache is for; after a
   switch of embedding models it embeds everything once. The service does the
-  same at startup.
+  same at startup, behind the server.
 - **A tag built without one of its notes** shows *⚠ incomplete* in the tag
   list (`Scope.Incomplete`): the embedder could not take that note's text, so
   the tag is built from its name and its other notes until the notebook next

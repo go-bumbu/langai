@@ -77,8 +77,13 @@ type Config struct {
 	// them out, and the page then shows Info.Accel.
 	EmbedderState func() string
 	RunsOn        func() string
-	Info          Info
-	Logger        *slog.Logger
+	// WarmLater has New skip its warm-up: the caller calls Warm itself, behind
+	// its server say, so that notes the cache does not hold yet (a fresh
+	// cache, another model) do not delay the start by the time it takes to
+	// embed them.
+	WarmLater bool
+	Info      Info
+	Logger    *slog.Logger
 }
 
 // Tag is one of the notebook's tags.
@@ -148,7 +153,8 @@ type PruneResult struct {
 // model, embeds everything again. When the cache holds everything, the
 // embedder is never called, so a lazy one stays unloaded. An embedder that
 // fails does not keep the notebook from opening: the failure is logged and
-// each note shows it until the embedder works.
+// each note shows it until the embedder works. With Config.WarmLater the
+// warm-up is left to the caller's Warm.
 func New(ctx context.Context, cfg Config) (*Notebook, error) {
 	if cfg.Cache == nil || cfg.Chat == nil || cfg.Embedder == nil {
 		return nil, errors.New("autotag: Config needs a Cache, a Chat model and an Embedder")
@@ -179,6 +185,10 @@ func New(ctx context.Context, cfg Config) (*Notebook, error) {
 		return nil, fmt.Errorf("autotag: %w", err)
 	}
 	nb.tagger, nb.scope = tg, tg.Scope(tagging.Space{Index: scopeIndex, Partition: scopePartition})
+	if cfg.WarmLater {
+		nb.logger.Info("notebook loaded", "tags", len(nb.cat.Tags), "notes", len(nb.cat.Notes))
+		return nb, nil
+	}
 
 	start := time.Now()
 	texts := make([]string, len(nb.cat.Notes))

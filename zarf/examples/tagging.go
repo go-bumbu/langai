@@ -51,6 +51,8 @@ func openTagging(ctx context.Context, o options, text *textModel, chat *chatMode
 		ChatState:     func() string { return state(chat) },
 		EmbedderState: func() string { return state(text) },
 		RunsOn:        text.runsOn.String,
+		// the warm-up runs behind the server, with the first scans
+		WarmLater: true,
 		Info: autotag.Info{
 			Embedder:       text.name,
 			Completer:      chat.name,
