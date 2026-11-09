@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -223,6 +224,61 @@ func TestReadOnlyRole(t *testing.T) {
 	}
 	if after := tableNames(t, db); strings.Join(after, ",") != strings.Join(before, ",") {
 		t.Fatalf("reads changed the tables from %v to %v", before, after)
+	}
+}
+
+// TestDeleteAndUpsertDoNotDeadlock: with the plan a bloated table gets, a
+// sequential scan whose row order is not the ids', a Delete naming the
+// documents an Upsert writes still locks their rows in the Upsert's order,
+// so neither fails with "deadlock detected" (the conformance case runs the
+// same load on whatever plan the planner picks).
+func TestDeleteAndUpsertDoNotDeadlock(t *testing.T) {
+	ctx := t.Context()
+	db := newDB(t)
+	if _, err := db.ExecContext(ctx, `DO $$ BEGIN
+		EXECUTE format('ALTER DATABASE %I SET enable_indexscan = off', current_database());
+		EXECUTE format('ALTER DATABASE %I SET enable_bitmapscan = off', current_database());
+		EXECUTE format('ALTER DATABASE %I SET enable_indexonlyscan = off', current_database());
+		END $$`); err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxIdleConns(0) // the settings apply to connections opened from now on
+	s, err := New(ctx, db, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := vector.Coord{Index: "idx", Partition: "p", Collection: "c"}
+	const n = 200
+	docs := make([]vector.Doc, n)
+	reversed := make([]string, n)
+	for i := range docs {
+		docs[i] = vector.Doc{ID: fmt.Sprintf("d%03d", i), Hash: "h", Chunks: []vector.Chunk{{Vector: []float32{1, float32(i) / n, 0, 0}}}}
+		reversed[n-1-i] = docs[i].ID
+	}
+	if err := s.Upsert(ctx, c, "", docs...); err != nil {
+		t.Fatal(err)
+	}
+	const rounds = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, 8*rounds)
+	for range 4 {
+		wg.Go(func() {
+			for range rounds {
+				errs <- s.Upsert(ctx, c, "", docs...)
+			}
+		})
+		wg.Go(func() {
+			for range rounds {
+				errs <- s.Delete(ctx, c, reversed...)
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Upsert and Delete: %v", err)
+		}
 	}
 }
 

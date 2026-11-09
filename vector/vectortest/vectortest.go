@@ -59,6 +59,7 @@ func Run(t *testing.T, newStore func(t *testing.T) vector.Store) {
 		{"TiesAreOrdered", tiesAreOrdered},
 		{"ConcurrentSameDoc", concurrentSameDoc},
 		{"ConcurrentDocs", concurrentDocs},
+		{"ConcurrentDeleteAndUpsert", concurrentDeleteAndUpsert},
 		{"UnknownIndexReads", unknownIndexReads},
 		{"EmptyIndexIsAnError", emptyIndexIsAnError},
 		{"OddIDs", oddIDs},
@@ -779,6 +780,53 @@ func concurrentDocs(t *testing.T, s vector.Store) {
 	list, err := s.Docs(ctx, coord, "", 0)
 	if err != nil || len(list) != writers*10+1 {
 		t.Fatalf("Docs = %d documents, %v; want %d", len(list), err, writers*10+1)
+	}
+}
+
+// concurrentDeleteAndUpsert: writers storing and deleters removing the same
+// documents at once, the deleters naming them in another order, all
+// succeed: neither side deadlocks the other.
+func concurrentDeleteAndUpsert(t *testing.T, s vector.Store) {
+	ctx := context.Background()
+	const n = 200
+	docs := make([]vector.Doc, n)
+	reversed := make([]string, n)
+	for i := range docs {
+		docs[i] = doc(fmt.Sprintf("d%03d", i), near(0, 1, float32(i)/n))
+		reversed[n-1-i] = docs[i].ID
+	}
+	upsert(t, s, coord, "m", docs...)
+	var wg sync.WaitGroup
+	const rounds = 30
+	errs := make(chan error, writers*rounds)
+	for range writers / 2 {
+		wg.Go(func() {
+			for range rounds {
+				errs <- s.Upsert(ctx, coord, "", docs...)
+			}
+		})
+		wg.Go(func() {
+			for range rounds {
+				errs <- s.Delete(ctx, coord, reversed...)
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Upsert and Delete: %v", err)
+		}
+	}
+	// whatever is left is whole: a listed document has its chunk
+	list, err := s.Docs(ctx, coord, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range list {
+		if chunks, err := s.Chunks(ctx, coord, d.ID); err != nil || len(chunks) != 1 {
+			t.Fatalf("document %s is listed with chunks %v, %v", d.ID, chunks, err)
+		}
 	}
 }
 

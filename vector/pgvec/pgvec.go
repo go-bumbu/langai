@@ -86,11 +86,21 @@ var dialect = sqlstore.Dialect{
 		return v.Slice(), nil
 	},
 	MissingTable: func(err error) bool { return sqlState(err) == undefinedTable },
+	LockRows:     `FOR UPDATE`,
+	Retryable: func(err error) bool {
+		code := sqlState(err)
+		return code == deadlockDetected || code == serializationFailure
+	},
 }
 
-// undefinedTable is the SQLSTATE of a statement naming a table that does not
-// exist.
-const undefinedTable = "42P01"
+// The SQLSTATEs the store tells apart: a statement naming a table that does
+// not exist, and the transient failures a write transaction is run again
+// for.
+const (
+	undefinedTable       = "42P01"
+	deadlockDetected     = "40P01"
+	serializationFailure = "40001"
+)
 
 // sqlState returns the SQLSTATE code of a Postgres error, "" for any other.
 // Both pgx (pgconn.PgError) and lib/pq (pq.Error) report it through a

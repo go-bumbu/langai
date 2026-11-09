@@ -82,7 +82,21 @@ type Dialect struct {
 	// does not exist: another Store, in this process or another, dropped the
 	// index after this one found its tables.
 	MissingTable func(err error) bool
+	// LockRows, when not empty, is the clause that makes a SELECT lock the
+	// rows it reads (FOR UPDATE): a delete takes the docs rows' locks with it
+	// first, in id order, the order Upsert takes them, so the two never
+	// deadlock whatever order the delete's plan visits the rows in. A
+	// database that runs one writer at a time (SQLite) needs none.
+	LockRows string
+	// Retryable, when set, reports whether err is a transient failure of a
+	// write transaction (a deadlock, a serialization failure) that is worth
+	// running the transaction again for.
+	Retryable func(err error) bool
 }
+
+// maxAttempts is the most times a write transaction runs while it fails
+// with an error the Dialect calls Retryable.
+const maxAttempts = 3
 
 // Store implements vector.Store on SQL. It is safe for concurrent use as far
 // as its *sql.DB is.
@@ -410,9 +424,20 @@ func (s *Store) Upsert(ctx context.Context, c vector.Coord, model string, docs .
 
 func (s *Store) upsert(ctx context.Context, c vector.Coord, model string, docs []vector.Doc) error {
 	_, err := s.withTables(ctx, c.Index, true, func(t tables) error {
-		return s.writeDocs(ctx, t, c, model, docs)
+		return s.retry(ctx, func() error { return s.writeDocs(ctx, t, c, model, docs) })
 	})
 	return err
+}
+
+// retry runs the write transaction fn, and again, up to maxAttempts runs in
+// all, while it fails with an error the Dialect calls Retryable.
+func (s *Store) retry(ctx context.Context, fn func() error) error {
+	for attempt := 1; ; attempt++ {
+		err := fn()
+		if err == nil || attempt == maxAttempts || s.d.Retryable == nil || !s.d.Retryable(err) || ctx.Err() != nil {
+			return err
+		}
+	}
 }
 
 // writeDocs is Upsert's transaction.
@@ -481,8 +506,10 @@ func (s *Store) claimModel(ctx context.Context, tx *sql.Tx, meta, collection, mo
 	return nil
 }
 
-// Delete implements vector.Store, removing the docs rows first, as Upsert
-// writes them first.
+// Delete implements vector.Store in one transaction (see deleteWhere), which
+// locks the documents in the order Upsert does, so the two never deadlock;
+// a write transaction that fails with a deadlock or serialization error
+// anyway runs again, up to maxAttempts times.
 func (s *Store) Delete(ctx context.Context, c vector.Coord, ids ...string) error {
 	if err := vector.CheckRead(c, ids...); err != nil {
 		return err
@@ -499,20 +526,41 @@ func (s *Store) delete(ctx context.Context, c vector.Coord, ids []string) error 
 		return err
 	}
 	_, err = s.withTables(ctx, c.Index, false, func(t tables) error {
-		tx, err := s.db.BeginTx(ctx, nil)
+		return s.retry(ctx, func() error {
+			return s.deleteWhere(ctx, t, `partition = ? AND collection = ? AND doc_id IN (`+s.d.IDs+`)`, c.Partition, c.Collection, list)
+		})
+	})
+	return err
+}
+
+// deleteWhere deletes the documents of t that cond, a constant clause over
+// its args, picks, in one transaction: the docs rows first, as Upsert
+// writes them first, after taking their locks in id order where the
+// Dialect locks rows (see Dialect.LockRows), then their chunks.
+func (s *Store) deleteWhere(ctx context.Context, t tables, cond string, args ...any) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if s.d.LockRows != "" {
+		rows, err := tx.QueryContext(ctx, s.q(`SELECT doc_id FROM `+t.docs+` WHERE `+cond+` ORDER BY doc_id `+s.d.LockRows), args...)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = tx.Rollback() }()
-		for _, table := range []string{t.docs, t.chunks} {
-			if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM `+table+` WHERE partition = ? AND collection = ? AND doc_id IN (`+s.d.IDs+`)`),
-				c.Partition, c.Collection, list); err != nil {
-				return err
-			}
+		for rows.Next() { // every row read is a row locked
 		}
-		return tx.Commit()
-	})
-	return err
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		_ = rows.Close()
+	}
+	for _, table := range []string{t.docs, t.chunks} {
+		if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM `+table+` WHERE `+cond), args...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // DeleteIndex implements vector.Store by dropping the index's tables, those
@@ -531,13 +579,15 @@ func (s *Store) DeleteIndex(ctx context.Context, index string) error {
 		return s.wrap("delete index", err)
 	}
 	defer s.forget(index)
-	err = s.ddl(ctx, t, func(ex execer) error {
-		for _, table := range []string{t.meta, t.docs, t.chunks, t.legacy} {
-			if _, err := ex.ExecContext(ctx, `DROP TABLE IF EXISTS `+table); err != nil {
-				return err
+	err = s.retry(ctx, func() error {
+		return s.ddl(ctx, t, func(ex execer) error {
+			for _, table := range []string{t.meta, t.docs, t.chunks, t.legacy} {
+				if _, err := ex.ExecContext(ctx, `DROP TABLE IF EXISTS `+table); err != nil {
+					return err
+				}
 			}
-		}
-		return nil
+			return nil
+		})
 	})
 	return s.wrap("delete index", err)
 }
