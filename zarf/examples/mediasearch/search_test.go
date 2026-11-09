@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-bumbu/langai"
 	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/media"
 	"github.com/go-bumbu/langai/search"
 	"github.com/go-bumbu/langai/vector"
 )
@@ -173,7 +173,7 @@ type segmentEmbedder struct {
 
 func (s *segmentEmbedder) Dimensions() int { return s.emb.Dimensions() }
 
-func (s *segmentEmbedder) EmbedVideo(ctx context.Context, path string) ([]media.Segment, error) {
+func (s *segmentEmbedder) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
 	images, ok := s.clips[filepath.Base(path)]
 	if !ok {
 		return nil, errors.New("not a video: " + path)
@@ -182,9 +182,9 @@ func (s *segmentEmbedder) EmbedVideo(ctx context.Context, path string) ([]media.
 	if err != nil {
 		return nil, err
 	}
-	out := make([]media.Segment, len(images))
+	out := make([]langai.Segment, len(images))
 	for i := range images {
-		out[i] = media.Segment{Start: time.Duration(i) * 10 * time.Second, End: time.Duration(i+1) * 10 * time.Second, Vector: vectors[i]}
+		out[i] = langai.Segment{Start: time.Duration(i) * 10 * time.Second, End: time.Duration(i+1) * 10 * time.Second, Vector: vectors[i]}
 	}
 	return out, nil
 }

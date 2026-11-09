@@ -68,8 +68,8 @@ var (
 type MediaIndex struct {
 	embedder langai.ImageEmbedder
 	sampler  media.Sampler
-	video    media.VideoEmbedder // whole segments instead of sampled frames, when set
-	text     langai.Embedder     // text queries, when set
+	video    langai.VideoEmbedder // whole segments instead of sampled frames, when set
+	text     langai.Embedder      // text queries, when set
 	store    vector.Store
 	minScore float64
 	coord    vector.Coord
@@ -97,7 +97,7 @@ func WithSampler(s media.Sampler) MediaOption {
 // must share the image embedder's space (the same model behind both) and
 // its dimensions. An index built this way must not share a collection with
 // one built on frames: the same video gets different vectors.
-func WithVideoEmbedder(v media.VideoEmbedder) MediaOption {
+func WithVideoEmbedder(v langai.VideoEmbedder) MediaOption {
 	return func(ix *MediaIndex) { ix.video = v }
 }
 

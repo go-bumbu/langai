@@ -530,7 +530,7 @@ type segmentEmbedder struct {
 
 func (s *segmentEmbedder) Dimensions() int { return s.emb.Dimensions() }
 
-func (s *segmentEmbedder) EmbedVideo(ctx context.Context, path string) ([]media.Segment, error) {
+func (s *segmentEmbedder) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
 	s.calls++
 	if s.err != nil {
 		return nil, s.err
@@ -543,9 +543,9 @@ func (s *segmentEmbedder) EmbedVideo(ctx context.Context, path string) ([]media.
 	if err != nil {
 		return nil, err
 	}
-	out := make([]media.Segment, len(images))
+	out := make([]langai.Segment, len(images))
 	for i := range images {
-		out[i] = media.Segment{Start: time.Duration(i) * 10 * time.Second, End: time.Duration(i+1) * 10 * time.Second, Vector: vectors[i]}
+		out[i] = langai.Segment{Start: time.Duration(i) * 10 * time.Second, End: time.Duration(i+1) * 10 * time.Second, Vector: vectors[i]}
 	}
 	return out, nil
 }
@@ -670,14 +670,14 @@ func TestMediaIndex_VideoEmbedderErrors(t *testing.T) {
 type dims struct{ n int }
 
 func (d dims) Dimensions() int { return d.n }
-func (dims) EmbedVideo(context.Context, string) ([]media.Segment, error) {
+func (dims) EmbedVideo(context.Context, string) ([]langai.Segment, error) {
 	return nil, errors.New("unexpected call")
 }
 
 // wrongWidth claims the right width but answers short vectors.
 type wrongWidth struct{ *segmentEmbedder }
 
-func (w wrongWidth) EmbedVideo(ctx context.Context, path string) ([]media.Segment, error) {
+func (w wrongWidth) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
 	segs, err := w.segmentEmbedder.EmbedVideo(ctx, path)
 	for i := range segs {
 		segs[i].Vector = segs[i].Vector[:2]

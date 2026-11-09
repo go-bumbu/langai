@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"time"
 )
 
 // Role tells an Embedder what a text is for. Asymmetric models are trained
@@ -64,6 +65,26 @@ type Embedder interface {
 // The method is not called Embed so that one type can implement both ports.
 type ImageEmbedder interface {
 	EmbedImages(ctx context.Context, images []image.Image) ([][]float32, error)
+	Dimensions() int
+}
+
+// Segment is one stretch of a video embedded as a whole: where it starts
+// and ends, from the start of the video, and its vector.
+type Segment struct {
+	Start, End time.Duration
+	Vector     []float32
+}
+
+// VideoEmbedder embeds a video with a model that takes video, as one vector
+// per segment of the file, in time order. The implementation decides the
+// segment length (a model reads so many frames at a time) and the frame
+// rate it samples at. The vectors are Dimensions() long and share the
+// space of the images and texts the same model embeds, so that an image or
+// a text query finds a segment. A video is a file path rather than a reader
+// because the common containers need seeking. A file that cannot be read or
+// holds no video is an error, not an empty result.
+type VideoEmbedder interface {
+	EmbedVideo(ctx context.Context, path string) ([]Segment, error)
 	Dimensions() int
 }
 

@@ -17,7 +17,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/media"
 )
 
 // Handles the vision fake hands out.
@@ -635,7 +634,7 @@ func TestVision_EmbedVideoShortAndCapped(t *testing.T) {
 	cutter := &fakeCutter{durations: map[string]time.Duration{"long.mp4": 45 * time.Second, "short.mp4": 12 * time.Second, "exact.mp4": 20 * time.Second}}
 	v := openVisionFake(t, f, VisionConfig{Cutter: cutter})
 	ctx := context.Background()
-	var segs []media.Segment
+	var segs []langai.Segment
 	var err error
 	for _, name := range []string{"short.mp4", "exact.mp4"} {
 		segs, err = v.EmbedVideo(ctx, "/media/"+name)

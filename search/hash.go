@@ -10,7 +10,7 @@ import (
 )
 
 // Fingerprinter is the optional interface of a Chunker, a media.Sampler or
-// a media.VideoEmbedder whose output depends on its settings: Fingerprint
+// a langai.VideoEmbedder whose output depends on its settings: Fingerprint
 // describes them, the same string for the same output and another one
 // whenever a change of setting (or of algorithm) would change the chunks,
 // frames or segments. The indexes fold it into the hash they store with

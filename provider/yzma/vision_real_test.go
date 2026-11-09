@@ -20,7 +20,6 @@ import (
 	xdraw "golang.org/x/image/draw"
 
 	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/media"
 	"github.com/go-bumbu/langai/media/ffmpeg"
 )
 
@@ -363,7 +362,7 @@ func checkVideoSegments(t *testing.T, ctx context.Context, v *Vision, vecs [][]f
 // finalized) and without an extension in its name: ffprobe reports no
 // duration, and it must still come back as the same two segments, not as
 // one input.
-func checkVideoWithoutLength(t *testing.T, ctx context.Context, v *Vision, clip string, segments []media.Segment) {
+func checkVideoWithoutLength(t *testing.T, ctx context.Context, v *Vision, clip string, segments []langai.Segment) {
 	t.Helper()
 	stream := filepath.Join(t.TempDir(), "recording")
 	out, err := os.Create(stream)

@@ -319,7 +319,7 @@ const maxTruncations = 8
 // an instruction and the input, the projector turns pictures and frames
 // into tokens, and the vector is the last token's hidden state, unit
 // length. It is a langai.Embedder, a langai.ImageEmbedder and a
-// media.VideoEmbedder; search.MediaIndex takes it as all three.
+// langai.VideoEmbedder; search.MediaIndex takes it as all three.
 type Vision struct {
 	// a llama.cpp context is not safe for concurrent use, so calls are
 	// serialized
@@ -348,7 +348,7 @@ type Vision struct {
 var (
 	_ langai.Embedder      = (*Vision)(nil)
 	_ langai.ImageEmbedder = (*Vision)(nil)
-	_ media.VideoEmbedder  = (*Vision)(nil)
+	_ langai.VideoEmbedder = (*Vision)(nil)
 )
 
 // openVision loads the libraries (once, through rt), the model and the
@@ -455,7 +455,7 @@ func (v *Vision) release() {
 }
 
 // Dimensions implements langai.Embedder, langai.ImageEmbedder and
-// media.VideoEmbedder.
+// langai.VideoEmbedder.
 func (v *Vision) Dimensions() int { return v.dims }
 
 // Accel says what runs the model, as the load log line does: "cpu" or the
@@ -546,7 +546,7 @@ func (v *Vision) EmbedImages(ctx context.Context, images []image.Image) ([][]flo
 	return out, nil
 }
 
-// EmbedVideo implements media.VideoEmbedder: the video is cut into segments
+// EmbedVideo implements langai.VideoEmbedder: the video is cut into segments
 // of SegmentLength (the Cutter does it, by stream copy), each sampled at
 // FPS and embedded as one input under the instruction. A video no longer
 // than a segment is one input, uncut.
@@ -558,7 +558,7 @@ func (v *Vision) EmbedImages(ctx context.Context, images []image.Image) ([][]flo
 // next to the segments in the temp directory. The copy is then cut like
 // any other video. A file that has no length even as a copy (a raw
 // elementary stream) is embedded as its first segment only.
-func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]media.Segment, error) {
+func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]langai.Segment, error) {
 	if v.cutter == nil {
 		return nil, errors.New("yzma: no Cutter: set VisionConfig.Cutter (media/ffmpeg) to embed videos")
 	}
@@ -571,7 +571,7 @@ func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]media.Segment, 
 		if err != nil {
 			return nil, err
 		}
-		return []media.Segment{{Start: 0, End: duration, Vector: vec}}, nil
+		return []langai.Segment{{Start: 0, End: duration, Vector: vec}}, nil
 	}
 	dir, err := os.MkdirTemp("", "langai-vision-*")
 	if err != nil {
@@ -616,7 +616,7 @@ const fallbackVideoExt = ".mkv"
 
 // embedSegments cuts the video of the given length into segments, into dir,
 // and embeds each; MaxSegments caps how many.
-func (v *Vision) embedSegments(ctx context.Context, path string, duration time.Duration, dir string) ([]media.Segment, error) {
+func (v *Vision) embedSegments(ctx context.Context, path string, duration time.Duration, dir string) ([]langai.Segment, error) {
 	n := int((duration + v.segment - 1) / v.segment)
 	if v.maxSegments > 0 {
 		n = min(n, v.maxSegments)
@@ -625,7 +625,7 @@ func (v *Vision) embedSegments(ctx context.Context, path string, duration time.D
 	if ext == "" {
 		ext = fallbackVideoExt
 	}
-	out := make([]media.Segment, 0, n)
+	out := make([]langai.Segment, 0, n)
 	for i := range n {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -640,7 +640,7 @@ func (v *Vision) embedSegments(ctx context.Context, path string, duration time.D
 		if err != nil {
 			return nil, fmt.Errorf("yzma: segment %d: %w", i, err)
 		}
-		out = append(out, media.Segment{Start: start, End: end, Vector: vec})
+		out = append(out, langai.Segment{Start: start, End: end, Vector: vec})
 	}
 	return out, nil
 }
