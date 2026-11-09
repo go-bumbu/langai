@@ -1074,6 +1074,40 @@ to see the items that look like it with their scores, the frame of a video that
 matched and when, the frames the index saw of a video, and how long the search
 took; or search with a file of your own. See [zarf/examples/README.md](zarf/examples/README.md).
 
+## Upgrading from v0.1.1: what changes for stored data
+
+Everything the library stores is derived from your own documents, so an upgrade costs
+indexing time, never data.
+
+- **Search tables of v0.1.1 are refused.** The SQL stores have a new table layout, and
+  every read and write of an index written before it fails with an error that says so
+  (`vector: index "…" has sqlite tables of the schema before this version: …`). Drop
+  the index with `Store.DeleteIndex`, or open the store `WithGeneration` for a table set
+  of its own, and index again. That is all a v0.1.1 search index needs; the next three
+  points are for one written, with the new tables, by a version in between.
+- **A collection records its model, and a model's name says more.** `Model()` of the
+  `provider/yzma` and `provider/onnx` embedders is the identity of their vectors: the
+  name followed by the settings that decide a vector
+  (`google/embeddinggemma-300m;pooling=mean;prefixes=…;max_tokens=512`; for `Vision` the
+  context size too, for ONNX the picture preparation). A collection that holds vectors
+  under another string answers `vector.ErrModelMismatch` until it is emptied
+  (`Index.Reset`, `MediaIndex.Reset`).
+- **A stored hash covers what shapes the vectors, not only the content:** the chunker's
+  settings (`markdown/2 max=1200`), the `Sampler`'s (`ffmpeg/2 …`) or the video model's
+  segmenting (`yzma-vision/2 …`), the model and its dimensions. A hash stored without
+  them matches none of today's, so each document and video is embedded once more the
+  next time it is indexed, and after that only when one of these changes.
+- **Pictures are embedded once more** as well: a JPEG is now turned upright by its EXIF
+  orientation first, and every image's hash says so (`image/2`).
+- **The Tagger's cache keeps its table**, and its entries stay good under the
+  `TaggerConfig.Model` they were written with. The samples now pass `emb.Model()`, the
+  identity above, where they passed `yzma.DefaultModel`: to the cache that is another
+  model, so a Tagger changed to it embeds what it needs again, as it goes, and
+  `Tagger.Prune` later drops the old rows.
+- **Videos through `yzma.Vision`** are cut by the video stream's length and capped:
+  `MaxSegments` 0 used to mean every segment and now means 720 (`DefaultMaxSegments`), so
+  set it for videos of more than four hours.
+
 ## Development
 
 ```
