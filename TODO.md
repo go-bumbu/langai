@@ -100,7 +100,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
   for whole-clip matching; their Go runtime was not checked. For exact
   near-duplicates DINOv2 or a perceptual hash fits better than SigLIP.
   Not for a commercial app: VideoMAE v2 (CC-BY-NC-4.0).
-- [ ] honour EXIF orientation when embedding JPEGs
+- [x] honour EXIF orientation when embedding JPEGs
   Go's image/jpeg ignores the orientation tag, so a phone photo stored
   rotated is embedded rotated and matches its upright video frames less. A
   small APP1/TIFF parser for tag 0x0112 plus a rotate before embedding, in
@@ -215,7 +215,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
 
 - [ ] model identity so vector spaces cannot mix
   No port reports which model made a vector and the stores record only dims, so two 768-d models (SigLIP 2, EmbeddingGemma) can share a collection and return garbage with no error; TaggerConfig.Model is typed by hand. Add an optional langai.Identified{Model() string}, implement it in the providers and LazyEmbedder, keep a (model, dims) meta row per index in the stores and fail with vector.ErrModelMismatch.
-- [ ] content hash covers the chunker and the model
+- [x] content hash covers the chunker and the model
   search.ContentHash(text) covers only the text, so a changed MaxChars, Chunker or embedder leaves stale chunks in place forever. Hash text + chunker fingerprint + model id.
 - [x] reshape the vector.Store port
   Methods take 4-6 positional strings, Search only wraps SearchScope, and listing doc ids, Count, deleting a whole index, dropping an old generation, batch upsert and a doc-id filter are missing. Introduce a Coord{Index, Partition, Collection}, batch Upsert/Delete, Docs, DeleteIndex, one Search with a scope filter, DropGeneration on the stores.
@@ -225,13 +225,13 @@ and `todo list --json` cover the common actions — run `todo --help`.
   ensure() runs CREATE TABLE from Delete/ContentHash/Chunks/Search in both SQL stores, so a search for an unknown index creates a table set and a read-only Postgres role fails on a lookup. Only Upsert creates the schema; reads return empty when the tables are absent.
 - [ ] sentinel errors for errors.Is
   Closed-embedder, dimension-mismatch and empty-id errors are plain strings. Add langai.ErrClosed, vector.ErrDimensions, search.ErrEmptyID and wrap with %w.
-- [ ] search API symmetry
+- [x] search API symmetry
   Index.Search returns the store's vector.Match (leaks Partition/Collection) while MediaIndex returns MediaMatch; Index has no SearchIndexed and MediaIndex.SearchIndexed returns the query item itself. Add search.Match, Index.SearchIndexed, and leave the query doc out of both.
-- [ ] batch indexing
+- [x] batch indexing
   Index.Index does one hash read, one Embed and one transaction per document. Add Index.IndexBatch that reads hashes once, embeds changed chunks in one batch and upserts in one call (needs the reshaped Store).
 - [ ] ports in the right packages
   vector.Normalize is imported by the providers although vector is the store port, and VideoEmbedder/Segment live in media while the other embedder ports are in the root. Move Normalize, VideoEmbedder and Segment to the root package.
-- [ ] LazyEmbedder lifecycle
+- [x] LazyEmbedder lifecycle
   No Close (the loaded model can never be released), load takes no ctx, and there is no lazy form of ImageEmbedder, Vision or Completer. load becomes func(ctx), add Close, add LazyImageEmbedder and LazyCompleter over one loader.
 - [ ] dedupe provider fetch code
   ensureModelFile, fetchFile and the staged library install are copied between provider/yzma/fetch.go and provider/onnx/fetch.go; yzma.Download is exported only for zarf/eval. Move the shared steps to internal/fetch.
@@ -254,26 +254,32 @@ and `todo list --json` cover the common actions — run `todo --help`.
   The transaction starts with a SELECT and upgrades to a write, so 8 concurrent upserts fail 60-95% of calls even with _busy_timeout. Make the first statement a write, document the DSN, add a concurrent-upsert test.
 - [x] concurrent pgvec Upsert of one doc leaves duplicate chunk sets
   Under READ COMMITTED both transactions delete then insert and only serialize at the final docs upsert. Upsert the docs row first so its row lock serializes same-doc writers.
-- [ ] LazyEmbedder ignores ctx during load and panics on a nil embedder
+- [x] LazyEmbedder ignores ctx during load and panics on a nil embedder
   Embed blocks in once.Do past its deadline during a multi-GB load; load returning (nil, nil) or panicking leaves a nil inner that every later Embed dereferences.
 - [x] sqlite caps k at 4096
   Index.Search with limit above 1024 errors on sqlitevec only. Clamp or page inside the store.
 - [x] dimension change accepted at New, fails later with a raw driver error
   New(ctx, db, 16) over an 8-dim store succeeds and every write and search then fails. Compare the existing dims in ensure and return an error naming WithGeneration.
-- [ ] ffmpeg: path with a colon read as a protocol, out starting with - read as an option
+- [x] ffmpeg: path with a colon read as a protocol, out starting with - read as an option
   Sample(ctx, "clip:final.mkv") fails with Protocol not found. Pass file: URLs for inputs and outputs.
-- [ ] ffmpeg Sample buffers every raw frame in one buffer
+- [x] ffmpeg Sample buffers every raw frame in one buffer
   Up to 67 MB by default and about 2 GB for unscaled 4K, and each frame aliases the shared buffer. Read frame by frame from the pipe with per-frame allocations.
-- [ ] video with zero frames is stored as indexed and never retried
+- [x] video with zero frames is stored as indexed and never retried
   An empty sampler or EmbedVideo result stores the hash with no chunks, so later IndexVideo calls are no-ops. Error on zero frames or segments.
-- [ ] IndexImage reads the whole reader unbounded
+- [x] IndexImage reads the whole reader unbounded
   io.ReadAll runs before the pixel guard. Limit the reader.
-- [ ] chunker misses paragraph breaks on CRLF and whitespace-only blank lines
+- [x] chunker misses paragraph breaks on CRLF and whitespace-only blank lines
   CRLF text is one paragraph and falls to splitWords, which flattens code and lists; the heading prefix is not counted toward MaxChars.
-- [ ] NUL or invalid UTF-8 indexes on sqlite and fails on Postgres
+- [x] NUL or invalid UTF-8 indexes on sqlite and fails on Postgres
   Sanitize before chunking.
 - [x] MemStore differs from the SQL stores
   Scores 0 on a dimension mismatch instead of an error, accepts an empty index, aliases the caller's vectors and orders ties randomly. Covered by the conformance suite: ties by score, then doc id, then seq.
+- [ ] ffmpeg sampler has no Fingerprint
+  media/ffmpeg's sampler does not implement search.Fingerprinter, so changing its config does not re-index videos.
+- [ ] ffmpeg: restrict protocols
+  Consider -protocol_whitelist file,pipe so a crafted playlist cannot make ffmpeg fetch URLs. Cut can leave a partial out file on failure.
+- [ ] SearchIndexed costs one store search per stored chunk
+  Fine for short documents; a very long document or a 64-frame video runs many searches.
 
 ## tagging and eval
 
@@ -359,3 +365,19 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Commits 6abd7c5 cfb3d4b. cachetest.Run now passes an injected clock and checks the last-used refresh, duplicate keys and the prune boundary (NewMemCacheWithClock). sqlcache refuses NUL or invalid UTF-8 in index and model names on both databases and creates its schema under a Postgres advisory lock. A failed last-used write no longer fails Get (ErrCacheWrite is logged) and a failed Put no longer discards fresh vectors.
 - [x] tagging: Generator reply parsing, tree paths and partial results
   Commits 9fe889a ab8c4ae. parseTags strips think blocks and code fences, reads JSON arrays and {tags: [...]}, cuts labels, emphasis and trailing parentheticals and drops names with unbalanced markup (so a flat tag like dev > go is now dropped). cleanPath maps a reused tree path back to the application's spelling before the word limits. A failed or empty model call is retried once; a long Generate returns the tags of the windows it read together with ErrPartial, and an empty reply is ErrEmptyReply. make test-gentags was not re-run for the parser change.
+- [x] search: own Match type, SearchIndexed, IndexBatch, Docs, multi-id Delete (breaking)
+  Commits fce5689 1ef2fac 6b9da6e 2949b40. Index.Search returns search.Match{DocID, Score, Seq, Text} instead of vector.Match. New Index.SearchIndexed (more like this from stored vectors); both SearchIndexed methods now leave the query document out and return ErrNotIndexed for an unknown id. Index.IndexBatch(ctx, []Doc) reads all hashes once, embeds at most 32 texts per call and returns BatchResult{Indexed, Unchanged, Failed}; a document that fails on its own goes to Failed, an embedder or store error stops the call and a second call resumes. Index.Docs / MediaIndex.Docs iterate the indexed ids and hashes for reconciliation; Delete takes several ids. New sentinels ErrEmptyID, ErrNotIndexed, ErrTooLarge, ErrNoFrames; every error carries the search: prefix.
+- [x] search: stored hashes cover chunker, sampler and model (breaking)
+  Commit 6936987. The stored hash now folds in the chunker's Fingerprint (MarkdownChunker reports its MaxChars; another chunker is described by its Go type), the model id and dimensions, and for media the sampler's or video embedder's Fingerprint when it has one. search.ContentHash is gone. Every collection re-indexes once after this lands.
+- [x] search: input hardening and chunker fixes
+  Commits 0ebf453 05885a3. IndexImage and SearchImage read at most 64 MiB (WithMaxImageBytes, ErrTooLarge); a video with no frames or segments returns ErrNoFrames and stores nothing; text is cleaned of NUL and invalid UTF-8 before chunking and hashing so SQLite and Postgres agree; a query that embeds to the zero vector returns no results. The chunker reads CRLF, splits on whitespace-only blank lines, counts the heading prefix toward MaxChars (capped at a quarter of it) and splits an over-long paragraph between lines before words, so code blocks keep their shape.
+- [x] search: JPEGs are turned upright by EXIF orientation
+  Commit 0c440fe. A small bounds-checked APP1/TIFF parser in search/exif.go applies all 8 orientations after decoding; malformed EXIF means no orientation. Includes a fuzz target. Images re-embed once (their hash settings carry a version bump).
+- [x] lazy loaders: LazyEmbedder rebuilt, LazyImageEmbedder and LazyCompleter added (breaking)
+  Commit cb49c5f. NewLazyEmbedder(model, dims, load func(ctx)) runs the load once on its own goroutine under a context only Close cancels; a caller's ctx bounds only its wait. A panic (LoadPanicError) or nil result is an error, a failed load stays cached (as before), Close releases waiters and closes the loaded value, State() reports LazyNotStarted/Loading/Loaded/Failed/Closed, and Model() makes it langai.Identified; a loaded model with another id or dimension fails the load.
+- [x] langaitest.FakeCompleter
+  Commit f58839a. A scripted chat model (Replies in sequence or a Reply func, injectable Err) that records its calls; the autotag example's test uses it.
+- [x] media/ffmpeg: any local path, streamed frames, reliable process cleanup
+  Commit 5b09557. Inputs and outputs are passed as file: URLs, so paths with a colon, a leading dash or a percent sign work. Frames are read one at a time from the pipe (PAM) into buffers of their own instead of one shared buffer of up to gigabytes; ffmpeg is killed and reaped on cancel, read error and at MaxFrames (WaitDelay 2 s); zero frames is an error. Not tested: an ffprobe older than 8 rejecting -pattern_type.
+- [x] internal/tablename: unused ForPrefix removed
+  Commit e8e2809.
