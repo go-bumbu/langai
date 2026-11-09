@@ -24,11 +24,11 @@ var (
 // what remains here are thin calls that need the native libraries to run.
 type ffiAPI struct{}
 
-func (ffiAPI) load(dir string, logger *slog.Logger) error {
+func (ffiAPI) load(dir string) error {
 	if err := llama.Load(dir); err != nil {
 		return fmt.Errorf("load llama.cpp libraries from %s: %w (they need libgomp1 and libstdc++6 installed; libffi8 is required by the Go bindings)", dir, err)
 	}
-	llamaLogCallback = logCallback(logger)
+	llamaLogCallback = logCallback()
 	llama.LogSet(llamaLogCallback)
 	if err := llama.Init(); err != nil {
 		return fmt.Errorf("init llama.cpp backends from %s: %w", dir, err)
@@ -246,30 +246,39 @@ func expectedWarning(msg string) bool {
 	return strings.Contains(msg, "embeddings required but some input tokens were not marked as outputs")
 }
 
-// logCallback forwards llama.cpp warnings and errors to logger. Everything
-// else (progress, model metadata dumps) is dropped: llama.cpp is chatty, and
-// the lines an operator needs are the ones explaining a failed load, which
-// the bindings' own "failed to load model" error does not carry.
-func logCallback(logger *slog.Logger) uintptr {
-	if logger == nil {
-		return llama.LogSilent()
-	}
+// logCallback is the one log callback the libraries get for the life of the
+// process. It hands every line to forwardLog, which looks up where lines go
+// at that moment (llamaLog), so the destination can change after the
+// libraries loaded; while there is none the line is not even copied.
+func logCallback() uintptr {
 	return purego.NewCallback(func(level int32, text *byte, _ uintptr) uintptr {
-		if text == nil {
-			return 0
-		}
-		msg := strings.TrimSpace(utils.BytePtrToString(text))
-		if msg == "" || expectedWarning(msg) {
-			return 0
-		}
-		switch llama.LogLevel(level) {
-		case llama.LogLevelWarn:
-			logger.Warn(msg, slog.String("component", "llama.cpp"))
-		case llama.LogLevelError:
-			logger.Error(msg, slog.String("component", "llama.cpp"))
+		if text != nil && llamaLog.Load() != nil {
+			forwardLog(level, utils.BytePtrToString(text))
 		}
 		return 0
 	})
+}
+
+// forwardLog forwards a llama.cpp warning or error to the logger llamaLog
+// points at. Everything else (progress, model metadata dumps) is dropped:
+// llama.cpp is chatty, and the lines an operator needs are the ones
+// explaining a failed load, which the bindings' own "failed to load model"
+// error does not carry.
+func forwardLog(level int32, text string) {
+	logger := llamaLog.Load()
+	if logger == nil {
+		return
+	}
+	msg := strings.TrimSpace(text)
+	if msg == "" || expectedWarning(msg) {
+		return
+	}
+	switch llama.LogLevel(level) {
+	case llama.LogLevelWarn:
+		logger.Warn(msg, slog.String("component", "llama.cpp"))
+	case llama.LogLevelError:
+		logger.Error(msg, slog.String("component", "llama.cpp"))
+	}
 }
 
 // defaultThreads keeps an embedder working in the background (a tagger, say)

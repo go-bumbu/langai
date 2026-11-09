@@ -126,7 +126,10 @@ type Config struct {
 	// Logger receives this package's progress at Info (each first-use
 	// download before it starts, the installed libraries and the downloaded
 	// model, the llama.cpp load) and llama.cpp's own warnings and errors; nil
-	// discards all of them.
+	// discards this package's lines. llama.cpp has one log sink for the whole
+	// process, so its lines go to the Logger of the latest New, NewCompleter
+	// or NewVision that set one, whichever model they are about: a nil Logger
+	// leaves them where an earlier open pointed them.
 	Logger *slog.Logger
 }
 
@@ -281,9 +284,9 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	}
 	ctx, cancel := fetch.WithDefaultTimeout(ctx, downloadTimeout)
 	defer cancel()
-	// This package logs to logger. rt.Logger itself goes to llama.cpp as
-	// given, so a nil one keeps llama.cpp's lines silenced on the C side
-	// instead of routing each through a Go callback only to discard it.
+	// This package logs to logger, which discards when rt.Logger is nil.
+	// rt.Logger itself is what llama.cpp's lines are pointed at, and only
+	// when it is set (see llamaLog).
 	libDir, logger, err := rt.prepare(ctx, api, libs)
 	if err != nil {
 		return nil, err

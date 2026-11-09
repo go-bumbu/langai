@@ -115,7 +115,7 @@ var _ chatAPI = (*fakeChat)(nil)
 
 func newFakeChat() *fakeChat { return &fakeChat{trainCtx: 4096, mem: fakeMem} }
 
-func (f *fakeChat) load(dir string, _ *slog.Logger) error {
+func (f *fakeChat) load(dir string) error {
 	f.record("load", dir)
 	return f.loadErr
 }

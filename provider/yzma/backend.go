@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // runtimeAPI is what loading llama.cpp takes. The embedder (llamaAPI) and the
@@ -14,8 +15,8 @@ import (
 // the process whichever opens first.
 type runtimeAPI interface {
 	// load loads the shared libraries from dir, routes llama.cpp's log lines
-	// to logger and initializes the backends.
-	load(dir string, logger *slog.Logger) error
+	// to wherever llamaLog points and initializes the backends.
+	load(dir string) error
 	// version is the version string the loaded libraries report.
 	version() string
 	// devices lists the ggml devices the loaded backends registered, in
@@ -73,9 +74,23 @@ type runtimeLoader struct {
 	devices []device // what the loaded backends registered, read once after load
 }
 
+// llamaLog is where the lines llama.cpp and libmtmd log go. The libraries
+// have one log callback for the whole process, installed when they load; it
+// reads this pointer for every line, so the destination is not fixed by
+// whoever opened first: each open that brings a logger points the lines at
+// it. While it is nil they are dropped.
+var llamaLog atomic.Pointer[slog.Logger]
+
 // load loads the libraries in libDir through api on first call and checks
 // they are the pinned build. Later calls succeed only for the same directory.
+// A logger that is not nil becomes where llama.cpp's own lines go from here
+// on (see llamaLog); nil leaves that as it is.
 func (r *runtimeLoader) load(api runtimeAPI, libDir string, logger *slog.Logger) error {
+	if logger != nil {
+		// before the load: the lines that explain a failed one are the ones
+		// an operator needs
+		llamaLog.Store(logger)
+	}
 	r.once.Do(func() {
 		// On an assertion failure ggml forks gdb/lldb to print a backtrace
 		// before aborting; in a multithreaded server that can hang instead
@@ -83,7 +98,7 @@ func (r *runtimeLoader) load(api runtimeAPI, libDir string, logger *slog.Logger)
 		if os.Getenv("GGML_NO_BACKTRACE") == "" {
 			_ = os.Setenv("GGML_NO_BACKTRACE", "1")
 		}
-		err := api.load(libDir, logger)
+		err := api.load(libDir)
 		var v string
 		var devs []device
 		if err == nil {

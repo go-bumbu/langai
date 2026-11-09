@@ -110,7 +110,7 @@ func (f *fakeAPI) only(t *testing.T, name string) []any {
 	return nil
 }
 
-func (f *fakeAPI) load(dir string, _ *slog.Logger) error {
+func (f *fakeAPI) load(dir string) error {
 	f.record("load", dir)
 	f.backtraceAtLoad = os.Getenv("GGML_NO_BACKTRACE")
 	return f.loadErr

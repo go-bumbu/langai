@@ -57,7 +57,7 @@ func newFakeVision() *fakeVision {
 	return &fakeVision{trainCtx: 32768, tokensPerImage: 300, buf: []float32{3, 4, 0, 0}}
 }
 
-func (f *fakeVision) load(dir string, _ *slog.Logger) error {
+func (f *fakeVision) load(dir string) error {
 	f.record("load", dir)
 	return f.loadErr
 }

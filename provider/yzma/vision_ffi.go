@@ -25,7 +25,8 @@ func loadMTMD() error {
 			return
 		}
 		// libmtmd narrates every picture it encodes; route it like llama.cpp's
-		// own lines, to the logger load installed (warnings and errors only)
+		// own lines, through the same callback (warnings and errors only, to
+		// wherever llamaLog points)
 		mtmd.LogSet(llamaLogCallback)
 	})
 	return mtmdLoader.err
