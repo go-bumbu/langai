@@ -1,6 +1,7 @@
 package search
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -88,6 +89,12 @@ func (c *MarkdownChunker) Chunk(text string) []string {
 		}
 	}
 	return out
+}
+
+// Fingerprint implements Fingerprinter: the algorithm's version and the
+// effective MaxChars, so the zero value and the default spelled out agree.
+func (c *MarkdownChunker) Fingerprint() string {
+	return fmt.Sprintf("markdown/1 max=%d", c.maxChars())
 }
 
 // maxChars is MaxChars or its default.

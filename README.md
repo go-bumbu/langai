@@ -190,6 +190,15 @@ that embeds to the zero vector), by id; such a failure does not stop the others.
 embedder or store error does: it is returned, `Indexed` is exactly what was stored before
 it, and the same call again picks up where it stopped.
 
+"Unchanged" means the hash stored with the document matches, and that hash covers
+everything that shapes its vectors: the text, the chunker's settings and the embedding
+model (its name, when it implements `langai.Identified`, and its dimensions). A chunker
+describes its settings through the optional `search.Fingerprinter`; `MarkdownChunker`
+does (`markdown/1 max=1200`), and one without it is described by its Go type name, so
+swapping chunkers re-indexes and changing a custom one's settings does not. The
+`MediaIndex` hashes cover the model in the same way, and a video's also the `Sampler`'s or
+the `VideoEmbedder`'s `Fingerprint`, when it has one.
+
 `MarkdownChunker`, the default (`WithChunker` replaces it), cuts a document at its
 headings and packs its paragraphs into chunks of at most `MaxChars` bytes (1200), each
 prefixed with its heading path ("Title › Section"), which counts towards that size and is

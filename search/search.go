@@ -11,8 +11,6 @@ package search
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -40,12 +38,15 @@ type Index struct {
 	minScore float64
 	coord    vector.Coord
 	model    string // the embedder's, when it names it
+	settings string // what shapes the vectors besides the text, for hash
 }
 
 // Option customizes an Index.
 type Option func(*Index)
 
-// WithChunker replaces the default markdown-aware chunker.
+// WithChunker replaces the default markdown-aware chunker. A chunker with
+// settings should implement Fingerprinter, so that changing them indexes
+// every document again.
 func WithChunker(c Chunker) Option {
 	return func(ix *Index) { ix.chunker = c }
 }
@@ -85,7 +86,18 @@ func New(embedder langai.Embedder, store vector.Store, index, partition, collect
 	for _, opt := range opts {
 		opt(ix)
 	}
+	if ix.chunker == nil {
+		return nil, errors.New("search: nil chunker")
+	}
+	ix.settings = settings("text", fingerprintOf(ix.chunker), ix.model, embedder.Dimensions())
 	return ix, nil
+}
+
+// hash is the hash Index stores with a document of text: it changes with
+// the text, the chunker's settings and the model, so that a change of any
+// of them indexes the document again.
+func (ix *Index) hash(text string) string {
+	return stamp(ix.settings, []byte(text))
 }
 
 // Index chunks, embeds and stores one document, replacing whatever was
@@ -174,18 +186,4 @@ func (ix *Index) rank(ctx context.Context, q vector.Query, vectors [][]float32) 
 		out[i] = Match{DocID: h.match.DocID, Score: h.match.Score, Seq: h.match.Seq, Text: h.match.Text}
 	}
 	return out, nil
-}
-
-// modelOf returns the model e names, "" when it names none.
-func modelOf(e any) string {
-	if id, ok := e.(langai.Identified); ok {
-		return id.Model()
-	}
-	return ""
-}
-
-// ContentHash is the fingerprint used to detect unchanged documents.
-func ContentHash(text string) string {
-	sum := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(sum[:])
 }

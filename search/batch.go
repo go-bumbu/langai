@@ -74,7 +74,7 @@ func (ix *Index) IndexBatch(ctx context.Context, docs []Doc) (BatchResult, error
 	var group []pendingDoc
 	size := 0
 	for _, d := range docs {
-		hash := ContentHash(d.Text)
+		hash := ix.hash(d.Text)
 		if h, ok := stored[d.ID]; ok && h == hash {
 			res.Unchanged = append(res.Unchanged, d.ID)
 			continue

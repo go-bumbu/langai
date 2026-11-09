@@ -57,6 +57,9 @@ type MediaIndex struct {
 	minScore float64
 	coord    vector.Coord
 	model    string // the image embedder's, when it names it
+
+	// what shapes the vectors besides the content, per route, for stamp
+	imageSettings, videoSettings, framesSettings string
 }
 
 // MediaOption customizes a MediaIndex.
@@ -122,6 +125,15 @@ func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, par
 	if ix.text != nil && ix.text.Dimensions() != embedder.Dimensions() {
 		return nil, fmt.Errorf("search: the text embedder's vectors have %d dimensions, the image embedder's %d: they must be one model", ix.text.Dimensions(), embedder.Dimensions())
 	}
+	dims := embedder.Dimensions()
+	ix.imageSettings = settings("image", ix.model, dims)
+	ix.framesSettings = settings("frames", ix.model, dims)
+	switch {
+	case ix.video != nil:
+		ix.videoSettings = settings("segments", ix.model, modelOf(ix.video), fingerprintOf(ix.video), dims)
+	case ix.sampler != nil:
+		ix.videoSettings = settings("sampled", ix.model, fingerprintOf(ix.sampler), dims)
+	}
 	return ix, nil
 }
 
@@ -148,7 +160,7 @@ func (ix *MediaIndex) IndexImage(ctx context.Context, docID string, r io.Reader)
 	if err != nil {
 		return fmt.Errorf("search: read image %q: %w", docID, err)
 	}
-	hash := bytesHash(data)
+	hash := stamp(ix.imageSettings, data)
 	if same, err := ix.unchanged(ctx, docID, hash); err != nil || same {
 		return err
 	}
@@ -172,10 +184,11 @@ func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error 
 	if ix.sampler == nil && ix.video == nil {
 		return errors.New("search: no sampler: pass WithSampler or WithVideoEmbedder to NewMediaIndex to index videos")
 	}
-	hash, err := fileHash(path)
+	sum, err := fileHash(path)
 	if err != nil {
 		return fmt.Errorf("search: hash video %q: %w", docID, err)
 	}
+	hash := stamp(ix.videoSettings, []byte(sum))
 	if same, err := ix.unchanged(ctx, docID, hash); err != nil || same {
 		return err
 	}
@@ -205,19 +218,22 @@ func (ix *MediaIndex) IndexVideo(ctx context.Context, docID, path string) error 
 
 // IndexFrames embeds frames the caller extracted itself (its own decoder or
 // sampler) and stores them under docID. contentHash is the caller's
-// fingerprint of the source: when it equals the stored one the call is a
-// no-op, and an empty one always indexes. No frames store the hash alone, so
-// the item is known but never found.
+// fingerprint of the source and of how it extracted the frames: when it
+// equals the stored one (under the same model) the call is a no-op, and an
+// empty one always indexes. No frames store the hash alone, so the item is
+// known but never found.
 func (ix *MediaIndex) IndexFrames(ctx context.Context, docID, contentHash string, frames []media.Frame) error {
 	if docID == "" {
 		return ErrEmptyID
 	}
+	var hash string
 	if contentHash != "" {
-		if same, err := ix.unchanged(ctx, docID, contentHash); err != nil || same {
+		hash = stamp(ix.framesSettings, []byte(contentHash))
+		if same, err := ix.unchanged(ctx, docID, hash); err != nil || same {
 			return err
 		}
 	}
-	return ix.indexFrames(ctx, docID, contentHash, frames)
+	return ix.indexFrames(ctx, docID, hash, frames)
 }
 
 func (ix *MediaIndex) indexFrames(ctx context.Context, docID, hash string, frames []media.Frame) error {
@@ -424,15 +440,8 @@ func decodeImage(r io.Reader) (image.Image, error) {
 	return img, err
 }
 
-// bytesHash is the fingerprint IndexImage stores: the SHA-256 of the encoded
-// image, hex.
-func bytesHash(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-// fileHash is the fingerprint IndexVideo stores: the SHA-256 of the file,
-// hex, streamed.
+// fileHash is the SHA-256 of the file, hex, streamed: the content IndexVideo
+// stamps.
 func fileHash(path string) (string, error) {
 	f, err := os.Open(path) //nolint:gosec // path is the caller's video file; it is only read and hashed
 	if err != nil {
