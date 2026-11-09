@@ -2,15 +2,17 @@ package tagging
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"runtime/debug"
 	"sync"
+
+	"github.com/go-bumbu/langai"
 )
 
-// ErrClosed is returned by every call on a Tagger after its Close, and wrapped
-// by the error of a call that Close cut short.
-var ErrClosed = errors.New("tagging: tagger closed")
+// errClosed is returned by every call on a Tagger after its Close, and
+// wrapped by the error of a call that Close cut short. It wraps
+// langai.ErrClosed, the module's one sentinel for a closed value.
+var errClosed = fmt.Errorf("tagging: tagger: %w", langai.ErrClosed)
 
 // flight runs one function per key at a time, for every caller of that key:
 // the engine's singleflight, keyed by space, so the rebuilds of one space
@@ -46,7 +48,7 @@ func (p *panicError) Error() string { return fmt.Sprintf("panic: %v", p.value) }
 // do runs fn unless a run for key is in flight, and waits for that run. With
 // again false, err is the outcome for the caller: the error of a run for tag
 // (its own, or one another caller started for the same tag), its own
-// ctx.Err() when its ctx ended first, or ErrClosed. With again true, the run
+// ctx.Err() when its ctx ended first, or errClosed. With again true, the run
 // it waited for was for another tag and has ended, without an outcome for
 // this caller: it looks at what that run left and calls do again if it still
 // needs to. So the runs of one key follow each other, whatever they build.
@@ -65,7 +67,7 @@ func (f *flight) do(ctx context.Context, key spaceKey, tag string, fn func(conte
 		f.mu.Lock()
 		if f.closed {
 			f.mu.Unlock()
-			return false, ErrClosed
+			return false, errClosed
 		}
 		c, ok := f.calls[key]
 		if ok && c.left {

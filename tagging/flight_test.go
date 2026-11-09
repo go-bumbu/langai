@@ -244,8 +244,8 @@ func TestFlight_CloseCancelsTheRunsAndWaitsForThem(t *testing.T) {
 			t.Errorf("the caller of the run that was closed: err = %v, want its run's context.Canceled", err)
 		}
 		ran := false
-		if err := run(context.Background(), &f, func(context.Context) error { ran = true; return nil }); !errors.Is(err, ErrClosed) || ran {
-			t.Errorf("do after close: ran %v, err %v; want ErrClosed and no run", ran, err)
+		if err := run(context.Background(), &f, func(context.Context) error { ran = true; return nil }); !errors.Is(err, langai.ErrClosed) || ran {
+			t.Errorf("do after close: ran %v, err %v; want langai.ErrClosed and no run", ran, err)
 		}
 		f.close() // closing twice is fine
 	})
@@ -367,8 +367,8 @@ func TestTagger_Close(t *testing.T) {
 		if n := emb.gaveUp(); n != 1 {
 			t.Errorf("Close returned with %d hanging Embed calls cancelled, want 1: it waits for the rebuild", n)
 		}
-		if err := <-caller; !errors.Is(err, ErrClosed) {
-			t.Errorf("the call Close cut short: err = %v, want one wrapping ErrClosed", err)
+		if err := <-caller; !errors.Is(err, langai.ErrClosed) {
+			t.Errorf("the call Close cut short: err = %v, want one wrapping langai.ErrClosed", err)
 		}
 		emb.hangOn(langai.RoleDocument, false)
 		embedded := emb.total()
@@ -379,8 +379,8 @@ func TestTagger_Close(t *testing.T) {
 			"Touch":   func() error { return space.Touch(ctx) },
 			"Prune":   func() error { _, err := tg.Prune(ctx, time.Now().Add(-48*time.Hour)); return err },
 		} {
-			if err := call(); !errors.Is(err, ErrClosed) {
-				t.Errorf("%s after Close: err = %v, want ErrClosed", name, err)
+			if err := call(); !errors.Is(err, langai.ErrClosed) {
+				t.Errorf("%s after Close: err = %v, want langai.ErrClosed", name, err)
 			}
 		}
 		if n := emb.total() - embedded; n != 0 {

@@ -61,10 +61,6 @@ func (e *LoadPanicError) Error() string {
 	return fmt.Sprintf("langai: the model's load function panicked: %v", e.Value)
 }
 
-// errLazyClosed is what the error of every call on a closed lazy model
-// wraps.
-var errLazyClosed = errors.New("closed")
-
 // lazy loads a value of type T on first use and hands it to everyone who
 // asks, for the three lazy models to wrap.
 //
@@ -206,7 +202,7 @@ func (l *lazy[T]) close() error {
 		l.mu.Lock()
 		state, value := l.state, l.value
 		l.state, l.value = LazyClosed, zero
-		l.err = fmt.Errorf("langai: lazy %s: %w", l.what, errLazyClosed)
+		l.err = fmt.Errorf("lazy %s: %w", l.what, ErrClosed)
 		if l.cancel != nil {
 			l.cancel()
 		}
@@ -338,15 +334,15 @@ func (l *LazyEmbedder) Load(ctx context.Context) error {
 }
 
 // State reports where the embedder stands and, when its calls can no longer
-// succeed, the error they return: the load's in LazyFailed, the closed one
-// in LazyClosed.
+// succeed, the error they return: the load's in LazyFailed, one wrapping
+// ErrClosed in LazyClosed.
 func (l *LazyEmbedder) State() (LazyState, error) { return l.lazy.status() }
 
 // Close releases the model: it cancels a load in progress and waits for it
 // to return, and closes the loaded embedder when it is an io.Closer. Every
-// call waiting for the load and every later one fails. Calls already inside
-// the loaded embedder are its Close's to deal with. Closing again does
-// nothing.
+// call waiting for the load and every later one fails with an error
+// wrapping ErrClosed. Calls already inside the loaded embedder are its
+// Close's to deal with. Closing again does nothing.
 func (l *LazyEmbedder) Close() error { return l.lazy.close() }
 
 // LazyImageEmbedder is an ImageEmbedder that defers building the real one to

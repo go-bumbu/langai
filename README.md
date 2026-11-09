@@ -303,7 +303,7 @@ what else decides a vector (the pooling and the prefixes for a text model; the
 instruction, the image token bounds and the video sampling for `Vision`; the tensor and
 the picture preparation for an ONNX model). It is the same on every run and changes
 whenever a vector would, so vectors stored under another identity are stale. A call on
-a closed provider returns an error that wraps `langai.ErrClosed`.
+a closed provider, lazy loader or `Tagger` returns an error that wraps `langai.ErrClosed`.
 
 ### Image and video search
 
@@ -549,7 +549,7 @@ There's no "learn" call. The Tagger learns only when the app changes the revisio
 // Members the texts of the items tagged with some of them by hand
 cache, err := sqlitecache.New(ctx, db)
 tagger, err := tagging.NewTagger(emb, catalog, cache, tagging.TaggerConfig{Model: yzma.DefaultModel, Logger: logger})
-defer tagger.Close() // cancels and waits for what is in flight; later calls return tagging.ErrClosed
+defer tagger.Close() // cancels and waits for what is in flight; later calls wrap langai.ErrClosed
 space := tagger.Scope("tenant-1", "space-7")
 ids, err := space.Suggest(ctx, rev, essence)    // auto tags, best first; never stored as links
 scores, err := space.Scores(ctx, rev, essence)  // every tag's score and cutoff: why a tag was or was not picked
@@ -666,8 +666,8 @@ How a tag is judged:
   hung embedder is not left running. A panic of your `Catalog` or `Embedder` in a rebuild
   does not end the process: the callers get an error wrapping `ErrNotRebuilt` with the
   panic's value, and the stack goes to the `Logger`. `tagger.Close()` cancels the calls
-  and rebuilds in flight, waits for them, and makes every later call return
-  `tagging.ErrClosed`.
+  and rebuilds in flight, waits for them, and makes every later call return an error
+  wrapping `langai.ErrClosed`.
 - **A failure keeps what was done.** Texts go to the embedder 32 at a time and each batch
   is cached as it comes back, so a rebuild or a `Warm` that fails or is cancelled loses at
   most one batch, and the next call embeds only what is missing. A catalog failure, or an

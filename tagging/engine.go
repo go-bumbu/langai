@@ -249,14 +249,14 @@ func (e *engine) rebuild(ctx context.Context, index, partition, state string) er
 	return e.ix.Apply(ctx, index, partition, cur, state, put, drop)
 }
 
-// enter begins a call on the engine: it fails with ErrClosed once the engine
+// enter begins a call on the engine: it fails with errClosed once the engine
 // is closed, and else returns a context that ends with ctx or with close, and
 // the function that ends the call, which the caller must run.
 func (e *engine) enter(ctx context.Context) (context.Context, func(), error) {
 	e.mu.Lock()
 	if e.closed {
 		e.mu.Unlock()
-		return nil, nil, ErrClosed
+		return nil, nil, errClosed
 	}
 	e.calls.Add(1)
 	e.mu.Unlock()
@@ -282,12 +282,12 @@ func (e *engine) call(ctx context.Context, fn func(context.Context) error) error
 
 // closedErr is the error of a call that ended with err: err itself, or, when
 // the engine was closed while the call ran and so cut it short, one wrapping
-// ErrClosed too.
+// langai.ErrClosed too.
 func (e *engine) closedErr(err error) error {
-	if err == nil || errors.Is(err, ErrClosed) || e.closing.Err() == nil {
+	if err == nil || errors.Is(err, langai.ErrClosed) || e.closing.Err() == nil {
 		return err
 	}
-	return fmt.Errorf("%w: %w", ErrClosed, err)
+	return fmt.Errorf("%w: %w", errClosed, err)
 }
 
 // close is Tagger.Close: no call starts after it, the contexts of the calls

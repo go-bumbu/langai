@@ -104,12 +104,13 @@ type Tagger struct {
 }
 
 // Close stops the Tagger: every later call on it, or on one of its Scopes,
-// returns ErrClosed. The calls and rebuilds in flight have their contexts
-// cancelled, and Close returns when they have ended, so nothing of the Tagger
-// runs after it; their callers get an error wrapping ErrClosed. An Embedder or
-// a Catalog that does not return when its context ends holds Close up for as
-// long. It does not close the Embedder, the cache or the index, which the
-// application made. Closing twice is fine, and the error is always nil.
+// returns an error wrapping langai.ErrClosed. The calls and rebuilds in
+// flight have their contexts cancelled, and Close returns when they have
+// ended, so nothing of the Tagger runs after it; their callers get an error
+// wrapping langai.ErrClosed too. An Embedder or a Catalog that does not
+// return when its context ends holds Close up for as long. It does not close
+// the Embedder, the cache or the index, which the application made. Closing
+// twice is fine, and the error is always nil.
 func (t *Tagger) Close() error {
 	t.e.close()
 	return nil

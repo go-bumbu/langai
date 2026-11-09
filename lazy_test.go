@@ -346,10 +346,10 @@ func TestLazy_CloseDuringLoad(t *testing.T) {
 		if err, _ := loadCtxErr.Load().(error); !errors.Is(err, context.Canceled) {
 			t.Errorf("the load's context ended with %v, want cancellation", err)
 		}
-		if err := <-waiting; !errors.Is(err, langai.ErrLazyClosed) {
+		if err := <-waiting; !errors.Is(err, langai.ErrClosed) {
 			t.Errorf("the waiting caller got %v, want the closed error", err)
 		}
-		if err := wantState(t, s, langai.LazyClosed); !errors.Is(err, langai.ErrLazyClosed) {
+		if err := wantState(t, s, langai.LazyClosed); !errors.Is(err, langai.ErrClosed) {
 			t.Errorf("State() reports %v, want the closed error", err)
 		}
 	})
@@ -373,7 +373,7 @@ func TestLazy_CloseDuringLoadClosesWhatTheLoadStillReturns(t *testing.T) {
 
 		closed := make(chan error, 1)
 		go func() { closed <- s.close() }()
-		if err := <-waiting; !errors.Is(err, langai.ErrLazyClosed) {
+		if err := <-waiting; !errors.Is(err, langai.ErrClosed) {
 			t.Errorf("the waiting caller got %v while the load was still running, want the closed error", err)
 		}
 		select {
@@ -412,13 +412,13 @@ func TestLazy_CloseAfterLoad(t *testing.T) {
 		if n := l.closes.Load(); n != 1 {
 			t.Errorf("the model was closed %d times, want 1", n)
 		}
-		if err := s.call(context.Background()); !errors.Is(err, langai.ErrLazyClosed) {
+		if err := s.call(context.Background()); !errors.Is(err, langai.ErrClosed) {
 			t.Errorf("call after Close = %v, want the closed error", err)
 		}
-		if err := s.load(context.Background()); !errors.Is(err, langai.ErrLazyClosed) {
+		if err := s.load(context.Background()); !errors.Is(err, langai.ErrClosed) {
 			t.Errorf("Load after Close = %v, want the closed error", err)
 		}
-		if err := wantState(t, s, langai.LazyClosed); !errors.Is(err, langai.ErrLazyClosed) {
+		if err := wantState(t, s, langai.LazyClosed); !errors.Is(err, langai.ErrClosed) {
 			t.Errorf("State() reports %v, want the closed error", err)
 		}
 		if n := l.loads.Load(); n != 1 {
@@ -434,7 +434,7 @@ func TestLazy_CloseBeforeAnyLoad(t *testing.T) {
 		if err := s.close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-		if err := s.call(context.Background()); !errors.Is(err, langai.ErrLazyClosed) {
+		if err := s.call(context.Background()); !errors.Is(err, langai.ErrClosed) {
 			t.Errorf("call after Close = %v, want the closed error", err)
 		}
 		_ = wantState(t, s, langai.LazyClosed)
