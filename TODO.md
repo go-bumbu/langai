@@ -210,7 +210,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
   search.ContentHash(text) covers only the text, so a changed MaxChars, Chunker or embedder leaves stale chunks in place forever. Hash text + chunker fingerprint + model id.
 - [x] reshape the vector.Store port
   Methods take 4-6 positional strings, Search only wraps SearchScope, and listing doc ids, Count, deleting a whole index, dropping an old generation, batch upsert and a doc-id filter are missing. Introduce a Coord{Index, Partition, Collection}, batch Upsert/Delete, Docs, DeleteIndex, one Search with a scope filter, DropGeneration on the stores.
-- [ ] vectortest conformance suite and missing fakes
+- [x] vectortest conformance suite and missing fakes
   sqlitevec and pgvec repeat the same tests by hand and MemStore has its own. Add vector/vectortest.Run for all three, plus langaitest.FakeCompleter (stub chat models are written three times), a map-backed Catalog and a fake VideoEmbedder.
 - [x] read paths must not create tables
   ensure() runs CREATE TABLE from Delete/ContentHash/Chunks/Search in both SQL stores, so a search for an unknown index creates a table set and a read-only Postgres role fails on a lookup. Only Upsert creates the schema; reads return empty when the tables are absent.
@@ -220,17 +220,17 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Index.Search returns the store's vector.Match (leaks Partition/Collection) while MediaIndex returns MediaMatch; Index has no SearchIndexed and MediaIndex.SearchIndexed returns the query item itself. Add search.Match, Index.SearchIndexed, and leave the query doc out of both.
 - [x] batch indexing
   Index.Index does one hash read, one Embed and one transaction per document. Add Index.IndexBatch that reads hashes once, embeds changed chunks in one batch and upserts in one call (needs the reshaped Store).
-- [ ] ports in the right packages
+- [x] ports in the right packages
   vector.Normalize is imported by the providers although vector is the store port, and VideoEmbedder/Segment live in media while the other embedder ports are in the root. Move Normalize, VideoEmbedder and Segment to the root package.
 - [x] LazyEmbedder lifecycle
   No Close (the loaded model can never be released), load takes no ctx, and there is no lazy form of ImageEmbedder, Vision or Completer. load becomes func(ctx), add Close, add LazyImageEmbedder and LazyCompleter over one loader.
 - [x] dedupe provider fetch code
   ensureModelFile, fetchFile and the staged library install are copied between provider/yzma/fetch.go and provider/onnx/fetch.go; yzma.Download is exported only for zarf/eval. Move the shared steps to internal/fetch.
-- [ ] consistent provider constructors
+- [x] consistent provider constructors
   yzma/onnx Config repeat Runtime's fields, OpenVision breaks the Open(ctx, spec, Runtime) pattern, lookup names differ (Spec, LookupCompleterSpec, LookupVisionSpec), yzma has no Models(), and the cache constructors return the interface.
 - [ ] one Chunker for search and tagging
   search.MarkdownChunker{MaxChars} and tagging.Chunk(text, maxBytes) differ in units and live apart; Tagger and Generator take only an int. One Chunker port with Markdown and Even implementations. The eval floors depend on tagging.Chunk, so re-measure.
-- [ ] doc drift
+- [x] doc drift
   internal/tablename says tagging uses ForPrefix (dead outside its test); WithGeneration docs point consumers at an internal package; README's package tree and dependency rule are out of date.
 
 ## search, vector, media
@@ -265,9 +265,9 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Sanitize before chunking.
 - [x] MemStore differs from the SQL stores
   Scores 0 on a dimension mismatch instead of an error, accepts an empty index, aliases the caller's vectors and orders ties randomly. Covered by the conformance suite: ties by score, then doc id, then seq.
-- [ ] ffmpeg sampler has no Fingerprint
+- [x] ffmpeg sampler has no Fingerprint
   media/ffmpeg's sampler does not implement search.Fingerprinter, so changing its config does not re-index videos.
-- [ ] ffmpeg: restrict protocols
+- [x] ffmpeg: restrict protocols
   Consider -protocol_whitelist file,pipe so a crafted playlist cannot make ffmpeg fetch URLs. Cut can leave a partial out file on failure.
 - [ ] SearchIndexed costs one store search per stored chunk
   Fine for short documents; a very long document or a 64-frame video runs many searches.
@@ -337,11 +337,11 @@ and `todo list --json` cover the common actions — run `todo --help`.
   onnx premultiplies alpha (transparent becomes black), yzma composes on white. One shared flatten step.
 - [x] digest comparison is case-sensitive
   An uppercase SHA256 in a spec fails after the full download.
-- [ ] model id before load for the lazy loaders
+- [x] model id before load for the lazy loaders
   The README's lazy example passes spec.Name as the model id, but yzma's Model() returns name plus pooling and prefixes, so the load would fail with a mismatch. The providers need a way to compute the id from a spec and config without loading.
-- [ ] filter llama.cpp ERROR lines after a cancelled evaluation
+- [x] filter llama.cpp ERROR lines after a cancelled evaluation
   A cancelled evaluation logs failed to decode at ERROR.
-- [ ] Makefile comment for test-vision is stale
+- [x] Makefile comment for test-vision is stale
   The target now also loads the model a second time on the CPU.
 - [ ] phash: measure thresholds on real photos
   The duplicate thresholds come from synthetic pictures. Flat pictures all share the zero hash and a small mark on a near-flat picture flips about half the pHash bits. No ParseHash yet, and the vectors are not a compact bit column in the stores. grey.go has its own compose-on-white code that could use internal/imageutil if it gives identical 8-bit values.
@@ -402,3 +402,13 @@ and `todo list --json` cover the common actions — run `todo --help`.
   Commits 5399783 d607b1b 4a438c9. Tagger long set: main recall 1.000 (floor 0.95), side 0.897 (0.84), precision 0.801 (0.75), mean F1 0.838. Generator long set: main 1.000 (0.95), side 0.759 (0.70), precision 0.887 (0.86 kept), mean F1 0.822. Golden: fits no tag, gets none 84 of 84 (floor 0.95). The gains come from the scoring fix, not from the models: the Generator's tags under the old rule reproduce the old numbers exactly, so the parser change moved nothing. make test-models, the Tagger long test and make test-gentags all pass against the new floors. Two comments were found stale and predate this branch: golden top1 is 0.8810 (comment said 0.8929, floor 0.84 passes) and 5 to 10 generated tags reach the cutoff (comment said 6 to 10).
 - [x] examples: partial tag results shown, Tagger closed on shutdown
   Commit 709762e. The autotag notebook keeps the tags that come with tagging.ErrPartial and shows a notice (Recommendation.Error); Notebook.Close closes the Tagger in the example's shutdown path.
+- [x] one closed sentinel; video ports in the root (breaking)
+  Commits 450ff4d ea02ae6. Lazy loaders and the Tagger wrap langai.ErrClosed; tagging.ErrClosed is gone. langai.VideoEmbedder and langai.Segment moved from media to the root; media keeps Sampler, SamplerFunc, Frame and Cutter.
+- [x] provider constructors on one convention (breaking)
+  Commit 9f73364. yzma and onnx Config embed Runtime (Config{Runtime; ModelsDir, Model}); yzma.NewVision(ctx, cfg, VisionOptions) and OpenVision(ctx, spec, rt, VisionOptions) replace VisionConfig; Spec is renamed LookupSpec in both providers; yzma gained Models(), CompleterModels() and VisionModels(). sqlitecache.New and pgcache.New return concrete *Cache types. Every Open validates its config before any download: negative Threads, GPULayers, BatchSize, DeviceID, Dims, Size, MaxTokens or image tokens, min above max, unknown Accel or Provider are errors.
+- [x] model id computed from the spec before loading
+  Commit 9989e86. yzma.ModelSpec.ModelID(), yzma.VisionSpec.ModelID(opts) and onnx.ModelSpec.ModelID() return the same id the loaded embedder's Model() reports, so a LazyEmbedder can be given the right id up front; the README's lazy example would have failed its load with the bare spec name. Tests wire a lazy loader around each provider's fake backend.
+- [x] ffmpeg: Fingerprint, file protocol only, failed cuts removed
+  Commit 5f62c53. Sampler.Fingerprint() covers every setting that changes the frames, so a changed config re-indexes videos. Every ffmpeg and ffprobe input gets -protocol_whitelist file, so a crafted playlist cannot fetch URLs. Cut removes its output on failure or cancel.
+- [x] fakes and example tests
+  Commits 0c54f46 2b42534 61d9093. langaitest.FakeVideoEmbedder added; the hand-written chat and video stubs in tagging, search and the examples use the fakes. README samples are mirrored as Example tests (lazy loader, search.New, NewMediaIndex, provider constructors, sqlitecache). README, package docs and the Makefile were brought in step with the code. llama.cpp errors caused by a caller's cancellation are logged at Debug; the abort status value and log texts were matched against the pinned binaries, not llama.cpp's source.
