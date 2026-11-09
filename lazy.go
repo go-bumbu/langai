@@ -23,7 +23,8 @@ const (
 	// LazyLoaded means that the model is loaded and calls reach it.
 	LazyLoaded
 	// LazyFailed means that the load failed. The failure is kept: every call
-	// returns it and nothing loads again.
+	// returns it and nothing loads again. To try again, build a new lazy
+	// value with the same constructor and use it in place of this one.
 	LazyFailed
 	// LazyClosed means that Close was called. Every call fails.
 	LazyClosed
@@ -270,8 +271,11 @@ func checkVectors(loaded interface{ Dimensions() int }, dims int, model string) 
 // goes on for the others. A load failure is kept: it is returned unchanged
 // by every later call instead of retried, so a broken or unreachable model
 // degrades gracefully instead of re-attempting a download on every request.
-// State exposes all of it to a health endpoint. A LazyEmbedder is safe for
-// concurrent use and must not be copied.
+// To load again once the cause is gone, build a new LazyEmbedder with
+// NewLazyEmbedder, hand it to whatever held this one, and Close this one;
+// LazyImageEmbedder and LazyCompleter recover the same way. State exposes all
+// of it to a health endpoint. A LazyEmbedder is safe for concurrent use and
+// must not be copied.
 type LazyEmbedder struct {
 	model string
 	dims  int

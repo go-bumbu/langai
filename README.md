@@ -299,7 +299,9 @@ All three behave alike:
 - **A failed load is kept.** The error is returned by every later call and nothing
   loads again, so a model that cannot be loaded costs one attempt, not one per request.
   A loader that panics (`*langai.LoadPanicError`, with the stack) or returns nil fails
-  the same way.
+  the same way. To try again once the cause is fixed, build a new lazy value
+  (`langai.NewLazyEmbedder(...)` again), use it in place of the failed one and `Close`
+  that one: a lazy value never retries on its own.
 - **The model is checked.** The identity and dimensions given at construction are what
   the stores record before anything loads (an empty identity is unknown and unchecked).
   A loaded model with other dimensions, or whose `Model()` is another string, fails the
