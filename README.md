@@ -173,6 +173,8 @@ err = ix.Index(ctx, "note-42", markdownText) // a no-op while the text is unchan
 res, err := ix.IndexBatch(ctx, docs)         // many at once: res.Indexed, res.Unchanged, res.Failed
 hits, err := ix.Search(ctx, "how long to boil spaghetti", 10) // []search.Match: DocID, Score, Seq and Text of the best chunk
 more, err := ix.SearchIndexed(ctx, "note-42", 10)            // "more like this" with the stored chunks: no model runs
+for d, err := range ix.Docs(ctx) { /* d.ID, d.Hash: what is indexed, by id */ }
+err = ix.Delete(ctx, "note-7", "note-9")                     // e.g. what was deleted while the app was offline
 ```
 
 `Search` and `SearchIndexed` return a `search.Match` per document: its best chunk, by
@@ -284,7 +286,7 @@ err = ix.IndexVideo(ctx, "clip-7", "/media/clip-7.mp4") // one vector per sample
 hits, err := ix.SearchImage(ctx, file, 10)              // []search.MediaMatch: DocID, Score, At (the matching frame's time)
 hits, err := ix.SearchVideo(ctx, "/media/query.mp4", 10) // and QueryAt, the query frame that matched
 hits, err := ix.SearchIndexed(ctx, "clip-7", 10)         // "more like this" with the stored vectors: no model runs
-err = ix.Delete(ctx, "photo-42")
+err = ix.Delete(ctx, "photo-42", "clip-7")               // Docs lists what is indexed, as for Index
 ```
 
 An image is one frame at time zero and a video the frames its `Sampler` picked, each

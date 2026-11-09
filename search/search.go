@@ -112,17 +112,6 @@ func (ix *Index) Index(ctx context.Context, docID, text string) error {
 	return res.Failed[docID]
 }
 
-// Delete removes a document from the index. Unknown ids are a no-op.
-func (ix *Index) Delete(ctx context.Context, docID string) error {
-	if docID == "" {
-		return ErrEmptyID
-	}
-	if err := ix.store.Delete(ctx, ix.coord, docID); err != nil {
-		return fmt.Errorf("search: delete %q: %w", docID, err)
-	}
-	return nil
-}
-
 // Match is one hit of an Index search: the document, its score (cosine, 1
 // for the same direction, around 0 for unrelated text) and the chunk of it
 // that matched best, by position (Seq) and text, which makes a snippet.

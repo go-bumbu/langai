@@ -288,18 +288,6 @@ func (ix *MediaIndex) embed(ctx context.Context, frames []media.Frame) ([][]floa
 	return vectors, nil
 }
 
-// Delete removes an item and its frames. Deleting an unknown id is not an
-// error.
-func (ix *MediaIndex) Delete(ctx context.Context, docID string) error {
-	if docID == "" {
-		return ErrEmptyID
-	}
-	if err := ix.store.Delete(ctx, ix.coord, docID); err != nil {
-		return fmt.Errorf("search: delete %q: %w", docID, err)
-	}
-	return nil
-}
-
 // SearchImage decodes the image r holds and returns the items that look most
 // like it, best first, at most limit (10 when <= 0).
 func (ix *MediaIndex) SearchImage(ctx context.Context, r io.Reader, limit int) ([]MediaMatch, error) {
