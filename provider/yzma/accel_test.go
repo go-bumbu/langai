@@ -1,9 +1,11 @@
 package yzma
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -272,6 +274,53 @@ func TestRuntime_PrepareInstallsTheBuildTheHardwareNeeds(t *testing.T) {
 	empty := Runtime{LibDir: t.TempDir()}
 	if _, _, err := (&empty).prepare(context.Background(), newFakeAPI(), &runtimeLoader{}); err == nil || !errors.Is(err, err) {
 		t.Errorf("unmanaged empty: %v", err)
+	}
+}
+
+// TestRuntime_PrepareWarnsWhenTheGPUBuildFindsNoGPU: a GPU build that was
+// installed because the hardware looked like it has a GPU, and then
+// registers none, runs every model on the CPU. That must not be silent.
+func TestRuntime_PrepareWarnsWhenTheGPUBuildFindsNoGPU(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the pinned archives hold Linux .so files")
+	}
+	_, gpuAsset := serve(t, tarGz(t, "llama-b11429", append(releaseLibs(), tarEntry{name: "libggml-vulkan.so", body: "vulkan"})))
+	key := platform() + "/vulkan"
+	orig, had := libAssets[key]
+	libAssets[key] = gpuAsset
+	origDetect := detectHW
+	detectHW = func() hw.Report { return report(hw.Vulkan, hw.CPU) }
+	offline(t)
+	t.Cleanup(func() {
+		if had {
+			libAssets[key] = orig
+		} else {
+			delete(libAssets, key)
+		}
+		detectHW = origDetect
+	})
+	gpu := device{name: "Vulkan0", backend: "Vulkan", description: "GPU", gpu: true}
+	for _, c := range []struct {
+		name  string
+		devs  []device
+		accel Accel
+		warns bool
+	}{
+		{"the GPU registered", []device{gpu, {name: "CPU", backend: "CPU"}}, AccelAuto, false},
+		{"only the CPU registered", []device{{name: "CPU", backend: "CPU"}}, AccelAuto, true},
+		{"only a software renderer registered", []device{{name: "Vulkan0", backend: "Vulkan", description: "llvmpipe (LLVM 21)", gpu: true}}, AccelAuto, true},
+	} {
+		var logs bytes.Buffer
+		f := newFakeAPI()
+		f.devs = c.devs
+		rt := Runtime{LibDir: filepath.Join(t.TempDir(), "llama-cpp", LibTag), ManagedLibDir: true, Accel: c.accel, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+		if _, _, err := (&rt).prepare(context.Background(), f, &runtimeLoader{}); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		warned := strings.Contains(logs.String(), "level=WARN") && strings.Contains(logs.String(), "registered no GPU device")
+		if warned != c.warns {
+			t.Errorf("%s: warned %v, want %v:\n%s", c.name, warned, c.warns, logs.String())
+		}
 	}
 }
 

@@ -226,7 +226,24 @@ func (rt *Runtime) prepare(ctx context.Context, api runtimeAPI, loader *runtimeL
 	if err != nil {
 		return "", nil, err
 	}
+	if rt.ManagedLibDir && b != "cpu" && rt.Accel != AccelCPU && !hasGPU(loader.devices) {
+		// the build was chosen for a GPU the hardware seemed to have; say so
+		// when it did not materialize, or the model quietly runs on the CPU
+		logger.Warn("the "+b+" build of llama.cpp registered no GPU device: models run on the CPU", logComponent,
+			slog.String("dir", libDir), slog.String("devices", deviceList(loader.devices)), slog.String("found", report.String()))
+	}
 	return libDir, logger, nil
+}
+
+// hasGPU reports whether a hardware GPU is among the devices the loaded
+// libraries registered.
+func hasGPU(devices []device) bool {
+	for _, d := range devices {
+		if d.gpu && !d.software() {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultSpec is Spec(DefaultModel, modelsDir): the pinned EmbeddingGemma
@@ -241,8 +258,10 @@ func DefaultSpec(modelsDir string) ModelSpec {
 // subsystems; the llama.cpp lines logCallback forwards carry "llama.cpp".
 var logComponent = slog.String("component", "semsearch")
 
-// detectHW looks at the machine; tests substitute a fixed report.
-var detectHW = hw.Detect
+// detectHW looks at the machine for what the pinned builds can run on: CUDA
+// only with the runtime the CUDA build links against (see cudaRuntimeMajor).
+// Tests substitute a fixed report.
+var detectHW = func() hw.Report { return hw.Detect(hw.Needs{CUDARuntime: cudaRuntimeMajor}) }
 
 // New prepares the libraries and the model cfg.Model selects (downloading
 // whatever is missing, see fetch.go), loads them, and probes the model once

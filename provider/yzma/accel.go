@@ -19,7 +19,11 @@ type Accel string
 
 const (
 	// AccelAuto picks from the hardware: the best accelerator internal/hw
-	// finds that has a pinned build, the CPU when none has.
+	// finds that has a pinned build, the CPU when none has. CUDA counts only
+	// with the CUDA 13 runtime where the loader finds it: an NVIDIA driver
+	// without it gets the Vulkan build. When the build that was picked
+	// registers no GPU after all, the models run on the CPU and a warning
+	// says so.
 	AccelAuto Accel = ""
 	// AccelCPU never offloads and never installs a GPU build.
 	AccelCPU Accel = "cpu"

@@ -55,6 +55,13 @@ const (
 	completerDownloadTimeout = time.Hour
 	// userAgent names this package's downloads.
 	userAgent = "langai-semsearch"
+	// cudaRuntimeMajor is the CUDA runtime the pinned CUDA build (the
+	// "cuda-13.4" asset in libAssets) links against: its backend library
+	// needs libcudart.so.13 and libcublas.so.13 from the host. internal/hw
+	// only reports CUDA when the loader can find them, so a machine with the
+	// NVIDIA driver and no such runtime gets the Vulkan build instead of a
+	// CUDA build that cannot offload. Bump it with the asset.
+	cudaRuntimeMajor = 13
 )
 
 // asset is one downloadable file with its expected digest.

@@ -129,8 +129,11 @@ go get github.com/go-bumbu/langai
   managed `LibDir` gets the pinned llama.cpp build that carries the backend the machine
   has (CUDA 13.4 on linux/amd64 with the CUDA runtime installed, Vulkan on linux/amd64
   and linux/arm64, Metal on macOS, the CPU build otherwise; `internal/hw` looks for the
-  driver), the model is offloaded to the GPU that registers, and the load log line says
-  which. `AccelCPU` stays on the CPU, `AccelVulkan`, `AccelCUDA` and `AccelMetal`
+  driver and, for CUDA, for `libcudart.so.13` and `libcublas.so.13` on the loader's
+  path, so an NVIDIA driver without the CUDA 13 runtime gets the Vulkan build), the
+  model is offloaded to the GPU that registers, and the load log line says which; a
+  GPU build that registers no GPU is logged as a warning, since the models then run on
+  the CPU. `AccelCPU` stays on the CPU, `AccelVulkan`, `AccelCUDA` and `AccelMetal`
   require their backend. An operator-supplied `LibDir` is used as it is: whatever
   backends it holds register. Vulkan was run on an AMD iGPU for this release; the CUDA
   build is pinned but was not run.
