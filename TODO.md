@@ -217,11 +217,11 @@ and `todo list --json` cover the common actions — run `todo --help`.
   No port reports which model made a vector and the stores record only dims, so two 768-d models (SigLIP 2, EmbeddingGemma) can share a collection and return garbage with no error; TaggerConfig.Model is typed by hand. Add an optional langai.Identified{Model() string}, implement it in the providers and LazyEmbedder, keep a (model, dims) meta row per index in the stores and fail with vector.ErrModelMismatch.
 - [ ] content hash covers the chunker and the model
   search.ContentHash(text) covers only the text, so a changed MaxChars, Chunker or embedder leaves stale chunks in place forever. Hash text + chunker fingerprint + model id.
-- [ ] reshape the vector.Store port
+- [x] reshape the vector.Store port
   Methods take 4-6 positional strings, Search only wraps SearchScope, and listing doc ids, Count, deleting a whole index, dropping an old generation, batch upsert and a doc-id filter are missing. Introduce a Coord{Index, Partition, Collection}, batch Upsert/Delete, Docs, DeleteIndex, one Search with a scope filter, DropGeneration on the stores.
 - [ ] vectortest conformance suite and missing fakes
   sqlitevec and pgvec repeat the same tests by hand and MemStore has its own. Add vector/vectortest.Run for all three, plus langaitest.FakeCompleter (stub chat models are written three times), a map-backed Catalog and a fake VideoEmbedder.
-- [ ] read paths must not create tables
+- [x] read paths must not create tables
   ensure() runs CREATE TABLE from Delete/ContentHash/Chunks/Search in both SQL stores, so a search for an unknown index creates a table set and a read-only Postgres role fails on a lookup. Only Upsert creates the schema; reads return empty when the tables are absent.
 - [ ] sentinel errors for errors.Is
   Closed-embedder, dimension-mismatch and empty-id errors are plain strings. Add langai.ErrClosed, vector.ErrDimensions, search.ErrEmptyID and wrap with %w.
@@ -244,21 +244,21 @@ and `todo list --json` cover the common actions — run `todo --help`.
 
 ## search, vector, media
 
-- [ ] zero or NaN vector breaks every search in its scope
+- [x] zero or NaN vector breaks every search in its scope
   A text with no letters or digits embeds to a zero vector with the fake embedder; once stored, every sqlitevec Search in that scope fails scanning a NULL distance, and on pg the NaN score passes the MinScore floor. Add vector.Validate (finite, non-zero), call it on index and query paths and in each store, and treat NaN as below the floor.
-- [ ] limit*4 over-fetch returns far fewer items than limit
+- [x] limit*4 over-fetch returns far fewer items than limit
   One 64-frame near-static video fills all fetched chunks, so SearchIndexed/SearchFrames return one hit where 10 exist. The store needs a per-document best-chunk search (pg DISTINCT ON, sqlite/mem loop with doubling k) and an exclude-doc argument.
-- [ ] empty partition or collection is a wildcard in Store.Search
+- [x] empty partition or collection is a wildcard in Store.Search
   search.New(e, store, index, "", "notes") searches every partition and returns other tenants' docs. Search matches both coordinates exactly; only the explicit scope filter may leave one open.
-- [ ] concurrent sqlitevec writes fail with database is locked
+- [x] concurrent sqlitevec writes fail with database is locked
   The transaction starts with a SELECT and upgrades to a write, so 8 concurrent upserts fail 60-95% of calls even with _busy_timeout. Make the first statement a write, document the DSN, add a concurrent-upsert test.
-- [ ] concurrent pgvec Upsert of one doc leaves duplicate chunk sets
+- [x] concurrent pgvec Upsert of one doc leaves duplicate chunk sets
   Under READ COMMITTED both transactions delete then insert and only serialize at the final docs upsert. Upsert the docs row first so its row lock serializes same-doc writers.
 - [ ] LazyEmbedder ignores ctx during load and panics on a nil embedder
   Embed blocks in once.Do past its deadline during a multi-GB load; load returning (nil, nil) or panicking leaves a nil inner that every later Embed dereferences.
-- [ ] sqlite caps k at 4096
+- [x] sqlite caps k at 4096
   Index.Search with limit above 1024 errors on sqlitevec only. Clamp or page inside the store.
-- [ ] dimension change accepted at New, fails later with a raw driver error
+- [x] dimension change accepted at New, fails later with a raw driver error
   New(ctx, db, 16) over an 8-dim store succeeds and every write and search then fails. Compare the existing dims in ensure and return an error naming WithGeneration.
 - [ ] ffmpeg: path with a colon read as a protocol, out starting with - read as an option
   Sample(ctx, "clip:final.mkv") fails with Protocol not found. Pass file: URLs for inputs and outputs.
@@ -272,7 +272,7 @@ and `todo list --json` cover the common actions — run `todo --help`.
   CRLF text is one paragraph and falls to splitWords, which flattens code and lists; the heading prefix is not counted toward MaxChars.
 - [ ] NUL or invalid UTF-8 indexes on sqlite and fails on Postgres
   Sanitize before chunking.
-- [ ] MemStore differs from the SQL stores
+- [x] MemStore differs from the SQL stores
   Scores 0 on a dimension mismatch instead of an error, accepts an empty index, aliases the caller's vectors and orders ties randomly. Covered by the conformance suite: ties by score, then doc id, then seq.
 
 ## tagging and eval
@@ -338,3 +338,14 @@ and `todo list --json` cover the common actions — run `todo --help`.
   An uppercase SHA256 in a spec fails after the full download.
 
 # change log
+
+- [x] vector: new Store port (breaking)
+  Commits 66f4e6d 8cdce0a d2fd28f . vector.Store now takes a Coord{Index, Partition, Collection} and has Upsert(c, model, docs...), Delete(c, ids...), DeleteIndex, Hashes, Docs (paged listing), Chunks and one Search(c, Query). Query has AllPartitions/AllCollections (an empty partition or collection is now an exact value, not a wildcard), Only/Exclude doc-id lists and Model. Search returns one match per document (best chunk), ordered by score, doc id, seq, so limit means documents and one many-frame video no longer crowds out the rest. New sentinels vector.ErrDimensions, ErrInvalidVector, ErrModelMismatch and vector.Validate; zero and NaN vectors are rejected on write and search. Both SQL stores share vector/internal/sqlstore; reads no longer create tables; opening with other dims fails naming WithGeneration; DropGeneration removes an old generation; old-schema tables are refused with a clear error (delete the example DB to rebuild).
+- [x] sqlitevec: BLOB vectors instead of the vec0 table
+  Vectors are stored as BLOBs and ranked exactly with vec_distance_cosine, which removes the k cap of 4096 (measured on 20k x 768: 19 ms vs 17 ms for vec0 on a full scope, 4x faster on a small scope). Write transactions start with a write, so concurrent upserts no longer fail with database is locked; recommended DSN is _busy_timeout=5000&_journal_mode=WAL. pgvec writes the docs row first so same-doc writers serialize.
+- [x] model identity: langai.Identified and a per-collection model record
+  Optional port langai.Identified{Model() string}. The stores record the model id per collection on first write and return vector.ErrModelMismatch for another id; search.New and NewMediaIndex pass the embedder's id. The fakes report fixed ids; the real providers and LazyEmbedder follow in later entries.
+- [x] vector/vectortest conformance suite
+  vectortest.Run runs 23 cases against MemStore, sqlitevec and pgvec (replacing the hand-copied per-backend tests): batch atomicity, exact coordinates, scope filters, allow/exclude lists, crowding, large limits, invalid vectors, dimension and model mismatch, deterministic ties, concurrent upserts, reads on an unknown index.
+- [x] langai.Normalize moved from vector to the root package
+  Providers no longer import the storage port for it.
