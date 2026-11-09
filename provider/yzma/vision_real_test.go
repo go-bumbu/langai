@@ -20,6 +20,7 @@ import (
 	xdraw "golang.org/x/image/draw"
 
 	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/langai/media"
 	"github.com/go-bumbu/langai/media/ffmpeg"
 )
 
@@ -227,13 +228,13 @@ func checkPlainTexts(t *testing.T, ctx context.Context, v *Vision) {
 	if err != nil {
 		t.Fatalf("texts with markup in them failed: %v", err)
 	}
-	nulRed, nulBlue := dot(vecs[1], vecs[2]), dot(vecs[0], vecs[1])
-	t.Logf("NUL texts: red vs blue %.3f, red with vs without NUL %.3f; with a spelled control token vs without %.3f", nulRed, nulBlue, dot(vecs[0], vecs[4]))
-	if nulRed > 0.98 {
-		t.Errorf("two different texts with a NUL byte got the same vector (%.4f)", nulRed)
+	apart, kept := dot(vecs[1], vecs[2]), dot(vecs[0], vecs[1])
+	t.Logf("NUL texts: red vs blue %.3f, red with vs without NUL %.3f; with a spelled control token vs without %.3f", apart, kept, dot(vecs[0], vecs[4]))
+	if apart > 0.98 {
+		t.Errorf("two different texts with a NUL byte got the same vector (%.4f)", apart)
 	}
-	if nulBlue < 0.5 {
-		t.Errorf("a NUL byte made a text unrecognisable: %.3f against the text without it", nulBlue)
+	if kept < 0.5 {
+		t.Errorf("a NUL byte made a text unrecognisable: %.3f against the text without it", kept)
 	}
 	// the spelled control token is text: the input after it is still read,
 	// so the vector is not the one of the text before it
@@ -353,5 +354,41 @@ func checkVideoSegments(t *testing.T, ctx context.Context, v *Vision, vecs [][]f
 	t.Logf("segment 0 vs red %.3f, vs blue %.3f; segment 1 vs red %.3f, vs blue %.3f", s0red, s0blue, s1red, s1blue)
 	if s0red <= s0blue || s1blue <= s1red {
 		t.Errorf("each segment should match its own shot")
+	}
+	checkVideoWithoutLength(t, ctx, v, clip, segments)
+}
+
+// checkVideoWithoutLength embeds the clip once more, this time without a
+// length in its container (written to a pipe, as a recording that was never
+// finalized) and without an extension in its name: ffprobe reports no
+// duration, and it must still come back as the same two segments, not as
+// one input.
+func checkVideoWithoutLength(t *testing.T, ctx context.Context, v *Vision, clip string, segments []media.Segment) {
+	t.Helper()
+	stream := filepath.Join(t.TempDir(), "recording")
+	out, err := os.Create(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipe := exec.Command("ffmpeg", "-v", "error", "-i", clip, "-c", "copy", "-f", "matroska", "-")
+	pipe.Stdout = out
+	if err := pipe.Run(); err != nil {
+		t.Fatalf("write the clip to a pipe: %v", err)
+	}
+	_ = out.Close()
+	if d, err := v.cutter.Duration(ctx, stream); err != nil || d != 0 {
+		t.Fatalf("the piped clip has a duration of %v (%v), want none", d, err)
+	}
+	unprobed, err := v.EmbedVideo(ctx, stream)
+	if err != nil {
+		t.Fatalf("EmbedVideo of a clip without a length: %v", err)
+	}
+	if len(unprobed) != 2 || unprobed[1].Start != 4*time.Second || unprobed[1].End < 6*time.Second {
+		t.Fatalf("segments of the clip without a length = %+v, want the same two", unprobed)
+	}
+	same0, same1 := dot(unprobed[0].Vector, segments[0].Vector), dot(unprobed[1].Vector, segments[1].Vector)
+	t.Logf("without a length: 2 segments, %.3f and %.3f against the ones of the clip itself", same0, same1)
+	if same0 < 0.95 || same1 < 0.95 {
+		t.Errorf("the segments of the clip without a length differ from the clip's own: %.3f, %.3f", same0, same1)
 	}
 }

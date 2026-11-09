@@ -393,7 +393,11 @@ pictures and clips, and an image finds the stretch of a video it appears in.
   `Sampler`) cuts by stream copy, so a segment starts at the last keyframe before its
   time. `MaxSegments` caps the work per video. A segment is one vector: the model sees
   the whole stretch, which is what makes a clip match a description, and what loses the
-  "matched at 4.00 s" precision of the frame route.
+  "matched at 4.00 s" precision of the frame route. A file whose container states no
+  length (a recording that was never finalized, a stream dump) is first copied into a
+  Matroska file in the temp directory, `MaxSegments` segments of it or all of it, so
+  that it has one, and is then cut like any other; a file without an extension is cut
+  into `.mkv` segments.
 - **Texts are plain text.** The chat template is laid out once, around stand-ins, and
   the instruction and every input are tokenized as parts of their own: a text that
   spells one of the model's control tokens (`<|im_end|>`), libmtmd's media marker or a

@@ -658,6 +658,87 @@ func TestVision_EmbedVideoShortAndCapped(t *testing.T) {
 
 }
 
+// TestVision_EmbedVideoOfUnknownLength: a container that states no length
+// (ffprobe reports 0) is not a short video. It is copied into a file that
+// has one, bounded by MaxSegments, and cut like any other, so that hours of
+// a recording never reach the model as one input; a file that has no length
+// even as a copy contributes its first segment only.
+func TestVision_EmbedVideoOfUnknownLength(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name        string
+		durations   map[string]time.Duration
+		maxSegments int
+		cuts        string
+		segments    int
+		end         time.Duration // of the last segment
+	}{
+		{
+			name:      "a recording without a length",
+			durations: map[string]time.Duration{"stream.webm": 0, "source.mkv": 45 * time.Second},
+			cuts:      "0s/0s/source.mkv 0s/20s/segment-000.mkv 20s/20s/segment-001.mkv 40s/20s/segment-002.mkv",
+			segments:  3, end: 45 * time.Second,
+		},
+		{
+			name:        "capped: only that much is copied",
+			durations:   map[string]time.Duration{"stream.webm": 0, "source.mkv": 40 * time.Second},
+			maxSegments: 2,
+			cuts:        "0s/40s/source.mkv 0s/20s/segment-000.mkv 20s/20s/segment-001.mkv",
+			segments:    2, end: 40 * time.Second,
+		},
+		{
+			name:      "no length even as a copy: the first segment",
+			durations: map[string]time.Duration{"stream.h264": 0, "source.mkv": 0},
+			cuts:      "0s/0s/source.mkv 0s/20s/segment-000.h264",
+			segments:  1, end: 20 * time.Second,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeVision()
+			cutter := &fakeCutter{durations: c.durations}
+			v := openVisionFake(t, f, VisionConfig{Cutter: cutter, MaxSegments: c.maxSegments})
+			var source string
+			for name := range c.durations {
+				if name != "source.mkv" {
+					source = name
+				}
+			}
+			segs, err := v.EmbedVideo(ctx, "/media/"+source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(cutter.cuts, " "); got != c.cuts {
+				t.Errorf("cuts = %s\nwant   %s", got, c.cuts)
+			}
+			if len(segs) != c.segments || segs[len(segs)-1].End != c.end {
+				t.Errorf("segments = %+v, want %d ending at %v", segs, c.segments, c.end)
+			}
+			// the file itself never went to the model whole
+			for _, video := range f.argsOf("bitmapVideo") {
+				if video[1] == source || video[1] == "source.mkv" {
+					t.Errorf("%v was embedded as one input", video[1])
+				}
+			}
+		})
+	}
+}
+
+// TestVision_EmbedVideoWithoutExtension: a segment file needs an extension
+// for the Cutter to pick a container, so a video whose name has none is cut
+// into Matroska files.
+func TestVision_EmbedVideoWithoutExtension(t *testing.T) {
+	f := newFakeVision()
+	cutter := &fakeCutter{durations: map[string]time.Duration{"upload-7f3a": 30 * time.Second}}
+	v := openVisionFake(t, f, VisionConfig{Cutter: cutter})
+	if _, err := v.EmbedVideo(context.Background(), "/media/upload-7f3a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cutter.cuts, " "); got != "0s/20s/segment-000.mkv 20s/20s/segment-001.mkv" {
+		t.Errorf("cuts = %s", got)
+	}
+}
+
 // TestVision_EmbedVideoErrors: no cutter, an unknown file, a failing cut, a
 // failing read.
 func TestVision_EmbedVideoErrors(t *testing.T) {

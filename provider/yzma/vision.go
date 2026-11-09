@@ -527,6 +527,14 @@ func (v *Vision) EmbedImages(ctx context.Context, images []image.Image) ([][]flo
 // of SegmentLength (the Cutter does it, by stream copy), each sampled at
 // FPS and embedded as one input under the instruction. A video no longer
 // than a segment is one input, uncut.
+//
+// A file whose container states no length (a recording that was never
+// finalized, a stream dump) is never taken for a short one. The Cutter
+// first copies it into a Matroska file, which has a length and an index:
+// up to MaxSegments segments of it, or all of it when there is no cap,
+// next to the segments in the temp directory. The copy is then cut like
+// any other video. A file that has no length even as a copy (a raw
+// elementary stream) is embedded as its first segment only.
 func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]media.Segment, error) {
 	if v.cutter == nil {
 		return nil, errors.New("yzma: no Cutter: set VisionConfig.Cutter (media/ffmpeg) to embed videos")
@@ -535,22 +543,65 @@ func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]media.Segment, 
 	if err != nil {
 		return nil, fmt.Errorf("yzma: probe video: %w", err)
 	}
-	if duration <= v.segment {
+	if duration > 0 && duration <= v.segment {
 		vec, err := v.embedVideoFile(ctx, path)
 		if err != nil {
 			return nil, err
 		}
 		return []media.Segment{{Start: 0, End: duration, Vector: vec}}, nil
 	}
-	n := int((duration + v.segment - 1) / v.segment)
-	if v.maxSegments > 0 {
-		n = min(n, v.maxSegments)
-	}
 	dir, err := os.MkdirTemp("", "langai-vision-*")
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
+	if duration <= 0 {
+		if path, duration, err = v.measured(ctx, path, dir); err != nil {
+			return nil, err
+		}
+	}
+	return v.embedSegments(ctx, path, duration, dir)
+}
+
+// measured gives a video whose container states no length one. The Cutter
+// copies it, from its start and for at most MaxSegments segments, into a
+// Matroska file in dir, and that copy and its length are returned in the
+// video's place. Asking the Cutter for stretch after stretch of the
+// original until one comes back empty does not work: a cut that starts
+// past the end of a stream copy is not empty, it is the last group of
+// pictures again. When even the copy has no length, the original comes
+// back with one segment's length, so that its first segment is what gets
+// embedded: bounded, where the whole file would not be.
+func (v *Vision) measured(ctx context.Context, path, dir string) (string, time.Duration, error) {
+	remux := filepath.Join(dir, "source"+fallbackVideoExt)
+	bound := time.Duration(v.maxSegments) * v.segment // 0: to the end
+	if err := v.cutter.Cut(ctx, path, 0, bound, remux); err == nil {
+		if d, err := v.cutter.Duration(ctx, remux); err == nil && d > 0 {
+			return remux, d, nil
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
+	return path, v.segment, nil
+}
+
+// fallbackVideoExt names the container segments are cut into when the
+// video's own file name does not name one: without an extension the Cutter
+// has no way to pick a muxer, and Matroska takes any codec.
+const fallbackVideoExt = ".mkv"
+
+// embedSegments cuts the video of the given length into segments, into dir,
+// and embeds each; MaxSegments caps how many.
+func (v *Vision) embedSegments(ctx context.Context, path string, duration time.Duration, dir string) ([]media.Segment, error) {
+	n := int((duration + v.segment - 1) / v.segment)
+	if v.maxSegments > 0 {
+		n = min(n, v.maxSegments)
+	}
+	ext := filepath.Ext(path)
+	if ext == "" {
+		ext = fallbackVideoExt
+	}
 	out := make([]media.Segment, 0, n)
 	for i := range n {
 		if err := ctx.Err(); err != nil {
@@ -558,7 +609,7 @@ func (v *Vision) EmbedVideo(ctx context.Context, path string) ([]media.Segment, 
 		}
 		start := time.Duration(i) * v.segment
 		end := min(start+v.segment, duration)
-		cut := filepath.Join(dir, fmt.Sprintf("segment-%03d%s", i, filepath.Ext(path)))
+		cut := filepath.Join(dir, fmt.Sprintf("segment-%03d%s", i, ext))
 		if err := v.cutter.Cut(ctx, path, start, v.segment, cut); err != nil {
 			return nil, fmt.Errorf("yzma: cut segment %d: %w", i, err)
 		}
