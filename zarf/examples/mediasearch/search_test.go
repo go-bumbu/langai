@@ -82,11 +82,13 @@ func TestSimilar_StoredVectorsRunNoModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Stored || res.Frames != 0 || res.Query == nil || res.Query.ID != "red.png" || len(res.Hits) < 2 {
+	if !res.Stored || res.Frames != 0 || res.Query == nil || res.Query.ID != "red.png" || len(res.Hits) < 1 {
 		t.Fatalf("result = %+v", res)
 	}
-	if h := res.Hits[0]; !h.Self || h.Item.ID != "red.png" || h.Score < 0.999 {
-		t.Errorf("first hit = %+v, want self with score ~1", h)
+	for _, h := range res.Hits {
+		if h.Self || h.Item.ID == "red.png" {
+			t.Errorf("hit = %+v, want the query item left out", h)
+		}
 	}
 	// a video too, by its stored frames, with no sampler either
 	f.lib.cfg.Sampler = nil

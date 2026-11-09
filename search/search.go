@@ -138,18 +138,25 @@ func (ix *Index) Delete(ctx context.Context, docID string) error {
 	return nil
 }
 
+// Match is one hit of an Index search: the document, its score (cosine, 1
+// for the same direction, around 0 for unrelated text) and the chunk of it
+// that matched best, by position (Seq) and text, which makes a snippet.
+type Match struct {
+	DocID string
+	Score float64
+	Seq   int
+	Text  string
+}
+
 // Search embeds the query and returns the closest documents, best first, at
-// most one Match per document (its best-scoring chunk). Hits below the
-// WithMinScore floor are dropped, so a query with nothing relevant to find can
-// legitimately return fewer results than limit — or none. An empty query
-// returns no results.
-func (ix *Index) Search(ctx context.Context, query string, limit int) ([]vector.Match, error) {
+// most limit (10 when <= 0) and one Match per document (its best-scoring
+// chunk). Hits below the WithMinScore floor are dropped, so a query with
+// nothing relevant to find can legitimately return fewer results than limit
+// — or none. An empty query returns no results.
+func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Match, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, nil
-	}
-	if limit <= 0 {
-		limit = 10
 	}
 	vectors, err := ix.embedder.Embed(ctx, langai.RoleQuery, []string{query})
 	if err != nil {
@@ -161,23 +168,39 @@ func (ix *Index) Search(ctx context.Context, query string, limit int) ([]vector.
 	if err := vector.Validate(vectors[0], ix.embedder.Dimensions()); err != nil {
 		return nil, fmt.Errorf("search: embed query: %w", err)
 	}
-	// the store answers one match per document, its best chunk
-	raw, err := ix.store.Search(ctx, ix.coord, vector.Query{Vector: vectors[0], Limit: limit, Model: ix.model})
-	if err != nil {
-		return nil, fmt.Errorf("search: search: %w", err)
-	}
-	return aboveFloor(raw, ix.minScore), nil
+	return ix.rank(ctx, vector.Query{Limit: limit, Model: ix.model}, vectors)
 }
 
-// aboveFloor returns the leading matches of raw (best first) that score at
-// least min. A NaN score never passes.
-func aboveFloor(raw []vector.Match, min float64) []vector.Match {
-	for i, m := range raw {
-		if !(m.Score >= min) {
-			return raw[:i]
-		}
+// SearchIndexed returns the documents most like the already indexed docID,
+// best first, at most limit (10 when <= 0), searching with its stored chunk
+// vectors instead of embedding its text again: no model runs. Every stored
+// chunk is one store search, and a document is scored by its best chunk
+// against any of docID's, so a long document costs as many searches as it
+// has chunks. docID itself is never among the hits. An id with no stored
+// chunks (unknown, deleted, or empty when indexed) is ErrNotIndexed.
+func (ix *Index) SearchIndexed(ctx context.Context, docID string, limit int) ([]Match, error) {
+	chunks, err := storedVectors(ctx, ix.store, ix.coord, docID)
+	if err != nil {
+		return nil, err
 	}
-	return raw
+	vectors := make([][]float32, len(chunks))
+	for i, c := range chunks {
+		vectors[i] = c.Vector
+	}
+	return ix.rank(ctx, vector.Query{Limit: limit, Model: ix.model, Exclude: []string{docID}}, vectors)
+}
+
+// rank runs the shared ranking over the index's collection and floor.
+func (ix *Index) rank(ctx context.Context, q vector.Query, vectors [][]float32) ([]Match, error) {
+	hits, err := rank(ctx, ix.store, ix.coord, q, vectors, ix.minScore)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Match, len(hits))
+	for i, h := range hits {
+		out[i] = Match{DocID: h.match.DocID, Score: h.match.Score, Seq: h.match.Seq, Text: h.match.Text}
+	}
+	return out, nil
 }
 
 // modelOf returns the model e names, "" when it names none.

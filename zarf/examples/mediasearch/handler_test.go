@@ -94,7 +94,7 @@ func TestHandler_SimilarAndPictures(t *testing.T) {
 	status, body, _ := get(t, srv.URL+"/api/similar/sub%20dir/green%20blue.png?limit=2")
 	var res Result
 	decode(t, body, &res)
-	if status != 200 || len(res.Hits) != 2 || !res.Hits[0].Self || !res.Stored {
+	if status != 200 || len(res.Hits) != 2 || res.Hits[0].Self || !res.Stored {
 		t.Errorf("similar: %d %+v", status, res)
 	}
 	if status, body, _ := get(t, srv.URL+"/api/similar/nope.png"); status != 404 || !bytes.Contains(body, []byte("error")) {

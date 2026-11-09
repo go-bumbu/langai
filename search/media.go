@@ -2,7 +2,6 @@ package search
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,7 +11,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -347,32 +345,27 @@ func (ix *MediaIndex) SearchText(ctx context.Context, text string, limit int) ([
 // item docID, best first, at most limit (10 when <= 0), searching with its
 // stored vectors instead of embedding the file again: no model runs, so it
 // costs only the store lookups. For a video every stored frame or segment
-// is a query and QueryAt is its time, as with SearchVideo. The item itself
-// comes first with a score of about 1.
+// is a query and QueryAt is its time, as with SearchVideo. docID itself is
+// never among the hits; an id with nothing stored is ErrNotIndexed.
 func (ix *MediaIndex) SearchIndexed(ctx context.Context, docID string, limit int) ([]MediaMatch, error) {
-	if docID == "" {
-		return nil, ErrEmptyID
-	}
-	chunks, err := ix.store.Chunks(ctx, ix.coord, docID)
+	chunks, err := storedVectors(ctx, ix.store, ix.coord, docID)
 	if err != nil {
-		return nil, fmt.Errorf("search: read stored vectors of %q: %w", docID, err)
-	}
-	if len(chunks) == 0 {
-		return nil, fmt.Errorf("%w: %q", ErrNotIndexed, docID)
+		return nil, err
 	}
 	queries := make([]queryVector, len(chunks))
 	for i, c := range chunks {
 		queries[i] = queryVector{vector: c.Vector, at: time.Duration(c.Seq) * time.Millisecond}
 	}
-	return ix.search(ctx, queries, limit)
+	return ix.search(ctx, queries, limit, docID)
 }
 
 // SearchFrames is the search behind SearchImage and SearchVideo for frames
 // the caller extracted itself. Every frame is embedded and looked up; each
 // item is scored by its best frame against any query frame, and the hits
 // come back best first, at most limit (10 when <= 0), those under the floor
-// (WithMediaMinScore) left out. An item that is the query itself comes
-// first with a score near 1; callers drop their own id.
+// (WithMediaMinScore) left out. An indexed item that is the query itself
+// comes first with a score near 1: to leave it out, search with its stored
+// vectors through SearchIndexed.
 func (ix *MediaIndex) SearchFrames(ctx context.Context, frames []media.Frame, limit int) ([]MediaMatch, error) {
 	if len(frames) == 0 {
 		return nil, nil
@@ -396,38 +389,22 @@ type queryVector struct {
 }
 
 // search looks every query vector up and keeps the best pair per item, as
-// SearchFrames describes.
-func (ix *MediaIndex) search(ctx context.Context, queries []queryVector, limit int) ([]MediaMatch, error) {
+// SearchFrames describes, leaving out the ids in exclude.
+func (ix *MediaIndex) search(ctx context.Context, queries []queryVector, limit int, exclude ...string) ([]MediaMatch, error) {
 	if len(queries) == 0 {
 		return nil, nil
 	}
-	if limit <= 0 {
-		limit = 10
+	vectors := make([][]float32, len(queries))
+	for i, q := range queries {
+		vectors[i] = q.vector
 	}
-	best := make(map[string]MediaMatch)
-	for _, q := range queries {
-		// the store answers each item's best frame for this query, so the
-		// frames of one item never crowd the others out
-		raw, err := ix.store.Search(ctx, ix.coord, vector.Query{Vector: q.vector, Limit: limit, Model: ix.model})
-		if err != nil {
-			return nil, fmt.Errorf("search: search: %w", err)
-		}
-		for _, m := range aboveFloor(raw, ix.minScore) {
-			if cur, ok := best[m.DocID]; ok && cur.Score >= m.Score {
-				continue
-			}
-			best[m.DocID] = MediaMatch{DocID: m.DocID, Score: m.Score, At: time.Duration(m.Seq) * time.Millisecond, QueryAt: q.at}
-		}
+	hits, err := rank(ctx, ix.store, ix.coord, vector.Query{Limit: limit, Model: ix.model, Exclude: exclude}, vectors, ix.minScore)
+	if err != nil {
+		return nil, err
 	}
-	out := make([]MediaMatch, 0, len(best))
-	for _, m := range best {
-		out = append(out, m)
-	}
-	slices.SortFunc(out, func(a, b MediaMatch) int {
-		return cmp.Or(cmp.Compare(b.Score, a.Score), cmp.Compare(a.DocID, b.DocID))
-	})
-	if len(out) > limit {
-		out = out[:limit]
+	out := make([]MediaMatch, len(hits))
+	for i, h := range hits {
+		out[i] = MediaMatch{DocID: h.match.DocID, Score: h.match.Score, At: time.Duration(h.match.Seq) * time.Millisecond, QueryAt: queries[h.query].at}
 	}
 	return out, nil
 }

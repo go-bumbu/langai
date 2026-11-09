@@ -1,0 +1,86 @@
+package search
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"slices"
+
+	"github.com/go-bumbu/langai/vector"
+)
+
+// defaultLimit is the number of hits a search returns when the caller asks
+// for none (limit <= 0).
+const defaultLimit = 10
+
+// hit is one document's best match over several query vectors, and the
+// index of the query vector that found it.
+type hit struct {
+	match vector.Match
+	query int
+}
+
+// rank searches the store with each of vectors, every search shaped like
+// base, and keeps each document's best match: best first, then by document
+// id, at most base.Limit of them (defaultLimit when <= 0), those under
+// minScore left out. Each search asks for base.Limit documents and the store
+// answers one match per document, so the many chunks of one document never
+// crowd the others out. On a tie the earlier query vector wins.
+func rank(ctx context.Context, store vector.Store, c vector.Coord, base vector.Query, vectors [][]float32, minScore float64) ([]hit, error) {
+	if base.Limit <= 0 {
+		base.Limit = defaultLimit
+	}
+	best := make(map[string]hit)
+	for i, v := range vectors {
+		q := base
+		q.Vector = v
+		raw, err := store.Search(ctx, c, q)
+		if err != nil {
+			return nil, fmt.Errorf("search: search: %w", err)
+		}
+		for _, m := range aboveFloor(raw, minScore) {
+			if cur, ok := best[m.DocID]; ok && cur.match.Score >= m.Score {
+				continue
+			}
+			best[m.DocID] = hit{match: m, query: i}
+		}
+	}
+	out := make([]hit, 0, len(best))
+	for _, h := range best {
+		out = append(out, h)
+	}
+	slices.SortFunc(out, func(a, b hit) int {
+		return cmp.Or(cmp.Compare(b.match.Score, a.match.Score), cmp.Compare(a.match.DocID, b.match.DocID))
+	})
+	if len(out) > base.Limit {
+		out = out[:base.Limit]
+	}
+	return out, nil
+}
+
+// aboveFloor returns the leading matches of raw (best first) that score at
+// least min. A NaN score never passes.
+func aboveFloor(raw []vector.Match, min float64) []vector.Match {
+	for i, m := range raw {
+		if !(m.Score >= min) {
+			return raw[:i]
+		}
+	}
+	return raw
+}
+
+// storedVectors returns the vectors stored for docID, for a "more like this"
+// search: ErrEmptyID for an empty id, ErrNotIndexed when there are none.
+func storedVectors(ctx context.Context, store vector.Store, c vector.Coord, docID string) ([]vector.Chunk, error) {
+	if docID == "" {
+		return nil, ErrEmptyID
+	}
+	chunks, err := store.Chunks(ctx, c, docID)
+	if err != nil {
+		return nil, fmt.Errorf("search: read stored vectors of %q: %w", docID, err)
+	}
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("%w: %q", ErrNotIndexed, docID)
+	}
+	return chunks, nil
+}

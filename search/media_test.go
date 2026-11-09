@@ -334,16 +334,16 @@ func TestMediaIndex_SearchIndexedReusesTheStoredVectors(t *testing.T) {
 	}
 	calls := emb.calls.Load()
 
-	// an image: itself first, then the clip by its frame at 4 s
+	// an image: the clip first by its frame at 4 s, the image itself left out
 	hits, err := ix.SearchIndexed(ctx, "a", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 3 || hits[0].DocID != "a" || hits[0].Score < 0.999 {
-		t.Fatalf("hits = %+v, want a itself first of 3", hits)
+	if len(hits) != 2 || hits[0].DocID != "clip" || hits[0].Score < 0.999 {
+		t.Fatalf("hits = %+v, want clip first of 2, a left out", hits)
 	}
-	if hits[1].DocID != "clip" || hits[1].At != 4*time.Second || hits[1].QueryAt != 0 {
-		t.Errorf("hits[1] = %+v, want clip by its 4 s frame", hits[1])
+	if hits[0].At != 4*time.Second || hits[0].QueryAt != 0 {
+		t.Errorf("hits[0] = %+v, want clip by its 4 s frame", hits[0])
 	}
 
 	// a video: every stored frame is a query, QueryAt its time
@@ -355,8 +355,8 @@ func TestMediaIndex_SearchIndexedReusesTheStoredVectors(t *testing.T) {
 	for _, h := range hits {
 		byID[h.DocID] = h
 	}
-	if h := byID["clip"]; h.Score < 0.999 {
-		t.Errorf("clip = %+v, want itself at ~1", h)
+	if h, ok := byID["clip"]; ok {
+		t.Errorf("clip = %+v, want the query item left out", h)
 	}
 	if h := byID["a"]; h.Score < 0.999 || h.QueryAt != 4*time.Second {
 		t.Errorf("a = %+v, want found by the query frame at 4 s", h)

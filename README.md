@@ -170,8 +170,15 @@ store, err := sqlitevec.New(ctx, db, emb.Dimensions())
 // locate the documents within it
 ix, err := search.New(emb, store, "tenant-1", "space-7", "notes", search.WithMinScore(0.3))
 err = ix.Index(ctx, "note-42", markdownText) // a no-op while the text is unchanged
-hits, err := ix.Search(ctx, "how long to boil spaghetti", 10)
+hits, err := ix.Search(ctx, "how long to boil spaghetti", 10) // []search.Match: DocID, Score, Seq and Text of the best chunk
+more, err := ix.SearchIndexed(ctx, "note-42", 10)            // "more like this" with the stored chunks: no model runs
 ```
+
+`Search` and `SearchIndexed` return a `search.Match` per document: its best chunk, by
+position and text (a snippet), and its score. `SearchIndexed` searches with every stored
+chunk of the document and scores each other document by its best chunk against any of
+them; the document itself is never among the hits, and an id with nothing stored is
+`search.ErrNotIndexed`.
 
 Every `Store` backend keeps one physical table set per index, so one index's vectors are
 never queryable from another's. Within an index a search sees exactly one collection,
@@ -260,8 +267,9 @@ query finds images. A search embeds every query frame, asks the store for the be
 frame of each of the closest items and scores an item by its best frame, so a video is
 found by the one shot that resembles the query most, and its other frames take no
 places from other items; `At` says where in the video that is, and for a video
-query `QueryAt` which of its frames matched. An item that is the query itself comes back
-first with a score near 1, so drop your own id. `IndexFrames` and `SearchFrames` take
+query `QueryAt` which of its frames matched. `SearchIndexed` leaves the item it starts
+from out of its hits; a search by a file that is also indexed finds that item first, with
+a score near 1. `IndexFrames` and `SearchFrames` take
 frames you extracted yourself, with your own content hash; more image formats register
 through `image.RegisterFormat`.
 

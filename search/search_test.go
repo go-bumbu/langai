@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -294,7 +295,7 @@ func newFlooredIndex(t *testing.T, store vector.Store, min float64) (*Index, err
 	return New(langaitest.FakeEmbedder{}, store, "t", "p", "c", WithMinScore(min))
 }
 
-func hitsOf(matches []vector.Match) string {
+func hitsOf(matches []Match) string {
 	parts := make([]string, 0, len(matches))
 	for _, m := range matches {
 		parts = append(parts, fmt.Sprintf("%s(%.4f)", m.DocID, m.Score))
@@ -344,5 +345,48 @@ func TestIndexPassesRolesToEmbedder(t *testing.T) {
 		if emb.roles[i] != want[i] {
 			t.Fatalf("roles = %v, want %v", emb.roles, want)
 		}
+	}
+}
+
+// TestIndex_SearchIndexedLeavesItselfOut: "more like this" searches with the
+// document's stored chunks, runs no model, never answers the document
+// itself, and names an id with nothing stored.
+func TestIndex_SearchIndexedLeavesItselfOut(t *testing.T) {
+	emb := &countingEmbedder{}
+	ix, err := New(emb, vector.NewMemStore(), "t", "p", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for id, text := range map[string]string{
+		"golang":  "# Go\n\nNotes about the Go programming language.\n\n## Concurrency\n\ngoroutines and channels",
+		"go-copy": "# Go notes\n\nthe Go programming language with goroutines and channels",
+		"cooking": "# Cooking\n\nRecipes for pasta, pizza and fresh tomato sauce.",
+	} {
+		if err := ix.Index(ctx, id, text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := emb.calls
+	got, err := ix.SearchIndexed(ctx, "golang", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].DocID != "go-copy" || got[0].Text == "" {
+		t.Fatalf("SearchIndexed = %s, want go-copy first and golang left out", hitsOf(got))
+	}
+	for _, m := range got {
+		if m.DocID == "golang" {
+			t.Errorf("the query document came back: %s", hitsOf(got))
+		}
+	}
+	if emb.calls != calls {
+		t.Errorf("SearchIndexed ran the embedder %d times, want none", emb.calls-calls)
+	}
+	if _, err := ix.SearchIndexed(ctx, "missing", 10); !errors.Is(err, ErrNotIndexed) {
+		t.Errorf("unknown id: %v, want ErrNotIndexed", err)
+	}
+	if _, err := ix.SearchIndexed(ctx, "", 10); !errors.Is(err, ErrEmptyID) {
+		t.Errorf("empty id: %v, want ErrEmptyID", err)
 	}
 }
