@@ -23,7 +23,10 @@ const windowBytes = 6144
 // maxTitleBytes is the longest first line of a text that is read as its title.
 // A window past the first, cut from the middle of the text, often cannot tell
 // what its section is about, so the title is repeated at its head. Measured on
-// the same 24 documents: side-topic recall 0.656 without, 0.708 with.
+// the same 24 documents, under the scoring zarf/eval used before 2026-11-09:
+// side-topic recall 0.656 without, 0.708 with. With the title it is 0.759
+// under today's scoring (TestGenerateLongTags in provider/yzma); without it
+// was not measured again.
 const maxTitleBytes = 200
 
 // maxFailedWindowsAtStart is how many windows of a long text, from the first

@@ -81,9 +81,12 @@ func itemPieces(text string, chunkBytes int) []string {
 // Measured on 2026-11-07 (docs/superpowers/specs/2026-11-07-tagger-long-items-
 // results.md): against the centroid of the pieces, which dilutes a topic one
 // section is about with the sections that are not, the two best pieces found
-// side topics 0.68 of the time against 0.58 at no cost in precision. The best
-// piece alone found 0.74 but let one paragraph carry a tag: 3.5 tags a
-// document matched none of its topics, against 2.0. Two pieces are both "the
+// side topics 0.89 of the time against 0.75, scored by exact label, at no cost
+// in precision. The best piece alone found 0.96 but let one paragraph carry a
+// tag: 5.0 tags a document were labels of other documents, against 3.5. (Under
+// the topic matching zarf/eval used before 2026-11-09 the same comparison read
+// 0.68 against 0.58, and 0.74 with 3.5 off-topic tags against 2.0; it was not
+// run again under today's.) Two pieces are both "the
 // two best", so their mean would only dilute; a page of two, a header and two
 // halves, is best read whole as well as by halves, and their centroid scores
 // both of its topics where neither half holds one whole.

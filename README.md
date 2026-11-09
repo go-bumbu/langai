@@ -928,7 +928,7 @@ A 4B model copies a text's words readily: with the rule stated once, last, Engli
 for the 55 German and Spanish golden documents had 88 of 550 tags still in the text's
 language; stated first and last, 28, most of them place and dish names. With `WithTreeTags`,
 `WithNativeLanguageTags` states its rule first and last too; without, last only (first as
-well cost long texts 0.07 of side recall). `WithTreeTags(existing...)` writes each tag as a path from a broad
+well cost long texts 0.07 of side recall, under an earlier scoring rule). `WithTreeTags(existing...)` writes each tag as a path from a broad
 category down (`dev / go / error wrapping`, at most `MaxTreeLevels` deep) and the tags of a
 text as a small tree sharing upper levels. With existing paths, the model is shown them (up
 to `MaxTreeBytes`) and asked to extend them, written as they are, and to start a new

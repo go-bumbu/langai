@@ -20,7 +20,8 @@ const (
 	// 4B Instruct writing the tags and EmbeddingGemma scoring them (provider/yzma).
 	// Measured on 2026-10-25 over ten golden documents in English, Spanish and
 	// German, the ten tags the model wrote for each scored 0.31 to 0.68, the ones
-	// on a text's main topics at 0.5 and above; 6 to 10 of them reached 0.45,
+	// on a text's main topics at 0.5 and above; 6 to 10 of them reached 0.45
+	// (5 to 10 when measured again on 2026-11-09, on the GPU),
 	// and what fell below it was side detail (the steam for a loaf, a side
 	// salad). That is a judgment by eye on a small set, not a measured
 	// precision, and another embedder scores on another scale, so choose the
@@ -206,7 +207,8 @@ func systemPrompt(candidates int, o generatorOptions) string {
 	// prompt, its example path and the existing tree pull it into English.
 	// The flat prompt in the text's language states the rule last only:
 	// stated first as well, side recall on the 24 long documents fell from
-	// 0.708 to 0.640 and precision from 0.882 to 0.853.
+	// 0.708 to 0.640 and precision from 0.882 to 0.853 (under the scoring
+	// zarf/eval used before 2026-11-09; not measured again under today's).
 	switch {
 	case o.language != "":
 		fmt.Fprintf(&b, "Every tag must be in %[1]s. The text may be in another language: translate its topics into %[1]s "+
