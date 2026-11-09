@@ -1,4 +1,4 @@
-module github.com/go-bumbu/langai
+module github.com/go-bumbu/sense
 
 go 1.26.0
 

@@ -12,7 +12,7 @@ import (
 	"golang.org/x/text/language"
 	"golang.org/x/text/language/display"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 const (
@@ -83,8 +83,8 @@ type GeneratorConfig struct {
 
 // Generator writes and scores tags with one Completer and one Embedder.
 type Generator struct {
-	llm    langai.Completer
-	emb    langai.Embedder
+	llm    sense.Completer
+	emb    sense.Embedder
 	cfg    GeneratorConfig
 	opts   generatorOptions
 	prompt string // the system prompt, built once from cfg and opts
@@ -168,7 +168,7 @@ const (
 // NewGenerator returns a Generator that has llm write the tags and emb score
 // them. Without options, it writes tags of one to three words in the language
 // of the text.
-func NewGenerator(llm langai.Completer, emb langai.Embedder, cfg GeneratorConfig, opts ...GeneratorOption) (*Generator, error) {
+func NewGenerator(llm sense.Completer, emb sense.Embedder, cfg GeneratorConfig, opts ...GeneratorOption) (*Generator, error) {
 	if llm == nil {
 		return nil, errors.New("tagging: nil Completer")
 	}
@@ -284,7 +284,7 @@ func languageName(code string) string {
 // nobody. A model that writes no usable tag is not an error.
 //
 // A model call that fails, or answers with nothing at all, is made once more,
-// unless ctx has ended or the model's error wraps langai.ErrClosed, which
+// unless ctx has ended or the model's error wraps sense.ErrClosed, which
 // asking again cannot change. On a short text a second failure is the error
 // of Generate, wrapping the model's or ErrEmptyReply. On a long text the
 // windows that were read still count: Generate returns their tags together
@@ -329,11 +329,11 @@ func (g *Generator) Generate(ctx context.Context, text string, minScore float64)
 	if len(names) == 0 {
 		return nil, nil
 	}
-	textVecs, err := g.embed(ctx, langai.RoleQuery, []string{text})
+	textVecs, err := g.embed(ctx, sense.RoleQuery, []string{text})
 	if err != nil {
 		return nil, err
 	}
-	nameVecs, err := g.embed(ctx, langai.RoleDocument, names)
+	nameVecs, err := g.embed(ctx, sense.RoleDocument, names)
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +367,7 @@ var ErrEmptyReply = errors.New("tagging: the model replied with nothing")
 // were read, scored against the whole text as usual, so topics of the windows
 // that failed can be missing. The error also wraps each window's cause and
 // says which windows they are, and how many were not read in all: the windows
-// after one the model was closed at (langai.ErrClosed) are not asked about.
+// after one the model was closed at (sense.ErrClosed) are not asked about.
 // Test for it with errors.Is, and keep the tags or call again as suits the
 // application.
 var ErrPartial = errors.New("tagging: tags of a part of the text only")
@@ -377,7 +377,7 @@ var ErrPartial = errors.New("tagging: tags of a part of the text only")
 // nothing to read (see ErrEmptyReply), is asked once more: one bad answer in
 // the many a long text takes must not cost the others. It does not ask again
 // once ctx has ended, nor a model that says it is closed (an error wrapping
-// langai.ErrClosed), which would say so again, and returns the last failure.
+// sense.ErrClosed), which would say so again, and returns the last failure.
 func (g *Generator) write(ctx context.Context, text string) (string, error) {
 	var failure error
 	for range 2 {
@@ -386,7 +386,7 @@ func (g *Generator) write(ctx context.Context, text string) (string, error) {
 		}
 		answer, err := g.llm.Complete(ctx, g.prompt, text)
 		switch {
-		case errors.Is(err, langai.ErrClosed):
+		case errors.Is(err, sense.ErrClosed):
 			return "", err
 		case err != nil:
 			failure = err
@@ -400,7 +400,7 @@ func (g *Generator) write(ctx context.Context, text string) (string, error) {
 }
 
 // embed embeds texts as role and checks that every one was answered.
-func (g *Generator) embed(ctx context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (g *Generator) embed(ctx context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	vecs, err := g.emb.Embed(ctx, role, texts)
 	if err != nil {
 		return nil, fmt.Errorf("tagging: embed as %s: %w", role, err)

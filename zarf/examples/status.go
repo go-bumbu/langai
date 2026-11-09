@@ -4,13 +4,13 @@ import (
 	"context"
 	"time"
 
-	"github.com/go-bumbu/langai/provider/yzma"
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/zarf/examples/autotag"
-	"github.com/go-bumbu/langai/zarf/examples/duplicates"
-	"github.com/go-bumbu/langai/zarf/examples/mediasearch"
-	"github.com/go-bumbu/langai/zarf/examples/status"
-	"github.com/go-bumbu/langai/zarf/examples/textsearch"
+	"github.com/go-bumbu/sense/provider/yzma"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/zarf/examples/autotag"
+	"github.com/go-bumbu/sense/zarf/examples/duplicates"
+	"github.com/go-bumbu/sense/zarf/examples/mediasearch"
+	"github.com/go-bumbu/sense/zarf/examples/status"
+	"github.com/go-bumbu/sense/zarf/examples/textsearch"
 )
 
 // indexed is where a page's index keeps its vectors: the store, the
@@ -43,7 +43,7 @@ func openStatus(o options, s service) (*status.Service, error) {
 	media := status.Model{
 		Key: "media", Name: "image model", UsedBy: "media search", ID: s.media.id, Dimensions: s.media.embedder.Dimensions(),
 		Runtime: s.media.runtime, RunsOn: s.media.runsOn.String,
-		Why: "behind langai.LazyImageEmbedder: the scan of an unchanged library and every \"looks like\" search use stored vectors, so the model loads only for a new file, an upload or a re-embed",
+		Why: "behind sense.LazyImageEmbedder: the scan of an unchanged library and every \"looks like\" search use stored vectors, so the model loads only for a new file, an upload or a re-embed",
 	}
 	if s.media.lazy != nil {
 		media.Lazy = s.media.lazy
@@ -94,12 +94,12 @@ func openStatus(o options, s service) (*status.Service, error) {
 			{
 				Key: "text", Name: "text embedding model", UsedBy: "text search; auto tagging (the Tagger, and the scores of the Generator's tags)",
 				ID: s.text.Model(), Dimensions: s.text.Dimensions(), Runtime: llama, RunsOn: s.text.runsOn.String, Lazy: s.text.LazyEmbedder,
-				Why: "behind langai.LazyEmbedder: one instance for both pages; unchanged documents and cached notes never reach it, so it loads on the first new text or query",
+				Why: "behind sense.LazyEmbedder: one instance for both pages; unchanged documents and cached notes never reach it, so it loads on the first new text or query",
 			},
 			{
 				Key: "chat", Name: "chat model", UsedBy: "auto tagging (the Generator writes tags with it)",
 				ID: s.chat.name, Runtime: llama, RunsOn: func() string { return s.chat.accel + " (as asked; a yzma.Completer does not report its device)" }, Lazy: s.chat.LazyCompleter,
-				Why: "behind langai.LazyCompleter: 2.5 GB that only the recommend button needs",
+				Why: "behind sense.LazyCompleter: 2.5 GB that only the recommend button needs",
 			},
 			media,
 			{

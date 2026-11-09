@@ -5,7 +5,7 @@
 // "more like this document" with the chunk that matched and its score. It
 // also shows a document cut into the chunks that were embedded. Handler
 // serves it over HTTP. It knows the library's ports only, so its tests run
-// on langaitest's fakes.
+// on sensetest's fakes.
 package textsearch
 
 import (
@@ -22,8 +22,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // States of a document after a scan.

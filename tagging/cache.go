@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // errEmptyIndex is refused by every cache, index and Tagger call: an index is
@@ -20,14 +20,14 @@ var errEmptyIndex = errors.New("tagging: empty index")
 // the SHA-256 of the text.
 type CacheKey struct {
 	Model string
-	Role  langai.Role
+	Role  sense.Role
 	Hash  [32]byte
 }
 
 // KeyFor returns the key of text embedded under model in role. The model and
 // role are part of the key because the same text embeds to a different vector
 // under each.
-func KeyFor(model string, role langai.Role, text string) CacheKey {
+func KeyFor(model string, role sense.Role, text string) CacheKey {
 	return CacheKey{Model: model, Role: role, Hash: sha256.Sum256([]byte(text))}
 }
 

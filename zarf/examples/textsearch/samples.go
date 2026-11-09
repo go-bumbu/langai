@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/sense/zarf/eval"
 )
 
 // WriteSamples writes the eval golden texts into dir as Markdown files, so

@@ -3,8 +3,8 @@ package vectortest_test
 import (
 	"testing"
 
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/vector/vectortest"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/vector/vectortest"
 )
 
 // TestRun_MemStore runs the suite against the reference store, which is the

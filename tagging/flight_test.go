@@ -10,7 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // flightKey is the key the flight tests run under.
@@ -245,8 +245,8 @@ func TestFlight_CloseCancelsTheRunsAndWaitsForThem(t *testing.T) {
 			t.Errorf("the caller of the run that was closed: err = %v, want its run's context.Canceled", err)
 		}
 		ran := false
-		if err := run(context.Background(), &f, func(context.Context) error { ran = true; return nil }); !errors.Is(err, langai.ErrClosed) || ran {
-			t.Errorf("do after close: ran %v, err %v; want langai.ErrClosed and no run", ran, err)
+		if err := run(context.Background(), &f, func(context.Context) error { ran = true; return nil }); !errors.Is(err, sense.ErrClosed) || ran {
+			t.Errorf("do after close: ran %v, err %v; want sense.ErrClosed and no run", ran, err)
 		}
 		f.close() // closing twice is fine
 	})
@@ -260,7 +260,7 @@ func TestFlight_CloseCancelsTheRunsAndWaitsForThem(t *testing.T) {
 func TestEngine_ARebuildNobodyWaitsForIsCancelled(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newRig(t, engineCfg, &fakeCatalog{tags: breadAndJapan("1")}, nil, nil)
-		r.emb.hangOn(langai.RoleDocument, true)
+		r.emb.hangOn(sense.RoleDocument, true)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		if _, err := r.e.scores(ctx, "1", "10", "1", diaryText); !errors.Is(err, context.DeadlineExceeded) {
@@ -271,7 +271,7 @@ func TestEngine_ARebuildNobodyWaitsForIsCancelled(t *testing.T) {
 		if n := r.emb.gaveUp(); n != 1 {
 			t.Errorf("%d hanging Embed calls were cancelled, want 1: the rebuild's", n)
 		}
-		r.emb.hangOn(langai.RoleDocument, false)
+		r.emb.hangOn(sense.RoleDocument, false)
 		if got := picked(r.scores(t, "1", diaryText)); len(got) != 1 || got[0] != "japan" {
 			t.Errorf("the next call: %v, want [japan]", got)
 		}
@@ -356,7 +356,7 @@ func TestTagger_Close(t *testing.T) {
 		}
 		space := tg.Scope(Space{"1", "10"})
 		ctx := context.Background()
-		emb.hangOn(langai.RoleDocument, true)
+		emb.hangOn(sense.RoleDocument, true)
 		caller := make(chan error, 1)
 		go func() {
 			_, err := space.Suggest(ctx, "1", diaryText)
@@ -370,10 +370,10 @@ func TestTagger_Close(t *testing.T) {
 		if n := emb.gaveUp(); n != 1 {
 			t.Errorf("Close returned with %d hanging Embed calls cancelled, want 1: it waits for the rebuild", n)
 		}
-		if err := <-caller; !errors.Is(err, langai.ErrClosed) {
-			t.Errorf("the call Close cut short: err = %v, want one wrapping langai.ErrClosed", err)
+		if err := <-caller; !errors.Is(err, sense.ErrClosed) {
+			t.Errorf("the call Close cut short: err = %v, want one wrapping sense.ErrClosed", err)
 		}
-		emb.hangOn(langai.RoleDocument, false)
+		emb.hangOn(sense.RoleDocument, false)
 		embedded := emb.total()
 		for name, call := range map[string]func() error{
 			"Suggest": func() error { _, err := space.Suggest(ctx, "1", diaryText); return err },
@@ -382,8 +382,8 @@ func TestTagger_Close(t *testing.T) {
 			"Touch":   func() error { return space.Touch(ctx) },
 			"Prune":   func() error { _, err := tg.Prune(ctx, time.Now().Add(-48*time.Hour)); return err },
 		} {
-			if err := call(); !errors.Is(err, langai.ErrClosed) {
-				t.Errorf("%s after Close: err = %v, want langai.ErrClosed", name, err)
+			if err := call(); !errors.Is(err, sense.ErrClosed) {
+				t.Errorf("%s after Close: err = %v, want sense.ErrClosed", name, err)
 			}
 		}
 		if n := emb.total() - embedded; n != 0 {

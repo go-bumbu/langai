@@ -1,4 +1,4 @@
-package langaitest_test
+package sensetest_test
 
 import (
 	"context"
@@ -6,15 +6,15 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 func TestFakeEmbedder_Dimensions(t *testing.T) {
-	if got := (langaitest.FakeEmbedder{}).Dimensions(); got != 64 {
+	if got := (sensetest.FakeEmbedder{}).Dimensions(); got != 64 {
 		t.Errorf("zero value Dimensions() = %d, want 64", got)
 	}
-	if got := (langaitest.FakeEmbedder{Dims: 8}).Dimensions(); got != 8 {
+	if got := (sensetest.FakeEmbedder{Dims: 8}).Dimensions(); got != 8 {
 		t.Errorf("Dimensions() with Dims 8 = %d, want 8", got)
 	}
 }
@@ -24,9 +24,9 @@ func TestFakeEmbedder_Dimensions(t *testing.T) {
 // the same unit vector, and a text that shares words with another sits closer
 // to it than one that shares none.
 func TestFakeEmbedder_SharedWordsScoreHigher(t *testing.T) {
-	emb := langaitest.FakeEmbedder{}
+	emb := sensetest.FakeEmbedder{}
 	texts := []string{"Go channels and goroutines", "go CHANNELS, and goroutines!", "goroutines in Go", "tomato pasta sauce"}
-	vecs, err := emb.Embed(context.Background(), langai.RoleDocument, texts)
+	vecs, err := emb.Embed(context.Background(), sense.RoleDocument, texts)
 	if err != nil {
 		t.Fatal(err)
 	}

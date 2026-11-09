@@ -1,12 +1,12 @@
 // Package search is a reusable semantic-search capability: it turns documents
-// into embedding vectors (via a langai.Embedder), stores them in a
+// into embedding vectors (via a sense.Embedder), stores them in a
 // vector.Store, and answers free-text queries with the closest documents. It
 // knows nothing about what the documents are: callers hand it opaque document
 // ids and plain text.
 //
 // MediaIndex is the same for pictures: it embeds images and videos (as
-// sampled frames through a langai.ImageEmbedder, or as whole segments
-// through a langai.VideoEmbedder) and answers an image, a video or, with a
+// sampled frames through a sense.ImageEmbedder, or as whole segments
+// through a sense.VideoEmbedder) and answers an image, a video or, with a
 // model that has a text side, a text with the items that look most like it.
 //
 // The Stores live in the vector package and its subpackages, and the
@@ -23,8 +23,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/vector"
 )
 
 var (
@@ -41,7 +41,7 @@ var (
 // Index ties an Embedder, a Store and a Chunker together into the high-level
 // operations callers use: index a document, remove it, search.
 type Index struct {
-	embedder langai.Embedder
+	embedder sense.Embedder
 	store    vector.Store
 	chunker  Chunker
 	minScore float64
@@ -86,10 +86,10 @@ func WithMaxQueryVectors(n int) Option {
 // collection is a value like any other, never a wildcard. An empty index is
 // vector.ErrEmptyIndex, and a partition or collection that is not valid
 // UTF-8 or holds a NUL byte vector.ErrInvalidID. When the embedder
-// names its model (langai.Identified), the store records it with the
+// names its model (sense.Identified), the store records it with the
 // vectors written to the collection and refuses another model's while the
 // collection holds documents; Reset empties it for a new model.
-func New(embedder langai.Embedder, store vector.Store, index, partition, collection string, opts ...Option) (*Index, error) {
+func New(embedder sense.Embedder, store vector.Store, index, partition, collection string, opts ...Option) (*Index, error) {
 	if embedder == nil {
 		return nil, errors.New("search: nil embedder")
 	}
@@ -122,7 +122,7 @@ func New(embedder langai.Embedder, store vector.Store, index, partition, collect
 // hash is the hash Index stores with a document of text: it changes with
 // the text, the chunker's settings and the model, so that a change of the
 // text or the chunker indexes the document again. A change of a named model
-// (langai.Identified) does not get that far: the store refuses the new
+// (sense.Identified) does not get that far: the store refuses the new
 // model's vectors while the collection holds the old one's, and IndexBatch
 // says so before embedding anything; Reset empties the collection for the
 // new model to rebuild. The model is in the hash all the same, so that the
@@ -164,7 +164,7 @@ func (ix *Index) Search(ctx context.Context, query string, limit int) ([]Match, 
 	if query == "" {
 		return nil, nil
 	}
-	vectors, err := ix.embedder.Embed(ctx, langai.RoleQuery, []string{query})
+	vectors, err := ix.embedder.Embed(ctx, sense.RoleQuery, []string{query})
 	if err != nil {
 		return nil, fmt.Errorf("search: embed query: %w", err)
 	}

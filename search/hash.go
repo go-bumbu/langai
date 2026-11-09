@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // Fingerprinter is the optional interface of a Chunker, a media.Sampler or
-// a langai.VideoEmbedder whose output depends on its settings: Fingerprint
+// a sense.VideoEmbedder whose output depends on its settings: Fingerprint
 // describes them, the same string for the same output and another one
 // whenever a change of setting (or of algorithm) would change the chunks,
 // frames or segments. The indexes fold it into the hash they store with
@@ -32,7 +32,7 @@ func fingerprintOf(v any) string {
 
 // modelOf returns the model e names, "" when it names none.
 func modelOf(e any) string {
-	if id, ok := e.(langai.Identified); ok {
+	if id, ok := e.(sense.Identified); ok {
 		return id.Model()
 	}
 	return ""

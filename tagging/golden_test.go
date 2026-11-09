@@ -13,9 +13,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/provider/yzma"
-	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/provider/yzma"
+	"github.com/go-bumbu/sense/zarf/eval"
 )
 
 // TestGoldenTagging replays the golden set through Suggest with the real
@@ -135,7 +135,7 @@ type goldenWorld struct {
 	tagRev  map[string]int             // tag id -> its revision
 }
 
-func newGoldenWorld(t *testing.T, emb langai.Embedder, ds *eval.Dataset, chunkBytes int) *goldenWorld {
+func newGoldenWorld(t *testing.T, emb sense.Embedder, ds *eval.Dataset, chunkBytes int) *goldenWorld {
 	t.Helper()
 	w := &goldenWorld{
 		ds:     ds,

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 // This example has a model write tags for a text, then keeps the ones that
@@ -18,8 +18,8 @@ func ExampleGenerator() {
 	// would use the yzma Completer and Embedder. FakeEmbedder only counts
 	// shared words, so its scores run lower than a real model's, and the cutoff
 	// is lowered to match.
-	model := &langaitest.FakeCompleter{Replies: []string{"sourdough bread\nbaking\ntravel\n"}}
-	g, err := tagging.NewGenerator(model, langaitest.FakeEmbedder{}, tagging.GeneratorConfig{})
+	model := &sensetest.FakeCompleter{Replies: []string{"sourdough bread\nbaking\ntravel\n"}}
+	g, err := tagging.NewGenerator(model, sensetest.FakeEmbedder{}, tagging.GeneratorConfig{})
 	if err != nil {
 		log.Fatal(err)
 	}

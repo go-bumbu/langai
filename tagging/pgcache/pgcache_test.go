@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-bumbu/testdbs"
 
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/tagging/cachetest"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/tagging/cachetest"
 )
 
 // TestMain registers a Postgres container as a testdbs slow DB. A plain go test

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 var (
@@ -37,7 +37,7 @@ const skippedMark = "+skipped"
 // the cache costs time, never correctness. It is safe for concurrent use when
 // its parts are.
 type engine struct {
-	emb   langai.Embedder
+	emb   sense.Embedder
 	cat   Catalog
 	cache EmbeddingCache
 	ix    TagIndex
@@ -59,7 +59,7 @@ type engine struct {
 
 // newEngine returns an engine over its four parts. It fails on a missing
 // part, and on a configuration NewTagger refuses (see checkConfig).
-func newEngine(emb langai.Embedder, cat Catalog, cache EmbeddingCache, ix TagIndex, cfg TaggerConfig) (*engine, error) {
+func newEngine(emb sense.Embedder, cat Catalog, cache EmbeddingCache, ix TagIndex, cfg TaggerConfig) (*engine, error) {
 	switch {
 	case emb == nil:
 		return nil, errors.New("tagging: no embedder")
@@ -286,9 +286,9 @@ func (e *engine) call(ctx context.Context, fn func(context.Context) error) error
 
 // closedErr is the error of a call that ended with err: err itself, or, when
 // the engine was closed while the call ran and so cut it short, one wrapping
-// langai.ErrClosed too.
+// sense.ErrClosed too.
 func (e *engine) closedErr(err error) error {
-	if err == nil || errors.Is(err, langai.ErrClosed) || e.closing.Err() == nil {
+	if err == nil || errors.Is(err, sense.ErrClosed) || e.closing.Err() == nil {
 		return err
 	}
 	return fmt.Errorf("%w: %w", errClosed, err)
@@ -388,7 +388,7 @@ func (e *engine) build(ctx context.Context, index, partition string, tags []TagV
 	if err != nil {
 		return err
 	}
-	nameVecs, unnamed, err := e.vectors(ctx, index, langai.RoleDocument, names, canary)
+	nameVecs, unnamed, err := e.vectors(ctx, index, sense.RoleDocument, names, canary)
 	if err != nil {
 		return err
 	}

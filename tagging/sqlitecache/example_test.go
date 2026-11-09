@@ -8,9 +8,9 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/tagging/sqlitecache"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/tagging/sqlitecache"
 )
 
 // This example mirrors the README's automatic tagging: a Tagger over the
@@ -21,8 +21,8 @@ func ExampleNew() {
 	ctx := context.Background()
 	var (
 		emb interface {
-			langai.Embedder
-			langai.Identified
+			sense.Embedder
+			sense.Identified
 		} // e.g. yzma.New's Embedder
 		catalog tagging.Catalog // the application's tags and hand-made links
 	)

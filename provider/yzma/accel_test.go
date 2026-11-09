@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai/internal/hw"
+	"github.com/go-bumbu/sense/internal/hw"
 )
 
 // cpuOnly makes the hardware look like a plain CPU machine for the test, so

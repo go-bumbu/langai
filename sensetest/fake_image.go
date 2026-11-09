@@ -1,4 +1,4 @@
-package langaitest
+package sensetest
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"image"
 	"sync/atomic"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // fakeImageCells is the thumbnail side of FakeImageEmbedder: the image is
@@ -32,15 +32,15 @@ type FakeImageEmbedder struct {
 }
 
 // FakeImageEmbedderModel is the model name FakeImageEmbedder reports.
-const FakeImageEmbedderModel = "langaitest/fake-image-embedder"
+const FakeImageEmbedderModel = "sensetest/fake-image-embedder"
 
 // verify the interfaces are actually satisfied
 var (
-	_ langai.ImageEmbedder = FakeImageEmbedder{}
-	_ langai.Identified    = FakeImageEmbedder{}
+	_ sense.ImageEmbedder = FakeImageEmbedder{}
+	_ sense.Identified    = FakeImageEmbedder{}
 )
 
-// Model implements langai.Identified: FakeImageEmbedderModel.
+// Model implements sense.Identified: FakeImageEmbedderModel.
 func (FakeImageEmbedder) Model() string { return FakeImageEmbedderModel }
 
 // Dimensions implements ImageEmbedder: 4×4 cells of 3 channels.
@@ -63,14 +63,14 @@ func (f FakeImageEmbedder) EmbedImages(ctx context.Context, images []image.Image
 	out := make([][]float32, len(images))
 	for i, img := range images {
 		if img == nil {
-			return nil, errors.New("langaitest: nil image")
+			return nil, errors.New("sensetest: nil image")
 		}
 		b := img.Bounds()
 		if b.Empty() {
-			return nil, errors.New("langaitest: empty image")
+			return nil, errors.New("sensetest: empty image")
 		}
 		vec := thumbnail(img, fakeImageCells)
-		langai.Normalize(vec)
+		sense.Normalize(vec)
 		out[i] = vec
 	}
 	return out, nil

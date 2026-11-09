@@ -7,13 +7,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // errClosed is returned by every call on a Tagger after its Close, and
 // wrapped by the error of a call that Close cut short. It wraps
-// langai.ErrClosed, the module's one sentinel for a closed value.
-var errClosed = fmt.Errorf("tagging: tagger: %w", langai.ErrClosed)
+// sense.ErrClosed, the module's one sentinel for a closed value.
+var errClosed = fmt.Errorf("tagging: tagger: %w", sense.ErrClosed)
 
 // flight runs one function per key at a time, for every caller of that key:
 // the engine's singleflight, keyed by space, so the rebuilds of one space

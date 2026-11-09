@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 func scanned(t *testing.T) *fixture {
@@ -182,7 +182,7 @@ func (measuringSampler) Cut(context.Context, string, time.Duration, time.Duratio
 // itself first and Frames is its segment count.
 func TestSimilar_SegmentsModeSearchesWholeSegments(t *testing.T) {
 	f := newFixture(t)
-	ve := &langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": {pic(64, 48, red, red), pic(64, 48, green, blue)}}}
+	ve := &sensetest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": {pic(64, 48, red, red), pic(64, 48, green, blue)}}}
 	ix, err := search.NewMediaIndex(f.emb, vector.NewMemStore(), "examples", "local", "media", search.WithVideoEmbedder(ve), search.WithSampler(f.sampler))
 	if err != nil {
 		t.Fatal(err)

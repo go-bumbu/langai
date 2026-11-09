@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // Options tunes the tagging report. The tagging pass judges each tag by its
@@ -72,7 +72,7 @@ type Timing struct {
 // Run evaluates emb over ds: a retrieval pass (documents indexed through the
 // production chunker, every query searched) and a tagging pass (tag paths
 // indexed, every essence searched), both over the exact in-memory store.
-func Run(ctx context.Context, emb langai.Embedder, ds *Dataset, opts Options) (*Result, error) {
+func Run(ctx context.Context, emb sense.Embedder, ds *Dataset, opts Options) (*Result, error) {
 	if opts.Floor == 0 {
 		opts.Floor = defaultFloor
 	}
@@ -226,7 +226,7 @@ func (a *taggingAcc) result(opts Options, floors []float64) Tagging {
 // short texts (tag paths, queries) and long ones (essences); the runner flips
 // long around each phase.
 type timedEmbedder struct {
-	inner         langai.Embedder
+	inner         sense.Embedder
 	long          bool
 	shortN, longN int
 	shortD, longD time.Duration
@@ -234,7 +234,7 @@ type timedEmbedder struct {
 
 func (t *timedEmbedder) Dimensions() int { return t.inner.Dimensions() }
 
-func (t *timedEmbedder) Embed(ctx context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (t *timedEmbedder) Embed(ctx context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	start := time.Now()
 	out, err := t.inner.Embed(ctx, role, texts)
 	d := time.Since(start)

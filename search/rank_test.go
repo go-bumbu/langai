@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/media"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/media"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 func TestSpread(t *testing.T) {
@@ -67,7 +67,7 @@ func TestSearchIndexed_OneCappedSearch(t *testing.T) {
 	} {
 		store := &searchCountingStore{Store: vector.NewMemStore()}
 		opts := append([]Option{WithChunker(&MarkdownChunker{MaxChars: 30})}, tc.opts...)
-		ix, err := New(langaitest.FakeEmbedder{}, store, "t", "p", "c", opts...)
+		ix, err := New(sensetest.FakeEmbedder{}, store, "t", "p", "c", opts...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +95,7 @@ func TestSearchIndexed_OneCappedSearch(t *testing.T) {
 
 // imageCounter counts the images it is handed.
 type imageCounter struct {
-	langaitest.FakeImageEmbedder
+	sensetest.FakeImageEmbedder
 	images int
 }
 

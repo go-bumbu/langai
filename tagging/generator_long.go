@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // windowBytes is the most a window of a long text holds, the part the model
@@ -62,7 +62,7 @@ func titleOf(text string) string {
 //
 // A model that is gone is not asked about the rest of the text, whose windows
 // would fail the same way and are lost with the one it failed on: one that
-// says it is closed (langai.ErrClosed), and one that failed on the first
+// says it is closed (sense.ErrClosed), and one that failed on the first
 // maxFailedWindowsAtStart windows with none read yet, so a remote model that
 // is down costs a few timeouts, not two per window.
 func (g *Generator) generateLong(ctx context.Context, text string, minScore float64) ([]Tag, error) {
@@ -82,7 +82,7 @@ func (g *Generator) generateLong(ctx context.Context, text string, minScore floa
 		}
 		if err != nil {
 			failed = append(failed, fmt.Errorf("tagging: write tags for window %d of %d: %w", i+1, len(windows), err))
-			if errors.Is(err, langai.ErrClosed) || (read == 0 && len(failed) == maxFailedWindowsAtStart) {
+			if errors.Is(err, sense.ErrClosed) || (read == 0 && len(failed) == maxFailedWindowsAtStart) {
 				break
 			}
 			continue
@@ -119,11 +119,11 @@ func (g *Generator) scoreLong(ctx context.Context, text string, names []string, 
 		return nil, nil
 	}
 	chunks := Chunk(text, g.cfg.ChunkBytes)
-	chunkVecs, err := g.embed(ctx, langai.RoleQuery, chunks)
+	chunkVecs, err := g.embed(ctx, sense.RoleQuery, chunks)
 	if err != nil {
 		return nil, err
 	}
-	nameVecs, err := g.embed(ctx, langai.RoleDocument, names)
+	nameVecs, err := g.embed(ctx, sense.RoleDocument, names)
 	if err != nil {
 		return nil, err
 	}

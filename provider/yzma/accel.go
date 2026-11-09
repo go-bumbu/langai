@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/go-bumbu/langai/internal/hw"
+	"github.com/go-bumbu/sense/internal/hw"
 )
 
 // Accel is how a model is run: on the CPU, or offloaded to a GPU through one

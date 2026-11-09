@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-bumbu/langai/internal/fetch"
+	"github.com/go-bumbu/sense/internal/fetch"
 )
 
 // Pinned artifacts. They belong to one yzma release: yzma's Go structs mirror
@@ -54,7 +54,7 @@ const (
 	// on a slow link.
 	completerDownloadTimeout = time.Hour
 	// userAgent names this package's downloads.
-	userAgent = "langai-semsearch"
+	userAgent = "sense-semsearch"
 	// cudaRuntimeMajor is the CUDA runtime the pinned CUDA build (the
 	// "cuda-13.4" asset in libAssets) links against: its backend library
 	// needs libcudart.so.13 and libcublas.so.13 from the host. internal/hw
@@ -131,7 +131,7 @@ var libAssets = map[string]asset{
 // install (the GPU builds are supersets, the other way round is a no-op),
 // and a later version of this package, pinned to another tag, replaces
 // either.
-const libRecordFile = "langai-libs.json"
+const libRecordFile = "sense-libs.json"
 
 // libRecord is what libRecordFile holds.
 type libRecord struct {

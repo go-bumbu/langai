@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-bumbu/langai/search"
+	"github.com/go-bumbu/sense/search"
 )
 
 // Hit is one search result joined with its catalog entry.

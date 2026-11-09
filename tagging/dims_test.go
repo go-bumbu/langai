@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 // mustItemScore is itemScore for vectors of one length.
@@ -45,7 +45,7 @@ func mustCentroid(t *testing.T, vecs [][]float32) []float32 {
 func dimsRig(t *testing.T, cfg TaggerConfig, cat *fakeCatalog, cache EmbeddingCache, dims int, noDims bool) *rig {
 	t.Helper()
 	r := newRig(t, cfg, cat, cache, nil)
-	r.emb.inner, r.emb.noDims = langaitest.FakeEmbedder{Dims: dims}, noDims
+	r.emb.inner, r.emb.noDims = sensetest.FakeEmbedder{Dims: dims}, noDims
 	return r
 }
 
@@ -73,7 +73,7 @@ func TestEngine_CachedVectorsOfAnotherLengthAreEmbeddedAgain(t *testing.T) {
 			t.Errorf("ChunkBytes %d: bread scores 0: vectors of two lengths were compared", chunkBytes)
 		}
 		for _, piece := range itemPieces(twoPieces, chunkBytes) {
-			k := KeyFor("fake", langai.RoleQuery, piece)
+			k := KeyFor("fake", sense.RoleQuery, piece)
 			held, err := cache.Get(context.Background(), "1", []CacheKey{k})
 			if err != nil || len(held[k]) != 8 {
 				t.Errorf("ChunkBytes %d: the cache holds %d dimensions for %q (%v), want the new 8", chunkBytes, len(held[k]), piece, err)

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // TestMemCache_GetRefreshesOnlyStaleEntries: a Get rewrites the last-used time
@@ -13,7 +13,7 @@ import (
 func TestMemCache_GetRefreshesOnlyStaleEntries(t *testing.T) {
 	ctx := context.Background()
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	k := KeyFor("m", langai.RoleQuery, "x")
+	k := KeyFor("m", sense.RoleQuery, "x")
 
 	for _, tc := range []struct {
 		name     string

@@ -1,11 +1,11 @@
-package langaitest
+package sensetest
 
 import (
 	"context"
 	"slices"
 	"sync"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // CompleterCall is one prompt a FakeCompleter received.
@@ -19,14 +19,14 @@ type CompleterCall struct {
 // empty reply. Set the fields before the first call; Complete and Calls are
 // safe for concurrent use.
 //
-//	chat := &langaitest.FakeCompleter{Replies: []string{"bread\nbaking"}}
-//	g, err := tagging.NewGenerator(chat, langaitest.FakeEmbedder{}, tagging.GeneratorConfig{})
+//	chat := &sensetest.FakeCompleter{Replies: []string{"bread\nbaking"}}
+//	g, err := tagging.NewGenerator(chat, sensetest.FakeEmbedder{}, tagging.GeneratorConfig{})
 //	tags, err := g.Generate(ctx, "Baking sourdough bread at home", 0.3)
 //	chat.Calls()[0].User // the text the Generator sent the model
 //
 // A reply that depends on the prompt takes a function instead:
 //
-//	chat := &langaitest.FakeCompleter{Reply: func(system, user string) (string, error) {
+//	chat := &sensetest.FakeCompleter{Reply: func(system, user string) (string, error) {
 //		if strings.Contains(system, "JSON") {
 //			return `{"tags": []}`, nil
 //		}
@@ -49,9 +49,9 @@ type FakeCompleter struct {
 }
 
 // verify the interface is actually satisfied
-var _ langai.Completer = (*FakeCompleter)(nil)
+var _ sense.Completer = (*FakeCompleter)(nil)
 
-// Complete implements langai.Completer. It records the prompt, then fails
+// Complete implements sense.Completer. It records the prompt, then fails
 // with ctx's error when ctx is done, with Err when that is set, and
 // otherwise answers with Reply or the next of Replies.
 func (f *FakeCompleter) Complete(ctx context.Context, system, user string) (string, error) {

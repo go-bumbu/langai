@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // TestEmbedAndRank exercises the real model through llama.cpp. On first run
@@ -41,7 +41,7 @@ func TestEmbedAndRank(t *testing.T) {
 		t.Errorf("expected 768 dimensions for the default model, got %d", emb.Dimensions())
 	}
 
-	vecs, err := emb.Embed(ctx, langai.RoleDocument, []string{
+	vecs, err := emb.Embed(ctx, sense.RoleDocument, []string{
 		"How do I cook pasta?",
 		"Boil water and add the noodles.",
 		"The stock market fell sharply today.",
@@ -76,7 +76,7 @@ func TestEmbedAndRank(t *testing.T) {
 	// a text far beyond the 512-token cap must embed (truncated), not fail
 	// or abort; it still lands near its topic
 	long := strings.Repeat("Cooking pasta at home is simple and rewarding when you salt the water generously. ", 80)
-	lv, err := emb.Embed(ctx, langai.RoleDocument, []string{long})
+	lv, err := emb.Embed(ctx, sense.RoleDocument, []string{long})
 	if err != nil {
 		t.Fatalf("Embed(long): %v", err)
 	}

@@ -9,27 +9,27 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 // lazyNotebook is a notebook over the library's lazy loaders, each loading a
 // fake, with the states the page shows wired as the service wires them.
-func lazyNotebook(t *testing.T, cache tagging.EmbeddingCache, file string, loads *atomic.Int64, loadErr error) (*Notebook, *langai.LazyEmbedder) {
+func lazyNotebook(t *testing.T, cache tagging.EmbeddingCache, file string, loads *atomic.Int64, loadErr error) (*Notebook, *sense.LazyEmbedder) {
 	t.Helper()
-	emb := langai.NewLazyEmbedder(langaitest.FakeEmbedderModel, 64, func(context.Context) (langai.Embedder, error) {
+	emb := sense.NewLazyEmbedder(sensetest.FakeEmbedderModel, 64, func(context.Context) (sense.Embedder, error) {
 		loads.Add(1)
 		if loadErr != nil {
 			return nil, loadErr
 		}
-		return langaitest.FakeEmbedder{}, nil
+		return sensetest.FakeEmbedder{}, nil
 	})
-	chat := langai.NewLazyCompleter(func(context.Context) (langai.Completer, error) {
-		return &langaitest.FakeCompleter{Replies: []string{flatReply}}, nil
+	chat := sense.NewLazyCompleter(func(context.Context) (sense.Completer, error) {
+		return &sensetest.FakeCompleter{Replies: []string{flatReply}}, nil
 	})
 	state := func(l interface {
-		State() (langai.LazyState, error)
+		State() (sense.LazyState, error)
 	}) func() string {
 		return func() string { s, _ := l.State(); return s.String() }
 	}
@@ -105,7 +105,7 @@ func TestNotebook_OpensWithAnEmbedderThatCannotLoad(t *testing.T) {
 	// notebook opens all the same, and the note says why it has no tags
 	var failed atomic.Int64
 	nb, emb := lazyNotebook(t, tagging.NewMemCache(), file, &failed, errors.New("the model file is missing"))
-	if state, err := emb.State(); state != langai.LazyFailed || err == nil {
+	if state, err := emb.State(); state != sense.LazyFailed || err == nil {
 		t.Fatalf("the embedder after a failed load: %v, %v", state, err)
 	}
 	v := noteView(t, nb, note.ID)
@@ -129,7 +129,7 @@ func TestNew_ACancelledOpenIsAnError(t *testing.T) {
 	cancel()
 	_, err := New(ctx, Config{
 		Cache: tagging.NewMemCache(), Tagging: tagging.TaggerConfig{Model: "fake"},
-		Chat: &langaitest.FakeCompleter{}, Embedder: langaitest.FakeEmbedder{}, File: file,
+		Chat: &sensetest.FakeCompleter{}, Embedder: sensetest.FakeEmbedder{}, File: file,
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("open under a cancelled context: %v", err)
@@ -173,7 +173,7 @@ func TestNew_WarmLaterLeavesTheWarmUpToTheCaller(t *testing.T) {
 	var calls atomic.Int64
 	nb, err := New(ctx, Config{
 		Cache: tagging.NewMemCache(), Tagging: tagging.TaggerConfig{Model: "fake"},
-		Chat: &langaitest.FakeCompleter{}, Embedder: langaitest.FakeEmbedder{Calls: &calls}, File: file,
+		Chat: &sensetest.FakeCompleter{}, Embedder: sensetest.FakeEmbedder{Calls: &calls}, File: file,
 		WarmLater: true,
 	})
 	if err != nil {

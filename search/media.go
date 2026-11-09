@@ -24,9 +24,9 @@ import (
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/media"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/media"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // maxImagePixels is the largest picture IndexImage and SearchImage decode:
@@ -52,7 +52,7 @@ var (
 )
 
 // MediaIndex is the Index for pictures: it embeds images and the sampled
-// frames of videos with a langai.ImageEmbedder, keeps the vectors in a
+// frames of videos with a sense.ImageEmbedder, keeps the vectors in a
 // vector.Store and answers a query image or video with the indexed items that
 // look most like it, across both kinds. It knows nothing about what the
 // items are: callers hand it opaque ids, image bytes and video paths.
@@ -67,10 +67,10 @@ var (
 // (index, partition, collection) work as for Index; vectors of an image
 // model must not share a collection with a text model's.
 type MediaIndex struct {
-	embedder langai.ImageEmbedder
+	embedder sense.ImageEmbedder
 	sampler  media.Sampler
-	video    langai.VideoEmbedder // whole segments instead of sampled frames, when set
-	text     langai.Embedder      // text queries, when set
+	video    sense.VideoEmbedder // whole segments instead of sampled frames, when set
+	text     sense.Embedder      // text queries, when set
 	store    vector.Store
 	minScore float64
 	maxQuery int // the most query vectors per search
@@ -99,14 +99,14 @@ func WithSampler(s media.Sampler) MediaOption {
 // must share the image embedder's space (the same model behind both) and
 // its dimensions. An index built this way must not share a collection with
 // one built on frames: the same video gets different vectors.
-func WithVideoEmbedder(v langai.VideoEmbedder) MediaOption {
+func WithVideoEmbedder(v sense.VideoEmbedder) MediaOption {
 	return func(ix *MediaIndex) { ix.video = v }
 }
 
 // WithTextEmbedder enables SearchText: e embeds the query text into the
 // image embedder's space (the text tower of the same model), with the same
 // dimensions.
-func WithTextEmbedder(e langai.Embedder) MediaOption {
+func WithTextEmbedder(e sense.Embedder) MediaOption {
 	return func(ix *MediaIndex) { ix.text = e }
 }
 
@@ -139,11 +139,11 @@ func WithMaxImageBytes(n int64) MediaOption {
 // NewMediaIndex returns a MediaIndex using the given embedder and store, over
 // the collection at index, partition and collection, which match exactly as
 // for New and are checked as New checks them. When the image embedder names
-// its model (langai.Identified), the
+// its model (sense.Identified), the
 // store records it with the vectors written to the collection and refuses
 // another model's while the collection holds items; Reset empties it for a
 // new model.
-func NewMediaIndex(embedder langai.ImageEmbedder, store vector.Store, index, partition, collection string, opts ...MediaOption) (*MediaIndex, error) {
+func NewMediaIndex(embedder sense.ImageEmbedder, store vector.Store, index, partition, collection string, opts ...MediaOption) (*MediaIndex, error) {
 	if embedder == nil {
 		return nil, errors.New("search: nil embedder")
 	}
@@ -421,7 +421,7 @@ func (ix *MediaIndex) SearchText(ctx context.Context, text string, limit int) ([
 	if text == "" {
 		return nil, nil
 	}
-	vectors, err := ix.text.Embed(ctx, langai.RoleQuery, []string{text})
+	vectors, err := ix.text.Embed(ctx, sense.RoleQuery, []string{text})
 	if err != nil {
 		return nil, fmt.Errorf("search: embed query text: %w", err)
 	}

@@ -1,4 +1,4 @@
-package langai
+package sense
 
 import (
 	"context"
@@ -59,7 +59,7 @@ type LoadPanicError struct {
 
 // Error implements error. The stack is left out; read it from Stack.
 func (e *LoadPanicError) Error() string {
-	return fmt.Sprintf("langai: the model's load function panicked: %v", e.Value)
+	return fmt.Sprintf("sense: the model's load function panicked: %v", e.Value)
 }
 
 // lazy loads a value of type T on first use and hands it to everyone who
@@ -106,7 +106,7 @@ func (l *lazy[T]) get(ctx context.Context) (T, error) {
 		if l.state == LazyNotStarted {
 			if err := ctx.Err(); err != nil {
 				l.mu.Unlock()
-				return zero, fmt.Errorf("langai: lazy %s: %w", l.what, err)
+				return zero, fmt.Errorf("sense: lazy %s: %w", l.what, err)
 			}
 			l.start()
 		}
@@ -118,7 +118,7 @@ func (l *lazy[T]) get(ctx context.Context) (T, error) {
 		select {
 		case <-settled: // look again: the state is final now
 		case <-ctx.Done():
-			return zero, fmt.Errorf("langai: waiting for the %s to load: %w", l.what, ctx.Err())
+			return zero, fmt.Errorf("sense: waiting for the %s to load: %w", l.what, ctx.Err())
 		}
 	}
 }
@@ -153,7 +153,7 @@ func (l *lazy[T]) run(ctx context.Context) (value T, err error) {
 		return zero, err
 	}
 	if isNil(value) {
-		return zero, fmt.Errorf("langai: the %s's load function returned neither a value nor an error", l.what)
+		return zero, fmt.Errorf("sense: the %s's load function returned neither a value nor an error", l.what)
 	}
 	if l.check != nil {
 		if err := l.check(value); err != nil {
@@ -249,11 +249,11 @@ func isNil(v any) bool {
 // configuration name a model, be that model.
 func checkVectors(loaded interface{ Dimensions() int }, dims int, model string) error {
 	if got := loaded.Dimensions(); got != dims {
-		return fmt.Errorf("langai: embedder produced %d-dimensional vectors, configured for %d", got, dims)
+		return fmt.Errorf("sense: embedder produced %d-dimensional vectors, configured for %d", got, dims)
 	}
 	if id, ok := loaded.(Identified); ok && model != "" {
 		if got := id.Model(); got != "" && got != model {
-			return fmt.Errorf("langai: loaded the model %q, configured for %q: their vectors must not mix", got, model)
+			return fmt.Errorf("sense: loaded the model %q, configured for %q: their vectors must not mix", got, model)
 		}
 	}
 	return nil

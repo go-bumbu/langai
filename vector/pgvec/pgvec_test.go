@@ -14,11 +14,11 @@ import (
 
 	"github.com/go-bumbu/testdbs"
 
-	"github.com/go-bumbu/langai/internal/tablename"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/vector/vectortest"
+	"github.com/go-bumbu/sense/internal/tablename"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/vector/vectortest"
 )
 
 // TestMain registers a pgvector container as a testdbs slow DB. A plain
@@ -482,7 +482,7 @@ func TestDropGeneration(t *testing.T) {
 
 func TestEndToEndWithIndex(t *testing.T) {
 	s, _ := newStore(t, 64)
-	ix, err := search.New(langaitest.FakeEmbedder{}, s, "idx", "p", "c")
+	ix, err := search.New(sensetest.FakeEmbedder{}, s, "idx", "p", "c")
 	if err != nil {
 		t.Fatalf("search.New: %v", err)
 	}

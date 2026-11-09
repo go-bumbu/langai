@@ -19,8 +19,8 @@
 //
 // The directories all this happens in are the caller's, and may hold
 // anything. The package writes only under names derived from the
-// destination ("<dest>.partial", "<dir>.lock", "<dir>.langai-download",
-// "<dir>.langai-staging", "<dir>.langai-retired") and removes only what it
+// destination ("<dest>.partial", "<dir>.lock", "<dir>.sense-download",
+// "<dir>.sense-staging", "<dir>.sense-retired") and removes only what it
 // wrote or what carries its marker: nothing is swept for its name or age.
 package fetch
 

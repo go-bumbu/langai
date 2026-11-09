@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // vocabEmbedder maps each word of a fixed vocabulary to its own axis and a
@@ -22,7 +22,7 @@ type vocabEmbedder struct {
 
 func (v vocabEmbedder) Dimensions() int { return len(v.vocab) }
 
-func (v vocabEmbedder) Embed(_ context.Context, _ langai.Role, texts []string) ([][]float32, error) {
+func (v vocabEmbedder) Embed(_ context.Context, _ sense.Role, texts []string) ([][]float32, error) {
 	if v.fail {
 		return nil, errors.New("embedder down")
 	}
@@ -259,11 +259,11 @@ func TestRun_ReportsEmbedderErrors(t *testing.T) {
 
 func TestTimedEmbedder_SplitsShortAndLong(t *testing.T) {
 	te := &timedEmbedder{inner: vocabEmbedder{vocab: vocab}}
-	if _, err := te.Embed(context.Background(), langai.RoleQuery, []string{"a", "b"}); err != nil {
+	if _, err := te.Embed(context.Background(), sense.RoleQuery, []string{"a", "b"}); err != nil {
 		t.Fatal(err)
 	}
 	te.long = true
-	if _, err := te.Embed(context.Background(), langai.RoleDocument, []string{"c"}); err != nil {
+	if _, err := te.Embed(context.Background(), sense.RoleDocument, []string{"c"}); err != nil {
 		t.Fatal(err)
 	}
 	if te.shortN != 2 || te.longN != 1 {

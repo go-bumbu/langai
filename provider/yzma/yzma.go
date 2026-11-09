@@ -1,8 +1,8 @@
 // Package yzma runs GGUF models locally through llama.cpp: a sentence-embedding
-// model as a langai.Embedder, an instruction-tuned chat model as a
-// langai.Completer, which a tagging.Generator has write tags, and a vision
-// embedding model as a Vision, which is a langai.Embedder, a
-// langai.ImageEmbedder and a langai.VideoEmbedder over one vector space. The
+// model as a sense.Embedder, an instruction-tuned chat model as a
+// sense.Completer, which a tagging.Generator has write tags, and a vision
+// embedding model as a Vision, which is a sense.Embedder, a
+// sense.ImageEmbedder and a sense.VideoEmbedder over one vector space. The
 // llama.cpp shared libraries are loaded at runtime by
 // github.com/hybridgroup/yzma (purego + libffi, no CGO), so nothing leaves
 // the process: the first New, NewCompleter or NewVision downloads the pinned
@@ -40,9 +40,9 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/internal/fetch"
-	"github.com/go-bumbu/langai/internal/hw"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/internal/fetch"
+	"github.com/go-bumbu/sense/internal/hw"
 )
 
 // DefaultModel is the logical identity of the model New runs unless
@@ -134,7 +134,7 @@ type ModelSpec struct {
 	// Pooling reduces token outputs to one vector; "" means PoolingMean.
 	Pooling Pooling
 	// QueryPrefix and DocumentPrefix are prepended to texts embedded as
-	// langai.RoleQuery and langai.RoleDocument. Symmetric models leave
+	// sense.RoleQuery and sense.RoleDocument. Symmetric models leave
 	// both empty.
 	QueryPrefix    string
 	DocumentPrefix string
@@ -407,7 +407,7 @@ type backend interface {
 	close()
 }
 
-// Embedder implements langai.Embedder over a backend.
+// Embedder implements sense.Embedder over a backend.
 type Embedder struct {
 	// a llama.cpp context is not safe for concurrent use, so encoding is
 	// serialized; embedding is CPU-bound anyway
@@ -423,7 +423,7 @@ type Embedder struct {
 }
 
 // verify the interface is actually satisfied
-var _ langai.Embedder = (*Embedder)(nil)
+var _ sense.Embedder = (*Embedder)(nil)
 
 // newEmbedder wraps a backend and probes it once to learn its vector
 // dimensionality. Split from Open so the probe and its failure modes stay
@@ -441,7 +441,7 @@ func newEmbedder(b backend, name, queryPrefix, documentPrefix string) (*Embedder
 	return e, nil
 }
 
-// Dimensions implements langai.Embedder.
+// Dimensions implements sense.Embedder.
 func (e *Embedder) Dimensions() int { return e.dims }
 
 // Accel says what runs the model, as the load log line does: "cpu" or the
@@ -487,11 +487,11 @@ func shortDigest(parts ...string) string {
 	return hex.EncodeToString(sum[:4])
 }
 
-// Embed implements langai.Embedder: each text gets the role's prefix and
+// Embed implements sense.Embedder: each text gets the role's prefix and
 // is encoded on its own.
-func (e *Embedder) Embed(ctx context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (e *Embedder) Embed(ctx context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	prefix := e.documentPrefix
-	if role == langai.RoleQuery {
+	if role == sense.RoleQuery {
 		prefix = e.queryPrefix
 	}
 	out := make([][]float32, len(texts))
@@ -535,7 +535,7 @@ func (e *Embedder) encode(ctx context.Context, text string) ([]float32, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
-		return nil, fmt.Errorf("yzma: embedder: %w", langai.ErrClosed)
+		return nil, fmt.Errorf("yzma: embedder: %w", sense.ErrClosed)
 	}
 	toks := truncateTokens(e.b.tokenize(text), e.b.limit())
 	if len(toks) == 0 {
@@ -548,7 +548,7 @@ func (e *Embedder) encode(ctx context.Context, text string) ([]float32, error) {
 	if len(vec) == 0 {
 		return nil, errors.New("model returned no vector")
 	}
-	langai.Normalize(vec)
+	sense.Normalize(vec)
 	return vec, nil
 }
 

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // countingReader is an endless stream of zeros that counts what was read.
@@ -69,7 +69,7 @@ func TestMediaIndex_VideoWithNothingToEmbedIsAnError(t *testing.T) {
 	path := tempFile(t, "clip.mp4", []byte("clip"))
 	sampler := &countingSampler{}
 	frames, _, frameStore := newMediaIndex(t, WithSampler(sampler))
-	segments, _, segmentStore := newMediaIndex(t, WithVideoEmbedder(&langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": nil}}))
+	segments, _, segmentStore := newMediaIndex(t, WithVideoEmbedder(&sensetest.FakeVideoEmbedder{Clips: map[string][]image.Image{"clip.mp4": nil}}))
 	for name, tc := range map[string]struct {
 		call  func() error
 		store *vector.MemStore
@@ -124,7 +124,7 @@ type zeroEmbedder struct{ nan bool }
 
 func (zeroEmbedder) Dimensions() int { return 48 }
 
-func (z zeroEmbedder) Embed(_ context.Context, _ langai.Role, texts []string) ([][]float32, error) {
+func (z zeroEmbedder) Embed(_ context.Context, _ sense.Role, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i := range out {
 		out[i] = make([]float32, 48)

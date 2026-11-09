@@ -19,15 +19,15 @@ const (
 	// its file system, so the last step is a rename. The directory's parent
 	// is the caller's and may hold anything (with a library directory of
 	// "~/llama" it is the home directory), so the names say whose they are:
-	// nobody keeps a backup called "llama.langai-retired". A name alone is
+	// nobody keeps a backup called "llama.sense-retired". A name alone is
 	// still no licence to delete, see clearLeftover.
-	archiveSuffix = ".langai-download"
-	stagingSuffix = ".langai-staging"
-	retiredSuffix = ".langai-retired"
+	archiveSuffix = ".sense-download"
+	stagingSuffix = ".sense-staging"
+	retiredSuffix = ".sense-retired"
 	// markerFile is the first thing written into a staging directory and the
 	// last thing removed from it before it gets its final name: a directory
 	// with it in is one an install of this package was filling.
-	markerFile = ".langai-install"
+	markerFile = ".sense-install"
 )
 
 // DirInstall describes the install of a release tarball's libraries into a
@@ -43,7 +43,7 @@ type DirInstall struct {
 	// Archive is the gzipped release tarball.
 	Archive Asset
 	// Extract unpacks the verified archive into dir, a new directory that
-	// holds nothing but this package's marker file (".langai-install").
+	// holds nothing but this package's marker file (".sense-install").
 	Extract func(archive, dir string) error
 	// RecordFile is the name of the file written next to the libraries with
 	// Record as its content, so a later run can tell what Dir holds. Its
@@ -83,8 +83,8 @@ type DirInstall struct {
 //
 // Nothing is ever removed for its name alone. A call that finds the
 // directory ready writes nothing but the lock file. One that installs works
-// under "<Dir>.langai-download", "<Dir>.langai-staging" and
-// "<Dir>.langai-retired", and clears what an install that was killed left
+// under "<Dir>.sense-download", "<Dir>.sense-staging" and
+// "<Dir>.sense-retired", and clears what an install that was killed left
 // under the last two only when it is recognizably that (see clearLeftover);
 // anything else under those names stops the install with an error.
 //

@@ -6,7 +6,7 @@
 // package builds without CGO and works with whatever ffmpeg the host has,
 // 5.1 or newer. The Sampler is a media.Cutter too: Duration reads a video's
 // length and Cut copies a stretch of it into a file of its own without
-// re-encoding, which is what a langai.VideoEmbedder that embeds a video in
+// re-encoding, which is what a sense.VideoEmbedder that embeds a video in
 // segments (provider/yzma's Vision) needs.
 //
 // A long video is bounded in two ways: no two frames closer than
@@ -49,7 +49,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-bumbu/langai/media"
+	"github.com/go-bumbu/sense/media"
 )
 
 // Defaults for the zero values of Config.
@@ -401,7 +401,7 @@ func sameFile(a, b string) bool {
 // picks the container by it) and a name no other call has, and returns its
 // path: where a cut is written before it takes out's name.
 func tempNextTo(out string) (string, error) {
-	f, err := os.CreateTemp(filepath.Dir(out), ".langai-cut-*"+filepath.Ext(out))
+	f, err := os.CreateTemp(filepath.Dir(out), ".sense-cut-*"+filepath.Ext(out))
 	if err != nil {
 		return "", err
 	}

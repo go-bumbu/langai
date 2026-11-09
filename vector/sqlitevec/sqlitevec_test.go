@@ -14,11 +14,11 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/go-bumbu/langai/internal/tablename"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/vector/vectortest"
+	"github.com/go-bumbu/sense/internal/tablename"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/vector/vectortest"
 )
 
 // recommendedDSN is the DSN the package doc recommends, after the file name.
@@ -475,7 +475,7 @@ func TestBackendsAgree(t *testing.T) {
 	const dims = 8
 	mem := vector.NewMemStore()
 	sv := newStore(t, dims)
-	vecs := langaitest.FakeEmbedder{Dims: dims}
+	vecs := sensetest.FakeEmbedder{Dims: dims}
 	texts := make([]string, 50)
 	for i := range texts {
 		texts[i] = fmt.Sprintf("word%d word%d word%d", i, i*7%13, i*3%11)
@@ -519,7 +519,7 @@ func TestBackendsAgree(t *testing.T) {
 }
 
 func TestEndToEndWithIndex(t *testing.T) {
-	ix, err := search.New(langaitest.FakeEmbedder{}, newStore(t, 64), "idx", "p", "c")
+	ix, err := search.New(sensetest.FakeEmbedder{}, newStore(t, 64), "idx", "p", "c")
 	if err != nil {
 		t.Fatalf("search.New: %v", err)
 	}

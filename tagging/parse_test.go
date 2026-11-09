@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 // TestParseTags_DropsTheScaffoldingOfAReply: a chat model wraps its tags in
@@ -98,7 +98,7 @@ func TestCleanPath_KeepsTheApplicationsSpellingOfItsOwnPaths(t *testing.T) {
 func TestGenerate_TreeTagsComeBackInTheExistingSpelling(t *testing.T) {
 	const long = "Recetas / Cocina tradicional de la abuela"
 	vecs := map[string][]float32{bread: {1, 0, 0}, long: {0.8, 0.6, 0}, "Cooking / Baking": {0.6, 0.8, 0}}
-	llm := &langaitest.FakeCompleter{Replies: []string{"recetas / cocina tradicional de la abuela\ncooking / baking\nCOOKING/BAKING"}}
+	llm := &sensetest.FakeCompleter{Replies: []string{"recetas / cocina tradicional de la abuela\ncooking / baking\nCOOKING/BAKING"}}
 	g, err := NewGenerator(llm, &vecEmbedder{vecs: vecs}, GeneratorConfig{}, WithTreeTags(long, "Cooking / Baking"))
 	if err != nil {
 		t.Fatal(err)

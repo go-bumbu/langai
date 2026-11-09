@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/zarf/eval"
 )
 
 // TestGenerateLongTags runs the default tagging.Generator on the 24 long
@@ -95,7 +95,7 @@ func TestGenerateLongTags(t *testing.T) {
 		if len(need) == 0 {
 			return
 		}
-		out, err := emb.Embed(ctx, langai.RoleDocument, need)
+		out, err := emb.Embed(ctx, sense.RoleDocument, need)
 		if err != nil || len(out) != len(need) {
 			t.Fatalf("embed names: %v", err)
 		}

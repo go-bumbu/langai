@@ -1,4 +1,4 @@
-# langai
+# sense
 
 Libraries that use language models, run locally: semantic search over your own
 documents, image and video similarity search, automatic tagging that learns from the
@@ -9,7 +9,7 @@ models run in-process through llama.cpp and ONNX Runtime.
 
 | Package | What it does |
 |---|---|
-| `langai` | The ports: `Embedder` (text embedding models), `ImageEmbedder` (image embedding models), `VideoEmbedder` (video embedding models, one vector per `Segment` of a video), `Completer` (chat models), the `Role` a text is embedded as, and the optional `Identified`, by which a model names itself so that stores never mix two models' vectors. `Normalize` scales a vector to unit length for the providers, and `ErrClosed` is what every call on something closed wraps. `LazyEmbedder`, `LazyImageEmbedder` and `LazyCompleter` defer loading a model to its first use and release it on `Close`. |
+| `sense` | The ports: `Embedder` (text embedding models), `ImageEmbedder` (image embedding models), `VideoEmbedder` (video embedding models, one vector per `Segment` of a video), `Completer` (chat models), the `Role` a text is embedded as, and the optional `Identified`, by which a model names itself so that stores never mix two models' vectors. `Normalize` scales a vector to unit length for the providers, and `ErrClosed` is what every call on something closed wraps. `LazyEmbedder`, `LazyImageEmbedder` and `LazyCompleter` defer loading a model to its first use and release it on `Close`. |
 | `search` | Turns documents into embedding vectors and answers free-text queries with the closest ones: `Index` and the markdown-aware chunker. `MediaIndex` does the same for pictures: it embeds images and videos (as sampled frames through an image model, or as whole segments through a video model) and answers an image, a video or, with a model that has a text side, a text with the items that look most like it, across both kinds. |
 | `media` | The ports for decoding video: `Sampler` turns a video file into the `Frame`s that stand for it, `Cutter` measures and cuts it (for a `VideoEmbedder` that embeds in segments). |
 | `media/ffmpeg` | `Sampler` and `Cutter` over the ffmpeg and ffprobe binaries: the first frame, every scene cut and one frame per interval, scaled down, capped per video, or the keyframes only, for long videos; stream-copy cuts for the segment embedder. |
@@ -22,7 +22,7 @@ models run in-process through llama.cpp and ONNX Runtime.
 | `provider/onnx` | `ImageEmbedder` that runs an ONNX vision model through [ONNX Runtime](https://onnxruntime.ai) (CGO, via [onnxruntime_go](https://github.com/yalue/onnxruntime_go)): SigLIP 2 base by default, DINOv2 base as the other pinned model (`Models`, `LookupSpec`), any other through a `ModelSpec`; `New` and `Open` have yzma's shape. CPU by default, CUDA or CoreML by configuration. Downloads and verifies the pinned runtime build and model on first use. |
 | `provider/phash` | `ImageEmbedder` without a model: a 64- or 256-bit perceptual hash (pHash or dHash) as a unit vector whose cosine is `1 - 2·hamming/bits`, for finding exact and near-exact duplicates (re-encoded, resized, lightly edited copies) with the same `MediaIndex` and stores. Pure Go, nothing to download, a few milliseconds per picture. `Hash` gives the bits themselves for grouping without a store. |
 | `zarf/eval` | Measures an `Embedder` on a labelled, multilingual golden set: retrieval, tagging, timings. `make semeval` compares embedding models side by side on it. |
-| `langaitest` | Fakes of the ports, for tests. `FakeEmbedder`, `FakeImageEmbedder` and `FakeVideoEmbedder` are deterministic and each names a fixed model (`FakeEmbedderModel`, `FakeImageEmbedderModel`, `FakeVideoEmbedderModel`); a `FakeVideoEmbedder`'s segments are pictures embedded in `FakeImageEmbedder`'s space, listed per file name or derived from it; `FakeCompleter` is a scripted chat model: canned replies in order or a function of the prompt, an error on demand, and a record of the prompts it received. All four fail with the error of a context that is done and with their `Err` field when it is set, and count their calls; `FakeEmbedder.Fail` fails the calls that hold a text of your choosing. |
+| `sensetest` | Fakes of the ports, for tests. `FakeEmbedder`, `FakeImageEmbedder` and `FakeVideoEmbedder` are deterministic and each names a fixed model (`FakeEmbedderModel`, `FakeImageEmbedderModel`, `FakeVideoEmbedderModel`); a `FakeVideoEmbedder`'s segments are pictures embedded in `FakeImageEmbedder`'s space, listed per file name or derived from it; `FakeCompleter` is a scripted chat model: canned replies in order or a function of the prompt, an error on demand, and a record of the prompts it received. All four fail with the error of a context that is done and with their `Err` field when it is set, and count their calls; `FakeEmbedder.Fail` fails the calls that hold a text of your choosing. |
 
 Every package stands alone and you only compile the dependencies of the packages you
 import: CGO and sqlite-vec come in only with `vector/sqlitevec`, pgvector only with
@@ -36,7 +36,7 @@ The packages form a tree, and the tree is also the plan: packages marked *planne
 not exist yet (see TODO.md).
 
 ```
-langai/                 the shared ports: Embedder, ImageEmbedder, VideoEmbedder, Completer,
+sense/                 the shared ports: Embedder, ImageEmbedder, VideoEmbedder, Completer,
 │                       Role, Identified, ErrClosed; the lazy loaders
 │
 ├── search/             text → similar documents; image or video → similar images and videos
@@ -66,7 +66,7 @@ langai/                 the shared ports: Embedder, ImageEmbedder, VideoEmbedder
 ├── media/              video decoding: the Sampler and Cutter ports, and Frame
 │   └── ffmpeg/         video → frames, and cuts, via the ffmpeg binary
 │
-├── langaitest/         fakes of the ports, for tests
+├── sensetest/         fakes of the ports, for tests
 ├── internal/           tablename: SQL table names; fetch: verified, resumable downloads and
 │                       locked library installs for the providers; hw: which accelerators
 │                       the machine can run; imageutil: the picture scaling the providers
@@ -82,7 +82,7 @@ A capability never names a model: it calls a port, and the app hands it a provid
 implements that port. For tagging, with the default llama.cpp runtime:
 
 ```
-                       port (langai)           provider (your choice)
+                       port (sense)           provider (your choice)
 tagging.Tagger    ──▶  Embedder.Embed     ◀──  yzma.New            embedding model (GGUF)
 tagging.Generator ──▶  Completer.Complete ◀──  yzma.NewCompleter   chat model (GGUF): writes candidate tags
                   ──▶  Embedder.Embed     ◀──  yzma.New            embedding model: scores them
@@ -109,7 +109,7 @@ both; nothing in `tagging` loads or picks a model.
 ## Install
 
 ```
-go get github.com/go-bumbu/langai
+go get github.com/go-bumbu/sense
 ```
 
 ## Requirements
@@ -153,7 +153,7 @@ go get github.com/go-bumbu/langai
   version of an older release of this module) is replaced at the next open. Installs take a lock file next to it (`<LibDir>.lock`), so
   goroutines and processes that start together download once and none loads a
   half-installed library. An install works next to the directory, under
-  `<LibDir>.langai-download`, `<LibDir>.langai-staging` and `<LibDir>.langai-retired`,
+  `<LibDir>.sense-download`, `<LibDir>.sense-staging` and `<LibDir>.sense-retired`,
   and nothing else in the parent directory is its business: an open that finds the
   libraries in place writes nothing but the lock file, and what a killed install left
   under those names is cleared only when it carries the install's marker or record
@@ -176,7 +176,7 @@ go get github.com/go-bumbu/langai
 - **The vision model** (`yzma.NewVision`) is a 2.7 GB download on first use (the Q8_0
   GGUF and its f16 projector) and needs `ffmpeg` and `ffprobe` on PATH for videos; a
   loaded process holds about 3 GB.
-- **Keep yzma where langai pins it.** The llama.cpp build `provider/yzma` downloads
+- **Keep yzma where sense pins it.** The llama.cpp build `provider/yzma` downloads
   (`yzma.LibTag`) matches the yzma version in this module's `go.mod`, whose Go
   bindings mirror exactly that build's ABI. A module that imports `provider/yzma` must
   not require another yzma version: minimal version selection would hand these
@@ -255,7 +255,7 @@ that document, by name.
 
 "Unchanged" means the hash stored with the document matches, and that hash covers
 everything that shapes its vectors: the text, the chunker's settings and the embedding
-model (its name, when it implements `langai.Identified`, and its dimensions; a change of
+model (its name, when it implements `sense.Identified`, and its dimensions; a change of
 a named model is refused before anything is re-indexed, see below). A chunker
 describes its settings through the optional `search.Fingerprinter`; `MarkdownChunker`
 does (`markdown/2 max=1200`), and one without it is described by its Go type name, so
@@ -304,7 +304,7 @@ Vectors of different models never mix. A store refuses a vector of the wrong len
 (`vector.ErrDimensions`) and a zero, NaN or infinite one, or one whose norm underflows or
 overflows in float32, the precision the backends compute in (`vector.ErrInvalidVector`); a
 SQL store opened with other dimensions than an index's tables hold refuses that index.
-When the embedder names its model (`langai.Identified`), `search.New` and
+When the embedder names its model (`sense.Identified`), `search.New` and
 `search.NewMediaIndex` pass that name on: a write to a collection records it, and while
 the collection holds documents a write or search with another model fails with
 `vector.ErrModelMismatch`. An embedder that names no model is not checked.
@@ -340,7 +340,7 @@ dimensions from the model's spec without loading anything:
 
 ```go
 spec, err := yzma.LookupSpec(cfg.Model, cfg.ModelsDir) // the spec yzma.New(ctx, cfg) loads
-emb := langai.NewLazyEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (langai.Embedder, error) {
+emb := sense.NewLazyEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (sense.Embedder, error) {
     return yzma.New(ctx, cfg) // ctx is the LazyEmbedder's own: only Close cancels it
 })
 defer emb.Close()
@@ -358,9 +358,9 @@ All three behave alike:
   value and is cancelled by `Close` alone.
 - **A failed load is kept.** The error is returned by every later call and nothing
   loads again, so a model that cannot be loaded costs one attempt, not one per request.
-  A loader that panics (`*langai.LoadPanicError`, with the stack) or returns nil fails
+  A loader that panics (`*sense.LoadPanicError`, with the stack) or returns nil fails
   the same way. To try again once the cause is fixed, build a new lazy value
-  (`langai.NewLazyEmbedder(...)` again), use it in place of the failed one and `Close`
+  (`sense.NewLazyEmbedder(...)` again), use it in place of the failed one and `Close`
   that one: a lazy value never retries on its own.
 - **The model is checked.** The identity and dimensions given at construction are what
   the stores record before anything loads (an empty identity is unknown and unchecked).
@@ -386,7 +386,7 @@ changes neither (threads, the accelerator, directories) is in nothing. The ident
 the same on every run and changes
 whenever a vector would, so vectors stored under another identity are stale; the
 specs' `ModelID` gives the same string before the model loads. A call on
-a closed provider, lazy loader or `Tagger` returns an error that wraps `langai.ErrClosed`.
+a closed provider, lazy loader or `Tagger` returns an error that wraps `sense.ErrClosed`.
 
 ### Image and video search
 
@@ -533,7 +533,7 @@ ix, err := search.NewMediaIndex(v, store, "tenant-1", "space-7", "media",
 err = ix.IndexImage(ctx, "photo-42", file)              // as above
 err = ix.IndexVideo(ctx, "clip-7", "/media/clip-7.mp4") // one vector per 20 s segment
 hits, err := ix.SearchText(ctx, "a walrus on a beach", 10) // []search.MediaMatch, At = the segment's start
-vecs, err := v.Embed(ctx, langai.RoleQuery, []string{"..."})  // the same object is the text Embedder
+vecs, err := v.Embed(ctx, sense.RoleQuery, []string{"..."})  // the same object is the text Embedder
 ```
 
 `yzma.Vision` runs `Qwen/Qwen3-VL-Embedding-2B` (Apache-2.0, 2048 dimensions) through
@@ -667,7 +667,7 @@ There's no "learn" call. The Tagger learns only when the app changes the revisio
 // Members the texts of the items tagged with some of them by hand
 cache, err := sqlitecache.New(ctx, db)
 tagger, err := tagging.NewTagger(emb, catalog, cache, tagging.TaggerConfig{Model: emb.Model(), Logger: logger})
-defer tagger.Close() // cancels and waits for what is in flight; later calls wrap langai.ErrClosed
+defer tagger.Close() // cancels and waits for what is in flight; later calls wrap sense.ErrClosed
 space := tagger.Scope(tagging.Space{Index: "tenant-1", Partition: "space-7"})
 ids, err := space.Suggest(ctx, rev, essence)    // auto tags, best first; never stored as links
 scores, err := space.Scores(ctx, rev, essence)  // every tag's score and cutoff: why a tag was or was not picked
@@ -800,7 +800,7 @@ How a tag is judged:
   does not end the process: the callers get an error wrapping `ErrNotRebuilt` with the
   panic's value, and the stack goes to the `Logger`. `tagger.Close()` cancels the calls
   and rebuilds in flight, waits for them, and makes every later call return an error
-  wrapping `langai.ErrClosed`.
+  wrapping `sense.ErrClosed`.
 - **A failure keeps what was done.** Texts go to the embedder 32 at a time and each batch
   is cached as it comes back, so a rebuild or a `Warm` that fails or is cancelled loses at
   most one batch, and the next call embeds only what is missing. A catalog failure, an
@@ -821,7 +821,7 @@ How a tag is judged:
   that the embedder works: it answered with a useless vector, or an `Embed` after the one
   that failed succeeded, of a later text or, when there is none, of the tag's name
   embedded once more as a canary. When that fails too, or the embedder's error wraps
-  `langai.ErrClosed`, `context.Canceled` or `context.DeadlineExceeded` (a closed model, a
+  `sense.ErrClosed`, `context.Canceled` or `context.DeadlineExceeded` (a closed model, a
   request timeout of its own), the rebuild fails with an error wrapping
   `tagging.ErrNotRebuilt` and the cause, and nothing is recorded: the next call tries
   again, so an outage never leaves tags built from their names alone. After three texts in
@@ -982,7 +982,7 @@ measured on long documents and not on essences.
   element, or longer than four words or 40 characters, is not a tag.
 - **A bad answer is asked for again, once.** A model call that fails or replies with
   nothing is repeated, unless the context has ended or the error wraps
-  `langai.ErrClosed`: a closed model is asked once. If it fails again on a short text,
+  `sense.ErrClosed`: a closed model is asked once. If it fails again on a short text,
   `Generate` returns the error; a model that twice says nothing is
   `tagging.ErrEmptyReply`, not "no tags". On a long text the other windows still count:
   `Generate` returns their tags *and* an error wrapping `tagging.ErrPartial` that names
@@ -1143,4 +1143,4 @@ make verify        # run every check
 
 ## License
 
-langai is licensed under the [GNU Lesser General Public License v3.0](LICENSE).
+sense is licensed under the [GNU Lesser General Public License v3.0](LICENSE).

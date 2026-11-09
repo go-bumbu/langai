@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // membersGroupSize is how many tags one Catalog.Members call asks about, so
@@ -30,7 +30,7 @@ func (e *engine) touch(ctx context.Context, index, partition string) error {
 	keys := make([]CacheKey, len(tags))
 	for i, t := range tags {
 		ids[i] = t.ID
-		keys[i] = KeyFor(e.cfg.Model, langai.RoleDocument, t.Name)
+		keys[i] = KeyFor(e.cfg.Model, sense.RoleDocument, t.Name)
 	}
 	if err := e.cache.Touch(ctx, index, keys); err != nil {
 		return err
@@ -45,7 +45,7 @@ func (e *engine) touch(ctx context.Context, index, partition string) error {
 		for _, id := range group {
 			for _, text := range nonBlank(got[id]) {
 				for _, piece := range itemPieces(text, e.cfg.ChunkBytes) {
-					keys = append(keys, KeyFor(e.cfg.Model, langai.RoleQuery, piece))
+					keys = append(keys, KeyFor(e.cfg.Model, sense.RoleQuery, piece))
 				}
 			}
 		}

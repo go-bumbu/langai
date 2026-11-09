@@ -1,4 +1,4 @@
-package langaitest
+package sensetest
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // TestFakeEmbedder_FailsOnDemand: the fake fails as a real embedder does, so a
@@ -49,8 +49,8 @@ func TestFakeEmbedder_FailsOnDemand(t *testing.T) {
 			}
 			var calls atomic.Int64
 			tc.emb.Calls = &calls
-			var emb langai.Embedder = tc.emb // still usable as a value
-			vecs, err := emb.Embed(ctx, langai.RoleQuery, tc.texts)
+			var emb sense.Embedder = tc.emb // still usable as a value
+			vecs, err := emb.Embed(ctx, sense.RoleQuery, tc.texts)
 			if calls.Load() != 1 {
 				t.Errorf("Calls = %d, want 1", calls.Load())
 			}
@@ -76,7 +76,7 @@ func TestFakeEmbedder_CountsConcurrentCalls(t *testing.T) {
 	for range 50 {
 		wg.Go(func() {
 			copied := emb
-			if _, err := copied.Embed(context.Background(), langai.RoleQuery, []string{"bread"}); err != nil {
+			if _, err := copied.Embed(context.Background(), sense.RoleQuery, []string{"bread"}); err != nil {
 				t.Error(err)
 			}
 		})
@@ -109,7 +109,7 @@ func TestFakeImageEmbedder_FailsOnDemand(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int64
 			tc.emb.Calls = &calls
-			var emb langai.ImageEmbedder = tc.emb // still usable as a value
+			var emb sense.ImageEmbedder = tc.emb // still usable as a value
 			vecs, err := emb.EmbedImages(tc.ctx, []image.Image{picture(8, 8, red, red)})
 			if calls.Load() != 1 {
 				t.Errorf("Calls = %d, want 1", calls.Load())

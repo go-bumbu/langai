@@ -27,7 +27,7 @@ TEXT_MIN_SCORE ?= 0
 # the most the media index reads of an image; 0 is the library's 64 MiB
 MAX_IMAGE_BYTES ?= 0
 # a Postgres database with pgvector for the vectors and the tagging cache,
-# e.g. postgres://user:pass@localhost:5432/langai; empty keeps them in
+# e.g. postgres://user:pass@localhost:5432/sense; empty keeps them in
 # SQLite files under DATA_DIR
 POSTGRES ?=
 # the least a record needs to be logged: debug, info, warn or error

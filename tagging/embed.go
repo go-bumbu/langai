@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"math"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // embedBatchSize is the most texts the engine hands the embedder in one call.
@@ -51,7 +51,7 @@ func (e *engine) itemVectors(ctx context.Context, index string, texts []string, 
 		pieces[t] = itemPieces(t, e.cfg.ChunkBytes)
 		all = append(all, pieces[t]...)
 	}
-	got, bad, err := e.vectors(ctx, index, langai.RoleQuery, all, canary)
+	got, bad, err := e.vectors(ctx, index, sense.RoleQuery, all, canary)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -94,7 +94,7 @@ texts:
 // cache that cannot be written is no error: the vectors are returned and the
 // failure reported (see ErrCacheWrite for a Get; a failed Put only means
 // embedding again later).
-func (e *engine) vectors(ctx context.Context, index string, role langai.Role, texts []string, canary string) (vecs map[string][]float32, failed map[string]error, err error) {
+func (e *engine) vectors(ctx context.Context, index string, role sense.Role, texts []string, canary string) (vecs map[string][]float32, failed map[string]error, err error) {
 	keys := make(map[string]CacheKey, len(texts))
 	var uniq []string
 	var lookup []CacheKey
@@ -120,7 +120,7 @@ func (e *engine) vectors(ctx context.Context, index string, role langai.Role, te
 	// model's, kept under this Model name: a miss, embedded again and
 	// overwritten, never scored against this model's vectors
 	dims := e.emb.Dimensions()
-	run := embedRun{emb: e.emb, role: role, known: canary, knownRole: langai.RoleDocument, hasKnown: canary != ""}
+	run := embedRun{emb: e.emb, role: role, known: canary, knownRole: sense.RoleDocument, hasKnown: canary != ""}
 	var misses []string
 	for _, t := range uniq {
 		v, ok := got[keys[t]]
@@ -175,13 +175,13 @@ func (e *engine) vectors(ctx context.Context, index string, role langai.Role, te
 // fails too the call ends with the error: taking every text of an outage for
 // a bad one would leave tags built without their members (see engine.build).
 type embedRun struct {
-	emb  langai.Embedder
-	role langai.Role
+	emb  sense.Embedder
+	role sense.Role
 	// known is a text the embedder takes in knownRole, when hasKnown: the
 	// caller's canary or a text the cache holds at first, then the last text
 	// of the call it embedded
 	known     string
-	knownRole langai.Role
+	knownRole sense.Role
 	hasKnown  bool
 	// row is how many texts in a row failed, each embedded alone, since the
 	// last Embed that worked, and cause the error of the last of them
@@ -240,7 +240,7 @@ func (r *embedRun) batch(ctx context.Context, texts []string) ([][]float32, []er
 // embed embeds texts in one call. failure is the embedder's error when texts
 // may be to blame for it, to be tried again one at a time and confirmed. err
 // is for what no text is to blame for and so ends the whole vectors call: ctx
-// has ended, or the embedder says that it is closed (langai.ErrClosed) or
+// has ended, or the embedder says that it is closed (sense.ErrClosed) or
 // that a context of its own was cancelled or timed out. Nothing is tried
 // again after it, since every text would fail the same way.
 func (r *embedRun) embed(ctx context.Context, texts []string) (vs [][]float32, failure, err error) {
@@ -252,7 +252,7 @@ func (r *embedRun) embed(ctx context.Context, texts []string) (vs [][]float32, f
 		return vs, nil, nil
 	case ctx.Err() != nil:
 		return nil, nil, ctx.Err()
-	case errors.Is(failure, langai.ErrClosed), errors.Is(failure, context.Canceled), errors.Is(failure, context.DeadlineExceeded):
+	case errors.Is(failure, sense.ErrClosed), errors.Is(failure, context.Canceled), errors.Is(failure, context.DeadlineExceeded):
 		return nil, nil, failure
 	}
 	return nil, failure, nil
@@ -284,7 +284,7 @@ func (r *embedRun) confirm(ctx context.Context) error {
 // embedTexts embeds texts in one call and refuses an embedder that breaks its
 // contract by answering with another number of vectors than texts, rather than
 // panicking on the missing one.
-func embedTexts(ctx context.Context, emb langai.Embedder, role langai.Role, texts []string) ([][]float32, error) {
+func embedTexts(ctx context.Context, emb sense.Embedder, role sense.Role, texts []string) ([][]float32, error) {
 	vs, err := emb.Embed(ctx, role, texts)
 	if err != nil {
 		return nil, err

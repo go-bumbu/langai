@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 // tallyEmbedder wraps an Embedder (FakeEmbedder when inner is nil) and counts
@@ -21,15 +21,15 @@ import (
 // return a 3-dimensional vector for chosen texts. It is safe for concurrent
 // use.
 type tallyEmbedder struct {
-	inner langai.Embedder
+	inner sense.Embedder
 	// noDims has Dimensions report 0, so a vector of another length passes
 	// the embedder's own check and reaches the engine's
 	noDims bool
 
 	mu    sync.Mutex
-	texts map[langai.Role]map[string]int
-	calls map[langai.Role]int
-	fail  map[langai.Role]error
+	texts map[sense.Role]map[string]int
+	calls map[sense.Role]int
+	fail  map[sense.Role]error
 	short map[string]bool
 	// failOn, when not empty, fails every call with a text containing it
 	failOn    string
@@ -46,16 +46,16 @@ type tallyEmbedder struct {
 	// hang holds the roles whose Embed never answers: it blocks until its ctx
 	// ends, as a model that hangs does, and gave is how many such calls gave
 	// up when their ctx ended
-	hang map[langai.Role]bool
+	hang map[sense.Role]bool
 	gave int
 }
 
 // hangOn has every Embed of role block until its ctx ends; false clears it.
-func (e *tallyEmbedder) hangOn(role langai.Role, on bool) {
+func (e *tallyEmbedder) hangOn(role sense.Role, on bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.hang == nil {
-		e.hang = map[langai.Role]bool{}
+		e.hang = map[sense.Role]bool{}
 	}
 	e.hang[role] = on
 }
@@ -75,9 +75,9 @@ func (e *tallyEmbedder) largestBatch() int {
 	return e.largest
 }
 
-func (e *tallyEmbedder) embedder() langai.Embedder {
+func (e *tallyEmbedder) embedder() sense.Embedder {
 	if e.inner == nil {
-		return langaitest.FakeEmbedder{}
+		return sensetest.FakeEmbedder{}
 	}
 	return e.inner
 }
@@ -89,10 +89,10 @@ func (e *tallyEmbedder) Dimensions() int {
 	return e.embedder().Dimensions()
 }
 
-func (e *tallyEmbedder) Embed(ctx context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (e *tallyEmbedder) Embed(ctx context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	e.mu.Lock()
 	if e.texts == nil {
-		e.texts, e.calls = map[langai.Role]map[string]int{}, map[langai.Role]int{}
+		e.texts, e.calls = map[sense.Role]map[string]int{}, map[sense.Role]int{}
 	}
 	if e.texts[role] == nil {
 		e.texts[role] = map[string]int{}
@@ -240,11 +240,11 @@ func (c *faultyCache) Put(ctx context.Context, index string, vecs map[CacheKey][
 }
 
 // failRole makes every Embed of role fail with err; a nil err clears it.
-func (e *tallyEmbedder) failRole(role langai.Role, err error) {
+func (e *tallyEmbedder) failRole(role sense.Role, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.fail == nil {
-		e.fail = map[langai.Role]error{}
+		e.fail = map[sense.Role]error{}
 	}
 	if err == nil {
 		delete(e.fail, role)
@@ -275,7 +275,7 @@ func (e *tallyEmbedder) shortFor(text string) {
 }
 
 // count returns how many texts were embedded in role.
-func (e *tallyEmbedder) count(role langai.Role) int {
+func (e *tallyEmbedder) count(role sense.Role) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	n := 0
@@ -286,17 +286,17 @@ func (e *tallyEmbedder) count(role langai.Role) int {
 }
 
 // total returns how many texts were embedded in any role.
-func (e *tallyEmbedder) total() int { return e.count(langai.RoleQuery) + e.count(langai.RoleDocument) }
+func (e *tallyEmbedder) total() int { return e.count(sense.RoleQuery) + e.count(sense.RoleDocument) }
 
 // times returns how often text was embedded in role.
-func (e *tallyEmbedder) times(role langai.Role, text string) int {
+func (e *tallyEmbedder) times(role sense.Role, text string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.texts[role][text]
 }
 
 // callsOf returns how many Embed calls were made in role.
-func (e *tallyEmbedder) callsOf(role langai.Role) int {
+func (e *tallyEmbedder) callsOf(role sense.Role) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.calls[role]
@@ -311,7 +311,7 @@ type stubEmbedder struct {
 
 func (s stubEmbedder) Dimensions() int { return s.dims }
 
-func (s stubEmbedder) Embed(_ context.Context, _ langai.Role, texts []string) ([][]float32, error) {
+func (s stubEmbedder) Embed(_ context.Context, _ sense.Role, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i, text := range texts {
 		v, ok := s.vecs[text]
@@ -329,7 +329,7 @@ type vectorlessEmbedder struct{}
 
 func (vectorlessEmbedder) Dimensions() int { return 64 }
 
-func (vectorlessEmbedder) Embed(context.Context, langai.Role, []string) ([][]float32, error) {
+func (vectorlessEmbedder) Embed(context.Context, sense.Role, []string) ([][]float32, error) {
 	return nil, nil
 }
 
@@ -343,9 +343,9 @@ type brokenEmbedder struct {
 
 func (b brokenEmbedder) Dimensions() int { return b.dims }
 
-func (b brokenEmbedder) Embed(_ context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (b brokenEmbedder) Embed(_ context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	v := b.query
-	if role == langai.RoleDocument {
+	if role == sense.RoleDocument {
 		v = b.doc
 	}
 	out := make([][]float32, len(texts))

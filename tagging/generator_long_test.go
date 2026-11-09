@@ -11,8 +11,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 // words returns n distinct words of six bytes, first letter then a number
@@ -41,7 +41,7 @@ type flatEmbedder struct {
 
 func (e *flatEmbedder) Dimensions() int { return len(e.vec) }
 
-func (e *flatEmbedder) Embed(_ context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (e *flatEmbedder) Embed(_ context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	e.calls = append(e.calls, embedCall{role, slices.Clone(texts)})
 	if e.err != nil {
 		return nil, e.err
@@ -61,7 +61,7 @@ func (e *flatEmbedder) Embed(_ context.Context, role langai.Role, texts []string
 
 func newFlat() *flatEmbedder { return &flatEmbedder{vec: []float32{1, 0, 0}} }
 
-func newLongGenerator(t *testing.T, llm *langaitest.FakeCompleter, emb langai.Embedder, cfg GeneratorConfig, opts ...GeneratorOption) *Generator {
+func newLongGenerator(t *testing.T, llm *sensetest.FakeCompleter, emb sense.Embedder, cfg GeneratorConfig, opts ...GeneratorOption) *Generator {
 	t.Helper()
 	g, err := NewGenerator(llm, emb, cfg, opts...)
 	if err != nil {
@@ -81,7 +81,7 @@ func windowsOf(t *testing.T, text string, n int) []string {
 	return ws
 }
 
-func users(asked []langaitest.CompleterCall) []string {
+func users(asked []sensetest.CompleterCall) []string {
 	var out []string
 	for _, p := range asked {
 		out = append(out, p.User)
@@ -95,7 +95,7 @@ func scored(s float64) []float32 {
 }
 
 func TestNew_RejectsNegativeChunkBytes(t *testing.T) {
-	if _, err := NewGenerator(&langaitest.FakeCompleter{}, &vecEmbedder{}, GeneratorConfig{ChunkBytes: -1}); err == nil {
+	if _, err := NewGenerator(&sensetest.FakeCompleter{}, &vecEmbedder{}, GeneratorConfig{ChunkBytes: -1}); err == nil {
 		t.Error("a negative ChunkBytes accepted")
 	}
 }
@@ -108,7 +108,7 @@ func TestLongScore(t *testing.T) {
 
 func TestGenerate_ShortTextAsksOnce(t *testing.T) {
 	text := strings.Repeat("x", DefaultChunkBytes)
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{"alpha\nbeta"}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{"alpha\nbeta"}}, newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{})
 	if _, err := g.Generate(context.Background(), text, 0); err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestGenerate_ShortTextAsksOnce(t *testing.T) {
 	if !slices.Equal(users(llm.Calls()), []string{text}) {
 		t.Errorf("asked %d times, want once with the text", len(llm.Calls()))
 	}
-	want := []embedCall{{langai.RoleQuery, []string{text}}, {langai.RoleDocument, []string{"alpha", "beta"}}}
+	want := []embedCall{{sense.RoleQuery, []string{text}}, {sense.RoleDocument, []string{"alpha", "beta"}}}
 	if !reflect.DeepEqual(emb.calls, want) {
 		t.Errorf("embedded %v, want %v", emb.calls, want)
 	}
@@ -124,7 +124,7 @@ func TestGenerate_ShortTextAsksOnce(t *testing.T) {
 
 func TestGenerate_LongTextAsksOncePerWindow(t *testing.T) {
 	windows := windowsOf(t, threeWindows, 3)
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{"alpha\nbeta"}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{"alpha\nbeta"}}, newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{})
 	if _, err := g.Generate(context.Background(), threeWindows, 0); err != nil {
 		t.Fatal(err)
@@ -138,8 +138,8 @@ func TestGenerate_LongTextAsksOncePerWindow(t *testing.T) {
 		}
 	}
 	want := []embedCall{
-		{langai.RoleQuery, Chunk(threeWindows, DefaultChunkBytes)},
-		{langai.RoleDocument, []string{"alpha", "beta"}},
+		{sense.RoleQuery, Chunk(threeWindows, DefaultChunkBytes)},
+		{sense.RoleDocument, []string{"alpha", "beta"}},
 	}
 	if !reflect.DeepEqual(emb.calls, want) {
 		var got []string
@@ -152,7 +152,7 @@ func TestGenerate_LongTextAsksOncePerWindow(t *testing.T) {
 
 func TestGenerate_LongTextMergesNamesAcrossWindows(t *testing.T) {
 	ws := windowsOf(t, threeWindows, 3)
-	llm := &langaitest.FakeCompleter{Reply: byUser(map[string]string{ws[0]: "Go\nrust", ws[1]: "go\npython", ws[2]: "RUST"})}
+	llm := &sensetest.FakeCompleter{Reply: byUser(map[string]string{ws[0]: "Go\nrust", ws[1]: "go\npython", ws[2]: "RUST"})}
 	emb := newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{})
 	got, err := g.Generate(context.Background(), threeWindows, 0)
@@ -182,7 +182,7 @@ func TestGenerate_LongTextScoresEachChunk(t *testing.T) {
 			vecs[c] = []float32{0, 1, 0}
 		}
 	}
-	llm := &langaitest.FakeCompleter{Replies: []string{"noise\nvolcano"}}
+	llm := &sensetest.FakeCompleter{Replies: []string{"noise\nvolcano"}}
 	g := newLongGenerator(t, llm, &vecEmbedder{vecs: vecs}, GeneratorConfig{})
 	got, err := g.Generate(context.Background(), threeWindows, DefaultGeneratorMinScore)
 	if err != nil {
@@ -197,7 +197,7 @@ func TestGenerate_LongTextScoresEachChunk(t *testing.T) {
 }
 
 func TestGenerate_LongTextReturnsNothingForANaNCutoff(t *testing.T) {
-	g := newLongGenerator(t, &langaitest.FakeCompleter{Replies: []string{"alpha"}}, newFlat(), GeneratorConfig{})
+	g := newLongGenerator(t, &sensetest.FakeCompleter{Replies: []string{"alpha"}}, newFlat(), GeneratorConfig{})
 	got, err := g.Generate(context.Background(), threeWindows, math.NaN())
 	if err != nil || got != nil {
 		t.Fatalf("got %v, %v", got, err)
@@ -206,7 +206,7 @@ func TestGenerate_LongTextReturnsNothingForANaNCutoff(t *testing.T) {
 
 func TestGenerate_LongTextCapsAtCandidates(t *testing.T) {
 	ws := windowsOf(t, threeWindows, 3)
-	llm := &langaitest.FakeCompleter{Reply: byUser(map[string]string{
+	llm := &sensetest.FakeCompleter{Reply: byUser(map[string]string{
 		ws[0]: "a1\na2\na3\na4",
 		ws[1]: "b1\nb2\nb3\nb4",
 		ws[2]: "c1\nc2\nc3\nc4",
@@ -233,7 +233,7 @@ func TestGenerate_LongTextCapsAtCandidates(t *testing.T) {
 
 func TestGenerate_LongTextKeepsTheProposedOrderForEqualScores(t *testing.T) {
 	ws := windowsOf(t, threeWindows, 3)
-	llm := &langaitest.FakeCompleter{Reply: byUser(map[string]string{ws[0]: "zeta", ws[1]: "alpha\nbeta", ws[2]: "gamma"})}
+	llm := &sensetest.FakeCompleter{Reply: byUser(map[string]string{ws[0]: "zeta", ws[1]: "alpha\nbeta", ws[2]: "gamma"})}
 	vecs := map[string][]float32{"zeta": scored(0.5), "alpha": scored(0.9), "beta": scored(0.5), "gamma": scored(0.5)}
 	for _, c := range Chunk(threeWindows, DefaultChunkBytes) {
 		vecs[c] = []float32{1, 0, 0}
@@ -249,7 +249,7 @@ func TestGenerate_LongTextKeepsTheProposedOrderForEqualScores(t *testing.T) {
 func TestGenerate_LongTextReadsAtMostMaxBytes(t *testing.T) {
 	head := words('w', 0, 1500)
 	text := head + " " + words('t', 0, 500)
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{MaxBytes: len(head)})
 	if _, err := g.Generate(context.Background(), text, 0); err != nil {
 		t.Fatal(err)
@@ -268,7 +268,7 @@ func TestGenerate_LongTextReadsAtMostMaxBytes(t *testing.T) {
 
 func TestGenerate_JustOverChunkBytesTakesTheLongPath(t *testing.T) {
 	text := strings.Repeat("x ", DefaultChunkBytes/2) + "y" // 2049 bytes
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{})
 	if _, err := g.Generate(context.Background(), text, 0); err != nil {
 		t.Fatal(err)
@@ -283,7 +283,7 @@ func TestGenerate_JustOverChunkBytesTakesTheLongPath(t *testing.T) {
 
 func TestGenerate_ChunkBytesSetsWhereTheLongPathStarts(t *testing.T) {
 	text := words('w', 0, 50) // 349 bytes
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{ChunkBytes: 100})
 	if _, err := g.Generate(context.Background(), text, 0); err != nil {
 		t.Fatal(err)
@@ -294,7 +294,7 @@ func TestGenerate_ChunkBytesSetsWhereTheLongPathStarts(t *testing.T) {
 }
 
 func TestGenerate_MaxBytesBelowChunkBytesStaysShort(t *testing.T) {
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{MaxBytes: 1000})
 	if _, err := g.Generate(context.Background(), threeWindows, 0); err != nil {
 		t.Fatal(err)
@@ -309,7 +309,7 @@ func TestGenerate_MaxBytesBelowChunkBytesStaysShort(t *testing.T) {
 
 func TestGenerate_LongTextSkipsWindowsWithoutTags(t *testing.T) {
 	ws := windowsOf(t, threeWindows, 3)
-	llm := &langaitest.FakeCompleter{Reply: byUser(map[string]string{ws[0]: noTags, ws[1]: "alpha", ws[2]: "Here are the tags:\n"})}
+	llm := &sensetest.FakeCompleter{Reply: byUser(map[string]string{ws[0]: noTags, ws[1]: "alpha", ws[2]: "Here are the tags:\n"})}
 	g := newLongGenerator(t, llm, newFlat(), GeneratorConfig{})
 	got, err := g.Generate(context.Background(), threeWindows, 0)
 	if err != nil {
@@ -322,7 +322,7 @@ func TestGenerate_LongTextSkipsWindowsWithoutTags(t *testing.T) {
 }
 
 func TestGenerate_LongTextReturnsNilWhenNoWindowHasTags(t *testing.T) {
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{noTags}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{noTags}}, newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{})
 	got, err := g.Generate(context.Background(), threeWindows, 0)
 	if err != nil || got != nil {
@@ -335,7 +335,7 @@ func TestGenerate_LongTextReturnsNilWhenNoWindowHasTags(t *testing.T) {
 
 // failingCalls has the model fail the prompts with these numbers (1 for the
 // first) with errBoom, and answer the others with replies[user].
-func failingCalls(llm *langaitest.FakeCompleter, replies map[string]string, calls ...int) {
+func failingCalls(llm *sensetest.FakeCompleter, replies map[string]string, calls ...int) {
 	llm.Reply = func(_, user string) (string, error) {
 		if slices.Contains(calls, len(llm.Calls())) {
 			return "", errBoom
@@ -348,7 +348,7 @@ func failingCalls(llm *langaitest.FakeCompleter, replies map[string]string, call
 // asked again, and the result is whole: no error.
 func TestGenerate_LongTextAsksAFailedWindowAgain(t *testing.T) {
 	ws := windowsOf(t, threeWindows, 3)
-	llm := &langaitest.FakeCompleter{}
+	llm := &sensetest.FakeCompleter{}
 	failingCalls(llm, map[string]string{ws[0]: "alpha", ws[1]: "beta", ws[2]: "gamma"}, 2)
 	g := newLongGenerator(t, llm, newFlat(), GeneratorConfig{})
 	got, err := g.Generate(context.Background(), threeWindows, 0)
@@ -367,20 +367,20 @@ func TestGenerate_LongTextAsksAFailedWindowAgain(t *testing.T) {
 // result is partial, which window is missing and why.
 func TestGenerate_LongTextKeepsTheTagsOfTheWindowsThatWorked(t *testing.T) {
 	for name, tc := range map[string]struct {
-		fail  func(llm *langaitest.FakeCompleter, replies map[string]string, second string)
+		fail  func(llm *sensetest.FakeCompleter, replies map[string]string, second string)
 		cause error
 	}{
-		"the model fails": {func(llm *langaitest.FakeCompleter, replies map[string]string, _ string) {
+		"the model fails": {func(llm *sensetest.FakeCompleter, replies map[string]string, _ string) {
 			failingCalls(llm, replies, 2, 3)
 		}, errBoom},
-		"the model replies nothing": {func(llm *langaitest.FakeCompleter, replies map[string]string, second string) {
+		"the model replies nothing": {func(llm *sensetest.FakeCompleter, replies map[string]string, second string) {
 			replies[second] = " \n"
 			llm.Reply = byUser(replies)
 		}, ErrEmptyReply},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ws := windowsOf(t, threeWindows, 3)
-			llm, emb := &langaitest.FakeCompleter{}, newFlat()
+			llm, emb := &sensetest.FakeCompleter{}, newFlat()
 			tc.fail(llm, map[string]string{ws[0]: "alpha", ws[1]: "beta", ws[2]: "gamma"}, ws[1])
 			g := newLongGenerator(t, llm, emb, GeneratorConfig{})
 			got, err := g.Generate(context.Background(), threeWindows, 0)
@@ -401,11 +401,11 @@ func TestGenerate_LongTextKeepsTheTagsOfTheWindowsThatWorked(t *testing.T) {
 // maxFailedWindowsAtStart).
 func TestGenerate_LongTextWithNoWindowReadIsAnError(t *testing.T) {
 	for name, tc := range map[string]struct {
-		llm   *langaitest.FakeCompleter
+		llm   *sensetest.FakeCompleter
 		cause error
 	}{
-		"the model fails":           {&langaitest.FakeCompleter{Err: errBoom}, errBoom},
-		"the model replies nothing": {&langaitest.FakeCompleter{Replies: []string{"\n"}}, ErrEmptyReply},
+		"the model fails":           {&sensetest.FakeCompleter{Err: errBoom}, errBoom},
+		"the model replies nothing": {&sensetest.FakeCompleter{Replies: []string{"\n"}}, ErrEmptyReply},
 	} {
 		t.Run(name, func(t *testing.T) {
 			emb := newFlat()
@@ -422,7 +422,7 @@ func TestGenerate_LongTextWithNoWindowReadIsAnError(t *testing.T) {
 }
 
 func TestGenerate_LongTextWritesTreeTags(t *testing.T) {
-	g := newLongGenerator(t, &langaitest.FakeCompleter{Replies: []string{"cooking > baking"}}, newFlat(), GeneratorConfig{}, WithTreeTags())
+	g := newLongGenerator(t, &sensetest.FakeCompleter{Replies: []string{"cooking > baking"}}, newFlat(), GeneratorConfig{}, WithTreeTags())
 	got, err := g.Generate(context.Background(), threeWindows, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +432,7 @@ func TestGenerate_LongTextWritesTreeTags(t *testing.T) {
 
 func TestGenerate_LongTextKeepsUTF8Valid(t *testing.T) {
 	text := strings.Repeat("é€\xff", 2000) // no whitespace: every cut is on a rune
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{MaxBytes: 9001})
 	if _, err := g.Generate(context.Background(), text, 0); err != nil {
 		t.Fatal(err)
@@ -460,7 +460,7 @@ func TestGenerate_LongTextKeepsUTF8Valid(t *testing.T) {
 func TestGenerate_LongTextDoesNotAskAgainOnceItsContextEnded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
 	llm.Reply = func(string, string) (string, error) {
 		if len(llm.Calls()) == 2 {
 			cancel()
@@ -481,7 +481,7 @@ func TestGenerate_LongTextDoesNotAskAgainOnceItsContextEnded(t *testing.T) {
 func TestGenerate_LongTextStopsOnACanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
 	llm.Reply = func(string, string) (string, error) { cancel(); return "alpha", nil }
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{})
 	if _, err := g.Generate(ctx, threeWindows, 0); !errors.Is(err, context.Canceled) {
@@ -495,7 +495,7 @@ func TestGenerate_LongTextStopsOnACanceledContext(t *testing.T) {
 func TestGenerate_LongTextReportsAnEmbedderFailure(t *testing.T) {
 	emb := newFlat()
 	emb.err = errBoom
-	g := newLongGenerator(t, &langaitest.FakeCompleter{Replies: []string{"alpha"}}, emb, GeneratorConfig{})
+	g := newLongGenerator(t, &sensetest.FakeCompleter{Replies: []string{"alpha"}}, emb, GeneratorConfig{})
 	if _, err := g.Generate(context.Background(), threeWindows, 0); !errors.Is(err, errBoom) {
 		t.Fatalf("got %v, want it to wrap %v", err, errBoom)
 	}
@@ -509,7 +509,7 @@ func TestGenerate_LongTextRejectsWrongVectorCounts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			emb := newFlat()
 			emb.dropAt = tc.dropAt
-			g := newLongGenerator(t, &langaitest.FakeCompleter{Replies: []string{"alpha\nbeta"}}, emb, GeneratorConfig{})
+			g := newLongGenerator(t, &sensetest.FakeCompleter{Replies: []string{"alpha\nbeta"}}, emb, GeneratorConfig{})
 			if _, err := g.Generate(context.Background(), threeWindows, 0); err == nil {
 				t.Fatal("a missing vector went unnoticed")
 			}
@@ -525,7 +525,7 @@ func TestGenerate_LongTextRejectsVectorsOfAnotherLength(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			emb := newFlat()
 			emb.short = tc.short
-			g := newLongGenerator(t, &langaitest.FakeCompleter{Replies: []string{"alpha\nbeta"}}, emb, GeneratorConfig{})
+			g := newLongGenerator(t, &sensetest.FakeCompleter{Replies: []string{"alpha\nbeta"}}, emb, GeneratorConfig{})
 			if _, err := g.Generate(context.Background(), threeWindows, 0); err == nil {
 				t.Fatal("a vector of another length was scored")
 			}
@@ -539,7 +539,7 @@ func TestGenerate_LongTextRepeatsTheTitleAtTheHeadOfLaterWindows(t *testing.T) {
 	if len(ws) != 3 {
 		t.Fatalf("the text makes %d windows, want 3", len(ws))
 	}
-	llm, emb := &langaitest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
+	llm, emb := &sensetest.FakeCompleter{Replies: []string{"alpha"}}, newFlat()
 	g := newLongGenerator(t, llm, emb, GeneratorConfig{})
 	if _, err := g.Generate(context.Background(), text, 0); err != nil {
 		t.Fatal(err)
@@ -556,7 +556,7 @@ func TestGenerate_LongTextRepeatsTheTitleAtTheHeadOfLaterWindows(t *testing.T) {
 func TestGenerate_LongTextWithALongFirstLineHasNoTitle(t *testing.T) {
 	text := strings.Repeat("t", maxTitleBytes+1) + "\n" + threeWindows
 	ws := Chunk(text, windowBytes)
-	llm := &langaitest.FakeCompleter{Replies: []string{"alpha"}}
+	llm := &sensetest.FakeCompleter{Replies: []string{"alpha"}}
 	g := newLongGenerator(t, llm, newFlat(), GeneratorConfig{})
 	if _, err := g.Generate(context.Background(), text, 0); err != nil {
 		t.Fatal(err)
@@ -568,7 +568,7 @@ func TestGenerate_LongTextWithALongFirstLineHasNoTitle(t *testing.T) {
 
 func TestGenerate_LongTextWithoutANewlineHasNoTitle(t *testing.T) {
 	windows := windowsOf(t, threeWindows, 3)
-	llm := &langaitest.FakeCompleter{Replies: []string{"alpha"}}
+	llm := &sensetest.FakeCompleter{Replies: []string{"alpha"}}
 	g := newLongGenerator(t, llm, newFlat(), GeneratorConfig{})
 	if _, err := g.Generate(context.Background(), threeWindows, 0); err != nil {
 		t.Fatal(err)

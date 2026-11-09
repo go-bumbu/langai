@@ -67,7 +67,7 @@ var libs = &runtimeLoader{}
 
 // runtimeLoader loads the shared libraries once per process (yzma binds them
 // into package globals and they are never unloaded) and remembers the
-// outcome: a failure is permanent, which matches langai.LazyEmbedder's
+// outcome: a failure is permanent, which matches sense.LazyEmbedder's
 // cached-error contract, and a second directory is refused.
 type runtimeLoader struct {
 	once sync.Once

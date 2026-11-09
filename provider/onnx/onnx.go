@@ -1,5 +1,5 @@
 // Package onnx runs image embedding models locally through ONNX Runtime, as
-// a langai.ImageEmbedder. The runtime is the shared library the first New or
+// a sense.ImageEmbedder. The runtime is the shared library the first New or
 // Open loads (through github.com/yalue/onnxruntime_go, which is CGO) from
 // Runtime.LibDir; a managed directory gets the pinned build downloaded into
 // it, and the pinned model is downloaded into Config.ModelsDir, both verified
@@ -30,8 +30,8 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/internal/fetch"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/internal/fetch"
 )
 
 // DefaultModel is the logical identity of the model New runs unless
@@ -411,7 +411,7 @@ func Open(ctx context.Context, spec ModelSpec, rt Runtime) (*Embedder, error) {
 	return e, nil
 }
 
-// Embedder implements langai.ImageEmbedder over a session.
+// Embedder implements sense.ImageEmbedder over a session.
 type Embedder struct {
 	// a session is run one batch at a time: ONNX Runtime parallelizes
 	// inside a run, and the pre-bound tensors are not shared
@@ -426,7 +426,7 @@ type Embedder struct {
 }
 
 // verify the interface is actually satisfied
-var _ langai.ImageEmbedder = (*Embedder)(nil)
+var _ sense.ImageEmbedder = (*Embedder)(nil)
 
 // preparation numbers the way this package turns a picture into the model's
 // input, beyond what a ModelSpec says. It is part of Model, and is raised
@@ -489,7 +489,7 @@ func newEmbedder(s session, spec ModelSpec, dims, batch int) (*Embedder, error) 
 	return e, nil
 }
 
-// Dimensions implements langai.ImageEmbedder.
+// Dimensions implements sense.ImageEmbedder.
 func (e *Embedder) Dimensions() int { return e.dims }
 
 // Model identifies the vectors this Embedder produces: the string to store
@@ -508,7 +508,7 @@ func (e *Embedder) Dimensions() int { return e.dims }
 // ModelSpec.ModelID gives the same string before the model loads.
 func (e *Embedder) Model() string { return e.model }
 
-// EmbedImages implements langai.ImageEmbedder: the pictures go through the
+// EmbedImages implements sense.ImageEmbedder: the pictures go through the
 // model BatchSize at a time, and each comes back as a unit-length vector.
 func (e *Embedder) EmbedImages(ctx context.Context, images []image.Image) ([][]float32, error) {
 	out := make([][]float32, 0, len(images))
@@ -550,7 +550,7 @@ func (e *Embedder) encode(images []image.Image) ([][]float32, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
-		return nil, fmt.Errorf("onnx: embedder: %w", langai.ErrClosed)
+		return nil, fmt.Errorf("onnx: embedder: %w", sense.ErrClosed)
 	}
 	values, shape, err := e.s.run(pixels, len(images), e.pre.side)
 	if err != nil {
@@ -564,7 +564,7 @@ func (e *Embedder) encode(images []image.Image) ([][]float32, error) {
 		return nil, fmt.Errorf("model returned %d-dimensional vectors, expected %d", len(out[0]), e.dims)
 	}
 	for _, vec := range out {
-		langai.Normalize(vec)
+		sense.Normalize(vec)
 	}
 	return out, nil
 }

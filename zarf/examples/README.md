@@ -1,6 +1,6 @@
-# langai examples
+# sense examples
 
-A single-user web service to exercise langai's features by hand, one page per
+A single-user web service to exercise sense's features by hand, one page per
 feature: **media search** (images and videos that look like an image, a video
 or a text), **text search** (documents that answer a question, in any
 language, with the chunk that matched), **duplicates** (exact and near-exact
@@ -345,7 +345,7 @@ that was.
 
 ## Models: what is lazy and why
 
-The service uses the library's lazy loaders (`langai.LazyEmbedder`,
+The service uses the library's lazy loaders (`sense.LazyEmbedder`,
 `LazyImageEmbedder`, `LazyCompleter`) and not a wrapper of its own. Each is
 built from the model's spec: its `ModelID()` and dimensions are what the
 stores and the Tagger's cache are set up with before anything loads, and what
@@ -365,9 +365,9 @@ way out; the service keeps running on what is stored.
 ## Postgres
 
 ```
-docker run -d --name langai-pg -e POSTGRES_PASSWORD=langai -e POSTGRES_DB=langai \
+docker run -d --name sense-pg -e POSTGRES_PASSWORD=sense -e POSTGRES_DB=sense \
     -p 127.0.0.1:5432:5432 pgvector/pgvector:pg18
-make run POSTGRES='postgres://postgres:langai@127.0.0.1:5432/langai?sslmode=disable'
+make run POSTGRES='postgres://postgres:sense@127.0.0.1:5432/sense?sslmode=disable'
 ```
 
 With `POSTGRES` set (or `-postgres`), the vector stores are `vector/pgvec` and
@@ -406,7 +406,7 @@ zarf/examples/
 Every page package has a plain Go type that does the work and a `Handler`
 that serves it with its embedded page; `main.go` only wires. They import the
 library's ports, `search` and `tagging`, never a provider, so their tests run
-on `langaitest`'s fakes and `vector.MemStore`; the real models are wired in
+on `sensetest`'s fakes and `vector.MemStore`; the real models are wired in
 `models.go` alone. A new example is a new package with its own `Handler` and
 page, mounted in `main.go` next to the others, with a line in `assets/ui/ui.js`
 for the navigation.
@@ -430,7 +430,7 @@ The duplicates API, under `/duplicates/`: `GET api/info`,
 
 `autotag` takes a `tagging.EmbeddingCache` and builds its own Tagger and
 `tagging.Generator`, so its tests run on a `tagging.MemCache`,
-`langaitest.FakeEmbedder` and a canned chat model. Its
+`sensetest.FakeEmbedder` and a canned chat model. Its
 API, under `/autotag/`: `GET api/info`, `GET api/notebook` (every tag and note
 with its automatic tags), `POST api/tags` (`{"name"}`; an existing name returns
 that tag), `PUT|DELETE api/tags/<id>`, `POST api/notes` (`{"title","text"}`),
@@ -440,7 +440,7 @@ that tag), `PUT|DELETE api/tags/<id>`, `POST api/notes` (`{"title","text"}`),
 per tag, 0 by default), `POST api/warm`.
 
 `mediasearch` imports only the library's ports and `search`, so its tests run
-on `langaitest.FakeImageEmbedder`, a `vector.MemStore` and a fake sampler; the
+on `sensetest.FakeImageEmbedder`, a `vector.MemStore` and a fake sampler; the
 real model and ffmpeg are wired in `main.go` and `models.go` alone.
 
 The API, under `/mediasearch/`: `GET api/info`, `GET api/items`,

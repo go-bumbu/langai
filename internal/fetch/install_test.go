@@ -310,7 +310,7 @@ func TestInstallDir_NeverTouchesWhatItDoesNotOwn(t *testing.T) {
 			}
 			after := names(t, parent)
 			if !tc.installs {
-				if want := ".partial-123,libs.langai-retired,libs.langai-staging,libs.lock,libs.old,libs.staging"; after != want {
+				if want := ".partial-123,libs.lock,libs.old,libs.sense-retired,libs.sense-staging,libs.staging"; after != want {
 					t.Errorf("next to the directory: %s\nwant                   %s", after, want)
 				}
 				return

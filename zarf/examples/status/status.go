@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // Errors the handler maps to statuses.
@@ -36,12 +36,12 @@ var (
 // loaders keep a failure and never retry on their own.
 const Recovery = "A failed load is kept: every call returns this error and nothing loads again. " +
 	"Fix the cause and restart the service. In an application that must stay up, build a new lazy value " +
-	"with the same constructor (langai.NewLazyEmbedder and its kin), use it in place of this one and Close this one."
+	"with the same constructor (sense.NewLazyEmbedder and its kin), use it in place of this one and Close this one."
 
-// Loader is the lazy loader of a model. langai.LazyEmbedder,
-// langai.LazyImageEmbedder and langai.LazyCompleter all are one.
+// Loader is the lazy loader of a model. sense.LazyEmbedder,
+// sense.LazyImageEmbedder and sense.LazyCompleter all are one.
 type Loader interface {
-	State() (langai.LazyState, error)
+	State() (sense.LazyState, error)
 	Load(ctx context.Context) error
 }
 
@@ -224,7 +224,7 @@ type ModelStatus struct {
 	RunsOn     string `json:"runsOn"`
 	// Lazy says the model has a lazy loader, so State moves and Load works.
 	Lazy bool `json:"lazy"`
-	// State is the lazy loader's state in words (langai.LazyState), or the
+	// State is the lazy loader's state in words (sense.LazyState), or the
 	// fixed state of a model without one.
 	State string `json:"state"`
 	// Error is the kept failure of a load that failed, or what calls return
@@ -339,7 +339,7 @@ func (s *Service) modelStatus(m Model) ModelStatus {
 	if err != nil {
 		st.Error = err.Error()
 	}
-	if state == langai.LazyFailed {
+	if state == sense.LazyFailed {
 		st.Recovery = Recovery
 	}
 	s.mu.Lock()
@@ -363,7 +363,7 @@ func (s *Service) Load(ctx context.Context, key string) (ModelStatus, error) {
 		before, _ := m.Lazy.State()
 		start := time.Now()
 		err := m.Lazy.Load(ctx)
-		if before == langai.LazyNotStarted && ctx.Err() == nil {
+		if before == sense.LazyNotStarted && ctx.Err() == nil {
 			// this call started the load and saw it end
 			s.mu.Lock()
 			s.loads[key] = time.Since(start)

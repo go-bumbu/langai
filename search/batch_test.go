@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // countingStore counts the calls IndexBatch makes and the documents of the
@@ -37,12 +37,12 @@ func (s *countingStore) Upsert(ctx context.Context, c vector.Coord, model string
 
 // batchEmbedder records the size of every Embed call and can fail the n-th.
 type batchEmbedder struct {
-	langaitest.FakeEmbedder
+	sensetest.FakeEmbedder
 	sizes []int
 	fail  int // fail the n-th call (1-based); 0 never
 }
 
-func (b *batchEmbedder) Embed(ctx context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (b *batchEmbedder) Embed(ctx context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	b.sizes = append(b.sizes, len(texts))
 	if len(b.sizes) == b.fail {
 		return nil, errors.New("model down")

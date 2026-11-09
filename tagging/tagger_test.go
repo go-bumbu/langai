@@ -8,14 +8,14 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 // newTestTagger returns a Tagger over FakeEmbedder, cat and a MemCache,
 // failing the test if NewTagger does.
 func newTestTagger(t *testing.T, cat Catalog, cfg TaggerConfig, opts ...TaggerOption) *Tagger {
 	t.Helper()
-	tg, err := NewTagger(langaitest.FakeEmbedder{}, cat, NewMemCache(), cfg, opts...)
+	tg, err := NewTagger(sensetest.FakeEmbedder{}, cat, NewMemCache(), cfg, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func newTestTagger(t *testing.T, cat Catalog, cfg TaggerConfig, opts ...TaggerOp
 }
 
 func TestNewTagger_RequiresEmbedderCatalogCacheAndModel(t *testing.T) {
-	emb, cat, cache := langaitest.FakeEmbedder{}, &fakeCatalog{}, NewMemCache()
+	emb, cat, cache := sensetest.FakeEmbedder{}, &fakeCatalog{}, NewMemCache()
 	for _, tc := range []struct {
 		name string
 		err  func() error
@@ -78,7 +78,7 @@ func TestNew_RejectsNonFiniteSettings(t *testing.T) {
 		{"SmoothingK", TaggerConfig{Model: "m", SmoothingK: nan}},
 		{"SmoothingK", TaggerConfig{Model: "m", SmoothingK: inf}},
 	} {
-		_, err := NewTagger(langaitest.FakeEmbedder{}, &fakeCatalog{}, NewMemCache(), tc.cfg)
+		_, err := NewTagger(sensetest.FakeEmbedder{}, &fakeCatalog{}, NewMemCache(), tc.cfg)
 		if err == nil || !strings.Contains(err.Error(), "TaggerConfig."+tc.setting) {
 			t.Errorf("NewTagger with %+v = %v, want an error naming TaggerConfig.%s", tc.cfg, err, tc.setting)
 		}

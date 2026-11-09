@@ -10,7 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/go-bumbu/langai/zarf/eval"
+	"github.com/go-bumbu/sense/zarf/eval"
 )
 
 // row is one model's outcome: its result and load time, or the error that

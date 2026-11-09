@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/media"
+	"github.com/go-bumbu/sense/media"
 )
 
 func TestNew_FillsDefaults(t *testing.T) {

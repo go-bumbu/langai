@@ -8,8 +8,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 func TestChunk_ShortTextsComeBackWhole(t *testing.T) {
@@ -79,11 +79,11 @@ func TestChunk_CutsRunesWithoutSpaces(t *testing.T) {
 // truncating reads only the first n bytes of every text, as a real embedder
 // reads only its window of tokens.
 type truncating struct {
-	langaitest.FakeEmbedder
+	sensetest.FakeEmbedder
 	n int
 }
 
-func (e truncating) Embed(ctx context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (e truncating) Embed(ctx context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	cut := make([]string, len(texts))
 	for i, s := range texts {
 		if len(s) > e.n {
@@ -125,7 +125,7 @@ func TestScope_ChunkBytesReadsTheWholeItem(t *testing.T) {
 }
 
 func TestNewTagger_RefusesNegativeChunkBytes(t *testing.T) {
-	if _, err := NewTagger(langaitest.FakeEmbedder{}, &fakeCatalog{}, NewMemCache(), TaggerConfig{Model: "m", ChunkBytes: -1}); err == nil {
+	if _, err := NewTagger(sensetest.FakeEmbedder{}, &fakeCatalog{}, NewMemCache(), TaggerConfig{Model: "m", ChunkBytes: -1}); err == nil {
 		t.Error("want an error")
 	}
 }
@@ -201,14 +201,14 @@ func TestEngine_LongMemberTeachesWithItsBestPiece(t *testing.T) {
 		t.Fatalf("Candidates = %v, %v", cands, err)
 	}
 	ctx := context.Background()
-	emb := langaitest.FakeEmbedder{}
-	nameVecs, err := emb.Embed(ctx, langai.RoleDocument, []string{"sourdough bread"})
+	emb := sensetest.FakeEmbedder{}
+	nameVecs, err := emb.Embed(ctx, sense.RoleDocument, []string{"sourdough bread"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	nameVec := nameVecs[0]
 	pieces := Chunk(longMember, cfg.ChunkBytes)
-	vecs, err := emb.Embed(ctx, langai.RoleQuery, pieces)
+	vecs, err := emb.Embed(ctx, sense.RoleQuery, pieces)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,12 +232,12 @@ func TestEngine_PiecesAreCachedOnTheirOwn(t *testing.T) {
 	r.scores(t, "1", longMember)
 	pieces := Chunk(longMember, cfg.ChunkBytes)
 	distinct := len(slices.Compact(slices.Sorted(slices.Values(pieces))))
-	if n := r.emb.count(langai.RoleQuery); n != distinct {
+	if n := r.emb.count(sense.RoleQuery); n != distinct {
 		t.Fatalf("embedded %d query texts, want its %d distinct pieces", n, distinct)
 	}
 	plain := newRig(t, engineCfg, &fakeCatalog{tags: breadAndJapan("1")}, cache, nil)
 	plain.scores(t, "1", pieces[1])
-	if n := plain.emb.count(langai.RoleQuery); n != 0 {
+	if n := plain.emb.count(sense.RoleQuery); n != 0 {
 		t.Errorf("a Tagger without ChunkBytes embedded %d texts for a cached piece, want 0", n)
 	}
 }

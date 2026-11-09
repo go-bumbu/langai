@@ -1,4 +1,4 @@
-// Command examples is a single-user web service to exercise langai's
+// Command examples is a single-user web service to exercise sense's
 // features by hand: run it on a directory of media and click around. Each
 // feature is a package with its own page, mounted here. See README.md next
 // to this file.
@@ -19,18 +19,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-bumbu/langai/media/ffmpeg"
-	"github.com/go-bumbu/langai/provider/onnx"
-	"github.com/go-bumbu/langai/provider/yzma"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/zarf/examples/assets"
-	"github.com/go-bumbu/langai/zarf/examples/autotag"
-	"github.com/go-bumbu/langai/zarf/examples/duplicates"
-	"github.com/go-bumbu/langai/zarf/examples/mediasearch"
-	"github.com/go-bumbu/langai/zarf/examples/status"
-	"github.com/go-bumbu/langai/zarf/examples/textsearch"
+	"github.com/go-bumbu/sense/media/ffmpeg"
+	"github.com/go-bumbu/sense/provider/onnx"
+	"github.com/go-bumbu/sense/provider/yzma"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/zarf/examples/assets"
+	"github.com/go-bumbu/sense/zarf/examples/autotag"
+	"github.com/go-bumbu/sense/zarf/examples/duplicates"
+	"github.com/go-bumbu/sense/zarf/examples/mediasearch"
+	"github.com/go-bumbu/sense/zarf/examples/status"
+	"github.com/go-bumbu/sense/zarf/examples/textsearch"
 )
 
 // options are the command's flags.
@@ -87,7 +87,7 @@ func parseFlags() options {
 	flag.Float64Var(&o.textMinScore, "text-min-score", 0, "drop text search hits scoring below this; 0 shows everything")
 	flag.Int64Var(&o.maxImageBytes, "max-image-bytes", 0, "the most the media index reads of an image; a longer one is listed as too large (0: the library's 64 MiB)")
 	flag.Float64Var(&o.tagScore, "tag-min-score", tagging.DefaultGeneratorMinScore, "the cutoff of the recommended tags; the page shows the ones under it greyed")
-	flag.StringVar(&o.postgres, "postgres", os.Getenv("POSTGRES"), "keep the vectors and the tagging cache in this Postgres database (with pgvector) instead of SQLite files, e.g. postgres://user:pass@localhost:5432/langai (default: $POSTGRES)")
+	flag.StringVar(&o.postgres, "postgres", os.Getenv("POSTGRES"), "keep the vectors and the tagging cache in this Postgres database (with pgvector) instead of SQLite files, e.g. postgres://user:pass@localhost:5432/sense (default: $POSTGRES)")
 	flag.StringVar(&o.logLevel, "log-level", "info", "the least a record needs to be logged: debug, info, warn or error")
 	flag.Parse()
 	return o

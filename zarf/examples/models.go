@@ -9,12 +9,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/media/ffmpeg"
-	"github.com/go-bumbu/langai/provider/onnx"
-	"github.com/go-bumbu/langai/provider/yzma"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/zarf/examples/mediasearch"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/media/ffmpeg"
+	"github.com/go-bumbu/sense/provider/onnx"
+	"github.com/go-bumbu/sense/provider/yzma"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/zarf/examples/mediasearch"
 )
 
 // qwenAliases are the short names -model accepts for the vision model.
@@ -59,7 +59,7 @@ func (r *runsOn) String() string {
 // the first text that needs embedding. A restart with nothing new to embed
 // never loads it.
 type textModel struct {
-	*langai.LazyEmbedder
+	*sense.LazyEmbedder
 	name   string
 	runsOn runsOn
 }
@@ -72,7 +72,7 @@ func newTextModel(cfg yzma.Config, logger *slog.Logger) (*textModel, error) {
 		return nil, fmt.Errorf("text embedding model: %w", err)
 	}
 	m := &textModel{name: spec.Name, runsOn: runsOn{asked: string(cfg.Accel)}}
-	m.LazyEmbedder = langai.NewLazyEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (langai.Embedder, error) {
+	m.LazyEmbedder = sense.NewLazyEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (sense.Embedder, error) {
 		start := time.Now()
 		logger.Info("loading the text embedding model", "model", spec.Name, "accel", cfg.Accel, "dir", filepath.Dir(cfg.ModelsDir))
 		e, err := yzma.New(ctx, cfg) // ctx is the LazyEmbedder's own: only its Close cancels it
@@ -90,7 +90,7 @@ func newTextModel(cfg yzma.Config, logger *slog.Logger) (*textModel, error) {
 // LazyCompleter: 2.5 GB that only the recommend button of the auto tagging
 // page needs, so it loads on the first recommendation.
 type chatModel struct {
-	*langai.LazyCompleter
+	*sense.LazyCompleter
 	name string
 	// accel is what the model was asked to run on. A yzma.Completer does
 	// not say what it ended up on, as the embedders do.
@@ -103,7 +103,7 @@ func newChatModel(cfg yzma.Config, logger *slog.Logger) (*chatModel, error) {
 		return nil, fmt.Errorf("chat model: %w", err)
 	}
 	m := &chatModel{name: spec.Name, accel: accelName(cfg.Accel)}
-	m.LazyCompleter = langai.NewLazyCompleter(func(ctx context.Context) (langai.Completer, error) {
+	m.LazyCompleter = sense.NewLazyCompleter(func(ctx context.Context) (sense.Completer, error) {
 		start := time.Now()
 		logger.Info("loading the chat model", "model", spec.Name)
 		c, err := yzma.NewCompleter(ctx, cfg)
@@ -126,10 +126,10 @@ func accelName(a yzma.Accel) string {
 // state is a lazy loader's state in words, with the error it keeps when it
 // failed.
 func state(l interface {
-	State() (langai.LazyState, error)
+	State() (sense.LazyState, error)
 }) string {
 	s, err := l.State()
-	if s == langai.LazyFailed && err != nil {
+	if s == sense.LazyFailed && err != nil {
 		return "load failed: " + err.Error()
 	}
 	return s.String()
@@ -139,9 +139,9 @@ func state(l interface {
 // behind the library's LazyImageEmbedder, or the vision model, loaded now.
 type mediaModel struct {
 	// embedder is what the MediaIndex embeds with.
-	embedder langai.ImageEmbedder
+	embedder sense.ImageEmbedder
 	// lazy is the ONNX model's loader; nil for the vision model.
-	lazy *langai.LazyImageEmbedder
+	lazy *sense.LazyImageEmbedder
 	// vision is the loaded vision model; nil for an ONNX model.
 	vision *yzma.Vision
 	// name is the model's name and id the identity of its vectors.
@@ -193,7 +193,7 @@ func newMediaModel(ctx context.Context, o options, llama yzma.Config, sampler *f
 		runsOn: runsOn{asked: o.provider},
 		info:   mediasearch.Info{Model: spec.Name, ID: spec.ModelID(), Dimensions: spec.Dims, MinScore: o.minScore, Mode: "frames", Provider: o.provider},
 	}
-	m.lazy = langai.NewLazyImageEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (langai.ImageEmbedder, error) {
+	m.lazy = sense.NewLazyImageEmbedder(spec.ModelID(), spec.Dims, func(ctx context.Context) (sense.ImageEmbedder, error) {
 		start := time.Now()
 		logger.Info("loading the image model", "model", spec.Name, "provider", o.provider, "dir", o.modelsDir)
 		e, err := onnx.New(ctx, cfg)

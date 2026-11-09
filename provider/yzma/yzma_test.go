@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/go-bumbu/langai"
+	"github.com/go-bumbu/sense"
 )
 
 // stubBackend is a backend that answers with canned vectors, so the tests
@@ -150,7 +150,7 @@ func TestEmbed_NormalizesAndKeepsOrder(t *testing.T) {
 		"second": {0, 0, -2}, // length 2
 	}}
 	e := newStubbed(t, stub, 3)
-	got, err := e.Embed(context.Background(), langai.RoleDocument, []string{"first", "second"})
+	got, err := e.Embed(context.Background(), sense.RoleDocument, []string{"first", "second"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestEmbed_NormalizesAndKeepsOrder(t *testing.T) {
 func TestEmbed_ModelErrorNamesTheText(t *testing.T) {
 	stub := &stubBackend{defaultVec: []float32{1, 0}, err: errors.New("boom"), errText: "bad"}
 	e := newStubbed(t, stub, 2)
-	_, err := e.Embed(context.Background(), langai.RoleDocument, []string{"ok", "bad"})
+	_, err := e.Embed(context.Background(), sense.RoleDocument, []string{"ok", "bad"})
 	if err == nil || !strings.Contains(err.Error(), "embed text 1") || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("error should name the failing index and wrap the cause, got %v", err)
 	}
@@ -186,7 +186,7 @@ func TestEmbed_ModelErrorNamesTheText(t *testing.T) {
 func TestEmbed_MissingVectorIsAnError(t *testing.T) {
 	stub := &stubBackend{defaultVec: []float32{1, 0}, nilVectorFor: "empty"}
 	e := newStubbed(t, stub, 2)
-	if _, err := e.Embed(context.Background(), langai.RoleDocument, []string{"empty"}); err == nil {
+	if _, err := e.Embed(context.Background(), sense.RoleDocument, []string{"empty"}); err == nil {
 		t.Fatal("a nil vector must be an error, not a nil embedding")
 	}
 }
@@ -197,7 +197,7 @@ func TestEmbed_MissingVectorIsAnError(t *testing.T) {
 func TestEmbed_RejectsWrongDimensions(t *testing.T) {
 	stub := &stubBackend{vectors: map[string][]float32{"short": {1, 0}}, defaultVec: []float32{1, 0, 0}}
 	e := newStubbed(t, stub, 3)
-	_, err := e.Embed(context.Background(), langai.RoleDocument, []string{"fine", "short"})
+	_, err := e.Embed(context.Background(), sense.RoleDocument, []string{"fine", "short"})
 	if err == nil || !strings.Contains(err.Error(), "2 dimensions") || !strings.Contains(err.Error(), "expected 3") {
 		t.Fatalf("error should name both widths, got %v", err)
 	}
@@ -210,7 +210,7 @@ func TestEmbed_StopsOnCancelledContext(t *testing.T) {
 	e := newStubbed(t, stub, 2)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := e.Embed(ctx, langai.RoleDocument, []string{"a", "b"})
+	_, err := e.Embed(ctx, sense.RoleDocument, []string{"a", "b"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -230,7 +230,7 @@ func TestEmbed_SerializesBackendAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := e.Embed(context.Background(), langai.RoleDocument, []string{"a", "b", "c"}); err != nil {
+			if _, err := e.Embed(context.Background(), sense.RoleDocument, []string{"a", "b", "c"}); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -254,7 +254,7 @@ func TestEmbed_SerializesBackendAccess(t *testing.T) {
 func TestEncode_TruncatesToLimitKeepingLastToken(t *testing.T) {
 	stub := &stubBackend{defaultVec: []float32{1, 0}, lim: 5}
 	e := newStubbed(t, stub, 2)
-	if _, err := e.Embed(context.Background(), langai.RoleDocument, []string{"abcdefghij"}); err != nil {
+	if _, err := e.Embed(context.Background(), sense.RoleDocument, []string{"abcdefghij"}); err != nil {
 		t.Fatal(err)
 	}
 	got := stub.tokens[0]
@@ -275,7 +275,7 @@ func TestEncode_ClampsInputText(t *testing.T) {
 	stub := &stubBackend{defaultVec: []float32{1, 0}}
 	e := newStubbed(t, stub, 2)
 	huge := strings.Repeat("é", maxInputBytes) // 2 bytes per rune: twice the cap
-	if _, err := e.Embed(context.Background(), langai.RoleDocument, []string{"bad \xff byte", huge}); err != nil {
+	if _, err := e.Embed(context.Background(), sense.RoleDocument, []string{"bad \xff byte", huge}); err != nil {
 		t.Fatal(err)
 	}
 	if got := stub.texts[0]; got != "bad � byte" {
@@ -399,8 +399,8 @@ func TestClose_FreesOnceAndBlocksEmbed(t *testing.T) {
 	if stub.closes != 1 {
 		t.Fatalf("backend closed %d times, want 1", stub.closes)
 	}
-	if _, err := e.Embed(context.Background(), langai.RoleDocument, []string{"a"}); !errors.Is(err, langai.ErrClosed) {
-		t.Fatalf("Embed after Close = %v, want langai.ErrClosed", err)
+	if _, err := e.Embed(context.Background(), sense.RoleDocument, []string{"a"}); !errors.Is(err, sense.ErrClosed) {
+		t.Fatalf("Embed after Close = %v, want sense.ErrClosed", err)
 	}
 	if len(stub.texts) != 0 {
 		t.Fatal("a closed embedder reached the backend")
@@ -425,10 +425,10 @@ func TestPooling_Normalized(t *testing.T) {
 func TestEmbed_PrefixesByRole(t *testing.T) {
 	stub := &stubBackend{defaultVec: []float32{1, 0}}
 	e := &Embedder{b: stub, dims: 2, queryPrefix: "query: ", documentPrefix: "passage: "}
-	if _, err := e.Embed(context.Background(), langai.RoleQuery, []string{"a"}); err != nil {
+	if _, err := e.Embed(context.Background(), sense.RoleQuery, []string{"a"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Embed(context.Background(), langai.RoleDocument, []string{"b"}); err != nil {
+	if _, err := e.Embed(context.Background(), sense.RoleDocument, []string{"b"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(stub.texts) != 2 || stub.texts[0] != "query: a" || stub.texts[1] != "passage: b" {
@@ -436,7 +436,7 @@ func TestEmbed_PrefixesByRole(t *testing.T) {
 	}
 	plain := &stubBackend{defaultVec: []float32{1, 0}}
 	e = newStubbed(t, plain, 2)
-	if _, err := e.Embed(context.Background(), langai.RoleQuery, []string{"a"}); err != nil {
+	if _, err := e.Embed(context.Background(), sense.RoleQuery, []string{"a"}); err != nil {
 		t.Fatal(err)
 	}
 	if plain.texts[0] != "a" {

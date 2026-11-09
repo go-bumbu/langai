@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/tagging"
-	"github.com/go-bumbu/langai/tagging/cachetest"
+	"github.com/go-bumbu/sense/tagging"
+	"github.com/go-bumbu/sense/tagging/cachetest"
 )
 
 // TestRun_MemCache runs the suite against the reference cache, which is the

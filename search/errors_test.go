@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // TestErrors_EmptyIDIsTheSentinel: every call that takes a document id
@@ -83,10 +83,10 @@ func TestErrors_CoordsAreCheckedUpFront(t *testing.T) {
 		{"bad partition", "i", "caf\xe9", "c", vector.ErrInvalidID},
 		{"bad collection", "i", "p", "a\x00b", vector.ErrInvalidID},
 	} {
-		if _, err := New(langaitest.FakeEmbedder{}, vector.NewMemStore(), tc.index, tc.partition, tc.collection); !errors.Is(err, tc.want) || !strings.HasPrefix(err.Error(), "search: ") {
+		if _, err := New(sensetest.FakeEmbedder{}, vector.NewMemStore(), tc.index, tc.partition, tc.collection); !errors.Is(err, tc.want) || !strings.HasPrefix(err.Error(), "search: ") {
 			t.Errorf("New %s: %v, want a search: error wrapping %v", tc.name, err, tc.want)
 		}
-		if _, err := NewMediaIndex(langaitest.FakeImageEmbedder{}, vector.NewMemStore(), tc.index, tc.partition, tc.collection); !errors.Is(err, tc.want) || !strings.HasPrefix(err.Error(), "search: ") {
+		if _, err := NewMediaIndex(sensetest.FakeImageEmbedder{}, vector.NewMemStore(), tc.index, tc.partition, tc.collection); !errors.Is(err, tc.want) || !strings.HasPrefix(err.Error(), "search: ") {
 			t.Errorf("NewMediaIndex %s: %v, want a search: error wrapping %v", tc.name, err, tc.want)
 		}
 	}
@@ -100,10 +100,10 @@ func TestErrors_CarryThePrefix(t *testing.T) {
 	mix, emb, _ := newMediaIndex(t)
 	for name, call := range map[string]func() error{
 		"New nil embedder":        func() error { _, err := New(nil, vector.NewMemStore(), "i", "p", "c"); return err },
-		"New nil store":           func() error { _, err := New(langaitest.FakeEmbedder{}, nil, "i", "p", "c"); return err },
+		"New nil store":           func() error { _, err := New(sensetest.FakeEmbedder{}, nil, "i", "p", "c"); return err },
 		"NewMediaIndex nil embed": func() error { _, err := NewMediaIndex(nil, vector.NewMemStore(), "i", "p", "c"); return err },
 		"NewMediaIndex nil store": func() error {
-			_, err := NewMediaIndex(langaitest.FakeImageEmbedder{}, nil, "i", "p", "c")
+			_, err := NewMediaIndex(sensetest.FakeImageEmbedder{}, nil, "i", "p", "c")
 			return err
 		},
 		"Index empty id":      func() error { return ix.Index(ctx, "", "text") },
@@ -116,7 +116,7 @@ func TestErrors_CarryThePrefix(t *testing.T) {
 		},
 		"SearchIndexed unknown": func() error { _, err := mix.SearchIndexed(ctx, "missing", 5); return err },
 		"store refuses index": func() error {
-			_, err := New(langaitest.FakeEmbedder{}, vector.NewMemStore(), "", "p", "c")
+			_, err := New(sensetest.FakeEmbedder{}, vector.NewMemStore(), "", "p", "c")
 			return err
 		},
 	} {

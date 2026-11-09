@@ -1,10 +1,10 @@
 // Package media holds the ports for decoding video. Sampler turns a video
 // file into the Frames that stand for it, which search embeds as images;
-// Cutter is the file surgery a langai.VideoEmbedder needs to embed a video
+// Cutter is the file surgery a sense.VideoEmbedder needs to embed a video
 // in segments. The implementations live in media/ffmpeg, over the ffmpeg
 // binary; SamplerFunc adapts a function, e.g. for tests or for an
 // application that already has its own frame extraction. The video
-// embedding port itself, langai.VideoEmbedder, is in the root package with
+// embedding port itself, sense.VideoEmbedder, is in the root package with
 // the other embedder ports.
 package media
 
@@ -19,7 +19,7 @@ import (
 // read from a file's header, which can say anything, and a number that is
 // wrong by orders of magnitude must not be computed with as if it were
 // known. A Cutter reports a length beyond it as 0, unknown, and whoever
-// plans work from a length (a langai.VideoEmbedder its segments) treats one
+// plans work from a length (a sense.VideoEmbedder its segments) treats one
 // beyond it the same way.
 const MaxDuration = 7 * 24 * time.Hour
 
@@ -53,7 +53,7 @@ func (f SamplerFunc) Sample(ctx context.Context, path string) ([]Frame, error) {
 	return f(ctx, path)
 }
 
-// Cutter is the file surgery a langai.VideoEmbedder needs to work in segments:
+// Cutter is the file surgery a sense.VideoEmbedder needs to work in segments:
 // how long a video is, and a copy of one stretch of it into another file,
 // without re-encoding where the container allows. The implementation lives
 // in media/ffmpeg.

@@ -11,9 +11,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/search"
-	"github.com/go-bumbu/langai/vector"
+	"github.com/go-bumbu/sense/search"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/vector"
 )
 
 // This example is the README's semantic search with fakes in place of the
@@ -21,7 +21,7 @@ import (
 // reset.
 func ExampleNew() {
 	ctx := context.Background()
-	emb := langaitest.FakeEmbedder{} // an app passes yzma.New's Embedder
+	emb := sensetest.FakeEmbedder{} // an app passes yzma.New's Embedder
 	ix, err := search.New(emb, vector.NewMemStore(), "tenant-1", "space-7", "notes", search.WithMinScore(0.3))
 	if err != nil {
 		log.Fatal(err)
@@ -102,7 +102,7 @@ func solid(c color.RGBA) *bytes.Reader {
 func ExampleNewMediaIndex() {
 	ctx := context.Background()
 	red, green := color.RGBA{200, 30, 30, 255}, color.RGBA{30, 200, 30, 255}
-	video := &langaitest.FakeVideoEmbedder{Clips: map[string][]image.Image{
+	video := &sensetest.FakeVideoEmbedder{Clips: map[string][]image.Image{
 		// the clip's two 10 s segments show red, then green
 		"clip.mp4": {picture(red), picture(green)},
 	}}
@@ -117,7 +117,7 @@ func ExampleNewMediaIndex() {
 	if err := os.WriteFile(clip, []byte("not really a video"), 0o600); err != nil {
 		log.Fatal(err)
 	}
-	ix, err := search.NewMediaIndex(langaitest.FakeImageEmbedder{}, vector.NewMemStore(), "tenant-1", "space-7", "media",
+	ix, err := search.NewMediaIndex(sensetest.FakeImageEmbedder{}, vector.NewMemStore(), "tenant-1", "space-7", "media",
 		search.WithVideoEmbedder(video), search.WithMediaMinScore(0.9))
 	if err != nil {
 		log.Fatal(err)

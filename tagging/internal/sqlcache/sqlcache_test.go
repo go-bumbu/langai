@@ -10,8 +10,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 // TestNew_RejectsANilClock: a Cache without a clock would panic on its first
@@ -33,7 +33,7 @@ func TestNew_RejectsANilClock(t *testing.T) {
 func TestKeyOrder_IsThePrimaryKeyOrder(t *testing.T) {
 	vecs := map[tagging.CacheKey][]float32{}
 	for _, model := range []string{"m2", "m1"} {
-		for _, role := range []langai.Role{langai.RoleDocument, langai.RoleQuery} {
+		for _, role := range []sense.Role{sense.RoleDocument, sense.RoleQuery} {
 			for _, text := range []string{"a", "b", "c", "d"} {
 				vecs[tagging.KeyFor(model, role, text)] = []float32{1}
 			}
@@ -79,8 +79,8 @@ func TestCache_GetOnAReadOnlyDatabaseStillReturnsTheVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale := tagging.KeyFor("m", langai.RoleQuery, "stale")
-	other := tagging.KeyFor("m2", langai.RoleDocument, "stale too")
+	stale := tagging.KeyFor("m", sense.RoleQuery, "stale")
+	other := tagging.KeyFor("m2", sense.RoleDocument, "stale too")
 	want := map[tagging.CacheKey][]float32{stale: {1, 2}, other: {3}}
 	if err := c.Put(ctx, "i", want); err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestCache_GetOnAReadOnlyDatabaseStillReturnsTheVectors(t *testing.T) {
 func TestCache_GetRefreshesOnlyStaleEntries(t *testing.T) {
 	ctx := t.Context()
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	k := tagging.KeyFor("m", langai.RoleQuery, "x")
+	k := tagging.KeyFor("m", sense.RoleQuery, "x")
 
 	for _, tc := range []struct {
 		name     string

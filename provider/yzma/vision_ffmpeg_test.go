@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/media/ffmpeg"
+	"github.com/go-bumbu/sense/media/ffmpeg"
 )
 
 // renderVideo runs ffmpeg with args to write a test video named name into a

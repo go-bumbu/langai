@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/langaitest"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/sensetest"
 )
 
 var errBoom = errors.New("boom")
@@ -23,7 +23,7 @@ func byUser(replies map[string]string) func(system, user string) (string, error)
 }
 
 type embedCall struct {
-	role  langai.Role
+	role  sense.Role
 	texts []string
 }
 
@@ -39,7 +39,7 @@ type vecEmbedder struct {
 
 func (e *vecEmbedder) Dimensions() int { return 3 }
 
-func (e *vecEmbedder) Embed(_ context.Context, role langai.Role, texts []string) ([][]float32, error) {
+func (e *vecEmbedder) Embed(_ context.Context, role sense.Role, texts []string) ([][]float32, error) {
 	e.calls = append(e.calls, embedCall{role, slices.Clone(texts)})
 	if e.err != nil {
 		return nil, e.err
@@ -72,9 +72,9 @@ func angled() map[string][]float32 {
 	}
 }
 
-func newGenerator(t *testing.T, answer string, vecs map[string][]float32, cfg GeneratorConfig) (*Generator, *langaitest.FakeCompleter, *vecEmbedder) {
+func newGenerator(t *testing.T, answer string, vecs map[string][]float32, cfg GeneratorConfig) (*Generator, *sensetest.FakeCompleter, *vecEmbedder) {
 	t.Helper()
-	llm := &langaitest.FakeCompleter{Replies: []string{answer}}
+	llm := &sensetest.FakeCompleter{Replies: []string{answer}}
 	emb := &vecEmbedder{vecs: vecs}
 	g, err := NewGenerator(llm, emb, cfg)
 	if err != nil {
@@ -99,14 +99,14 @@ func TestNew_RequiresCompleterAndEmbedder(t *testing.T) {
 	if _, err := NewGenerator(nil, &vecEmbedder{}, GeneratorConfig{}); err == nil {
 		t.Error("nil Completer accepted")
 	}
-	if _, err := NewGenerator(&langaitest.FakeCompleter{}, nil, GeneratorConfig{}); err == nil {
+	if _, err := NewGenerator(&sensetest.FakeCompleter{}, nil, GeneratorConfig{}); err == nil {
 		t.Error("nil Embedder accepted")
 	}
 }
 
 func TestNew_RejectsNegativeSettings(t *testing.T) {
 	for _, cfg := range []GeneratorConfig{{Candidates: -1}, {MaxBytes: -1}} {
-		if _, err := NewGenerator(&langaitest.FakeCompleter{}, &vecEmbedder{}, cfg); err == nil {
+		if _, err := NewGenerator(&sensetest.FakeCompleter{}, &vecEmbedder{}, cfg); err == nil {
 			t.Errorf("%+v accepted", cfg)
 		}
 	}
@@ -181,8 +181,8 @@ func TestGenerate_EmbedsTheTextAsAQueryAndTheTagsAsDocuments(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []embedCall{
-		{langai.RoleQuery, []string{bread}},
-		{langai.RoleDocument, []string{"alpha", "beta"}},
+		{sense.RoleQuery, []string{bread}},
+		{sense.RoleDocument, []string{"alpha", "beta"}},
 	}
 	if !reflect.DeepEqual(emb.calls, want) {
 		t.Errorf("embedded %v, want %v", emb.calls, want)

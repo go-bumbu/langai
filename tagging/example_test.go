@@ -8,8 +8,8 @@ import (
 	"slices"
 	"strconv"
 
-	"github.com/go-bumbu/langai/langaitest"
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense/sensetest"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 // notebook is an application's own tags and hand-made links, kept in memory
@@ -66,7 +66,7 @@ func ExampleTagger() {
 	// database (sqlitecache or pgcache). FakeEmbedder only counts shared
 	// words, so its scores run lower than a real model's, and the two minimum
 	// scores are lowered to match. The defaults fit the yzma model.
-	tagger, err := tagging.NewTagger(langaitest.FakeEmbedder{}, notes, tagging.NewMemCache(), tagging.TaggerConfig{
+	tagger, err := tagging.NewTagger(sensetest.FakeEmbedder{}, notes, tagging.NewMemCache(), tagging.TaggerConfig{
 		Model:          "fake",
 		NameMinScore:   0.3,
 		MemberMinScore: 0.4,

@@ -1,4 +1,4 @@
-package langai
+package sense
 
 import (
 	"math"

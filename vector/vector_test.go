@@ -5,8 +5,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/go-bumbu/langai/vector"
-	"github.com/go-bumbu/langai/vector/vectortest"
+	"github.com/go-bumbu/sense/vector"
+	"github.com/go-bumbu/sense/vector/vectortest"
 )
 
 // TestMemStore_Conformance runs the suite against MemStore, which is also

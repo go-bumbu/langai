@@ -25,8 +25,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/go-bumbu/langai"
-	"github.com/go-bumbu/langai/tagging"
+	"github.com/go-bumbu/sense"
+	"github.com/go-bumbu/sense/tagging"
 )
 
 // table is the name of the one table of the cache. The prefix is the legacy
@@ -153,7 +153,7 @@ func (c *Cache) q(query string) string {
 // group is the set of hashes of one model and role.
 type group struct {
 	model string
-	role  langai.Role
+	role  sense.Role
 }
 
 // Get implements tagging.EmbeddingCache. Keys are grouped by model and role and

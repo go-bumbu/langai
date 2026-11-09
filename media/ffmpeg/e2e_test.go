@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-bumbu/langai/media"
+	"github.com/go-bumbu/sense/media"
 )
 
 // cutsVideo renders a 10 s, 25 fps, 320×240 video with two hard cuts: red
