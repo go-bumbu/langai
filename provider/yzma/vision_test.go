@@ -808,18 +808,48 @@ func TestVision_EmbedVideoStopsAtTheEndAndAtTheCap(t *testing.T) {
 	}
 }
 
-// TestVision_EmbedVideoWithoutExtension: a segment file needs an extension
-// for the Cutter to pick a container, so a video whose name has none is cut
-// into Matroska files.
-func TestVision_EmbedVideoWithoutExtension(t *testing.T) {
-	f := newFakeVision()
-	cutter := &fakeCutter{durations: map[string]time.Duration{"upload-7f3a": 30 * time.Second}}
-	v := openVisionFake(t, f, VisionOptions{Cutter: cutter})
-	if _, err := v.EmbedVideo(context.Background(), "/media/upload-7f3a"); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(cutter.cuts, " "); got != "0s/20s/segment-000.mkv 20s/20s/segment-001.mkv" {
-		t.Errorf("cuts = %s", got)
+// TestVision_SegmentContainerByExtension: the Cutter picks the container of
+// a segment by the segment file's extension, so that extension is the
+// video's own only where it names a container known to take what such a
+// file holds by stream copy. Any other name (no extension, one ffmpeg has
+// no container for, a backup's or a download's suffix) is cut into Matroska
+// files, which take nearly every codec.
+func TestVision_SegmentContainerByExtension(t *testing.T) {
+	for name, ext := range map[string]string{
+		"clip.mp4":      ".mp4",
+		"clip.mov":      ".mov",
+		"CLIP.MOV":      ".mov",
+		"clip.m4v":      ".mp4", // ffmpeg's .m4v muxer refuses HEVC
+		"clip.mkv":      ".mkv",
+		"clip.webm":     ".webm",
+		"clip.avi":      ".avi",
+		"clip.ts":       ".ts",
+		"clip.mpg":      ".mpg",
+		"clip.mpeg":     ".mpeg",
+		"clip.vob":      ".vob",
+		"clip.h264":     ".h264",
+		"clip.h265":     ".h265",
+		"clip.hevc":     ".hevc",
+		"upload-7f3a":   ".mkv",
+		"film.divx":     ".mkv",
+		"film.rmvb":     ".mkv",
+		"film.ogm":      ".mkv",
+		"film.wmv":      ".mkv",
+		"film.mp4.bak":  ".mkv",
+		"film.mp4.part": ".mkv",
+		"film.":         ".mkv",
+		".mp4":          ".mp4",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cutter := &fakeCutter{durations: map[string]time.Duration{name: 30 * time.Second}}
+			v := openVisionFake(t, newFakeVision(), VisionOptions{Cutter: cutter})
+			if _, err := v.EmbedVideo(context.Background(), "/media/"+name); err != nil {
+				t.Fatal(err)
+			}
+			if got, want := strings.Join(cutter.cuts, " "), "0s/20s/segment-000"+ext+" 20s/20s/segment-001"+ext; got != want {
+				t.Errorf("cuts = %s\nwant   %s", got, want)
+			}
+		})
 	}
 }
 

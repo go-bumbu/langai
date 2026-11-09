@@ -689,9 +689,36 @@ func (v *Vision) measured(ctx context.Context, path, dir string) (string, time.D
 }
 
 // fallbackVideoExt names the container segments are cut into when the
-// video's own file name does not name one: without an extension the Cutter
-// has no way to pick a muxer, and Matroska takes any codec.
+// video's own file name does not name one known to work (see segmentExts):
+// Matroska takes nearly any codec.
 const fallbackVideoExt = ".mkv"
+
+// segmentExts maps the extension of a video, in lower case, to the
+// extension its segments are cut into. The Cutter picks a segment's
+// container by that extension, so only the ones are listed whose container
+// was seen to take, by stream copy, what files of that name usually hold
+// (ffmpeg 8): the MP4 family (.m4v goes into .mp4, because the muxer ffmpeg
+// has behind .m4v refuses HEVC), Matroska and WebM, AVI, MPEG transport and
+// program streams, and raw H.264 and HEVC streams, which have no timestamps
+// to put into a Matroska file. Every other name, including none, one ffmpeg
+// knows no container for (.divx, .rmvb, .ogm) and the suffix of a backup or
+// a download (.bak, .part), gets fallbackVideoExt.
+var segmentExts = map[string]string{
+	".mp4": ".mp4", ".mov": ".mov", ".m4v": ".mp4",
+	".mkv": ".mkv", ".webm": ".webm",
+	".avi": ".avi",
+	".ts":  ".ts", ".mpg": ".mpg", ".mpeg": ".mpeg", ".vob": ".vob",
+	".h264": ".h264", ".h265": ".h265", ".hevc": ".hevc",
+}
+
+// segmentExt is the extension the segments of the video at path are cut
+// into (see segmentExts).
+func segmentExt(path string) string {
+	if ext, ok := segmentExts[strings.ToLower(filepath.Ext(path))]; ok {
+		return ext
+	}
+	return fallbackVideoExt
+}
 
 // segmentCount is how many segments of the given length a video of the
 // given duration is cut into, the last one shorter, and at most limit. It
@@ -709,10 +736,7 @@ func segmentCount(duration, segment time.Duration, limit int) int {
 // a fact: the walk ends early where the Cutter finds the video over
 // (media.ErrPastEnd), and nothing is sized by the count.
 func (v *Vision) embedSegments(ctx context.Context, path string, duration time.Duration, dir string) ([]langai.Segment, error) {
-	ext := filepath.Ext(path)
-	if ext == "" {
-		ext = fallbackVideoExt
-	}
+	ext := segmentExt(path)
 	var out []langai.Segment
 	for i := range segmentCount(duration, v.segment, v.maxSegments) {
 		if err := ctx.Err(); err != nil {

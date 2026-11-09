@@ -493,8 +493,13 @@ pictures and clips, and an image finds the stretch of a video it appears in.
   at the `Cutter`'s `media.ErrPastEnd` instead of embedding the last pictures again.
   A file without a length (a recording that was never finalized, a stream dump) is
   first copied into a Matroska file in the temp directory, at most `MaxSegments`
-  segments of it, so that it has one, and is then cut like any other; a file without
-  an extension is cut into `.mkv` segments.
+  segments of it, so that it has one, and is then cut like any other.
+- **Segment containers.** ffmpeg picks a segment's container by its file extension, so
+  a segment keeps the video's extension only where that names a container known to take
+  such a file's codecs by stream copy: `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, `.ts`,
+  the MPEG program streams and raw H.264/HEVC streams (`.m4v` is cut into `.mp4`).
+  Anything else is cut into `.mkv`: a name without an extension, one ffmpeg has no
+  container for (`.divx`, `.rmvb`), a backup or a half-renamed download (`.mp4.part`).
 - **Texts are plain text.** The chat template is laid out once, around stand-ins, and
   the instruction and every input are tokenized as parts of their own: a text that
   spells one of the model's control tokens (`<|im_end|>`), libmtmd's media marker or a
